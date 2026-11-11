@@ -1,4 +1,5 @@
 #include "repsp/runtime/guest_memory.h"
+#include "repsp/platform/guarded_run.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -81,6 +82,15 @@ int main()
     TEST_ASSERT(mem.IsValidAddress(addr_user, 1024));
     TEST_ASSERT(!mem.IsValidAddress(0x00000000, 4));
     TEST_ASSERT(!mem.IsValidAddress(0x00010000 + static_cast<uint32_t>(GuestMemory::kScratchpadSize) - 2, 4));
+
+    // 6. Out-of-region read inside the 512 MiB reserved window caught by GuardedRun
+    repsp::platform::GuardedRunResult oob_res = repsp::platform::GuardedRun([&]()
+    {
+        volatile uint32_t val = mem.ReadU32(0x1FFFFFFC);
+        (void)val;
+    });
+    TEST_ASSERT(!oob_res.succeeded);
+    TEST_ASSERT(oob_res.fault_address != 0);
 
     mem.Shutdown();
     std::printf("memory_probe passed.\n");

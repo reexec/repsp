@@ -18,7 +18,7 @@ PSP(PlayStation Portable) 시스템의 가상 메모리 공간과 물리 메모�
 
 ```mermaid
 flowchart TD
-    subgraph HostWindow["repsp Host Virtual Memory Window (160 MiB / 0x0A000000)"]
+    subgraph HostWindow["repsp Host Virtual Memory Window (512 MiB / 0x20000000)"]
         SP["0x00010000: Scratchpad (16 KiB)"]
         VRAM["0x04000000: VRAM (2 MiB)"]
         KRAM["0x08000000: Kernel RAM (8 MiB)"]
@@ -50,7 +50,7 @@ This document summarizes the virtual memory layout and physical memory map of th
 * Sources: [PSP Developer Wiki - Memory Map](https://www.psdevwiki.com/psp/Memory_Map), psprecomp `docs/ARCHITECTURE.md`
 
 ## 2. Physical Memory Layout (PSP-1000)
-See table and diagram above. The total 160 MiB window (`0x0A000000`) is reserved on host, with scratchpad, VRAM, kernel RAM, and user RAM committed.
+See table and diagram above. The total 512 MiB window (`0x20000000`) is reserved on host, with scratchpad, VRAM, kernel RAM, and user RAM committed.
 
 ## 3. Virtual Address Mirror Folding
 The upper 3 bits select caching and privilege modes (`0x40000000` uncached, `0x80000000` kernel, `0xA0000000` kernel uncached). repsp folds these using `phys = guest_addr & 0x1FFFFFFF`.

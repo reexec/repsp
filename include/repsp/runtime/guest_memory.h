@@ -20,7 +20,7 @@ class GuestMemory
 {
 public:
     static constexpr uint32_t kFoldMask = 0x1FFFFFFF;
-    static constexpr size_t kWindowSize = 0x0A000000; // 160 MiB
+    static constexpr size_t kWindowSize = 0x20000000; // 512 MiB
 
     static constexpr uint32_t kScratchpadAddress = 0x00010000;
     static constexpr size_t kScratchpadSize = 16 * 1024; // 16 KiB

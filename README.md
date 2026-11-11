@@ -82,7 +82,7 @@ ctest --test-dir build/win64-release -C Release --output-on-failure
 
 * `repsp_platform`: 가상 메모리 예약/commit/보호, 보호 실행(`GuardedRun`), 호스트 스레드, 경로, SDL3 연동 완료.
 * `repsp_module`: `PARAM.SFO` 메타데이터 파서 구현 완료.
-* `repsp_runtime`: 160 MiB 게스트 메모리 윈도우(scratchpad, VRAM, kernel RAM, user RAM) 및 0x1FFFFFFF 미러 접기, NID 레지스트리 및 미구현 집계, SHA-1 구현 완료.
+* `repsp_runtime`: 512 MiB 게스트 메모리 윈도우(scratchpad, VRAM, kernel RAM, user RAM) 및 0x1FFFFFFF 미러 접기, NID 레지스트리 및 미구현 집계, SHA-1 구현 완료.
 * `repsp_recomp`: lifter 중립 CPU 콜백 계약(`repsp_guest_cpu_ops`), 인자/반환 도우미, C 메모리 접근 API 완료.
 * `repsp_hle_kernel`: HLE 모듈 등록 스켈레톤 완료.
 * CTest 검증: `memory_probe`, `module_probe`, `nid_probe`, `recomp_contract_probe`, `platform_probe` 5개 프로브 전체 통과.
