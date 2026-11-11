@@ -10,6 +10,8 @@
 namespace repsp::recomp
 {
 
+using GuestAddress = uint32_t;
+
 inline uint32_t GetGpr(int index)
 {
     const auto* ops = repsp_recomp_get_cpu_ops();
@@ -25,6 +27,8 @@ inline void SetGpr(int index, uint32_t value)
     }
 }
 
+// Inferred: Arguments beyond 8 are passed on stack at $sp + (index - 8) * 4.
+// To be confirmed when implementing the first firmware function with > 8 arguments.
 inline uint32_t ReadRawArg(size_t index)
 {
     if (index < 4)
@@ -46,6 +50,15 @@ inline T Arg(size_t index)
     uint32_t raw = ReadRawArg(index);
     if constexpr (std::is_pointer_v<T>)
     {
+        using NonPtr = std::remove_pointer_t<T>;
+        using Decayed = std::decay_t<NonPtr>;
+        static_assert(
+            std::is_same_v<Decayed, uint8_t> ||
+            std::is_same_v<Decayed, char>,
+            "Arg<T*> allows only uint8_t*, const uint8_t*, char*, const char*. "
+            "Structures must be passed by GuestAddress and read through GuestMemory."
+        );
+
         if (raw == 0)
         {
             return nullptr;

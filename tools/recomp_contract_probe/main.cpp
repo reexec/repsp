@@ -120,6 +120,19 @@ int main()
     TEST_ASSERT(Arg(8) == 108);
     TEST_ASSERT(Arg(9) == 109);
 
+    // Test allowed pointer types: char* and uint8_t*
+    uint32_t str_addr = 0x08803000;
+    const char hello[] = "Hello PSP";
+    GetGuestMemory().WriteBlock(str_addr, hello, sizeof(hello));
+    g_fake_cpu.gprs[4] = str_addr;
+    const char* arg_str = Arg<const char*>(0);
+    TEST_ASSERT(arg_str != nullptr);
+    TEST_ASSERT(std::strcmp(arg_str, hello) == 0);
+
+    const uint8_t* arg_bytes = Arg<const uint8_t*>(0);
+    TEST_ASSERT(arg_bytes != nullptr);
+    TEST_ASSERT(arg_bytes[0] == 'H');
+
     // 3. Test Return helper
     Return(static_cast<uint32_t>(0xCAFEBABE));
     TEST_ASSERT(g_fake_cpu.gprs[2] == 0xCAFEBABE); // $v0
