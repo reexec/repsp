@@ -4,10 +4,12 @@
 
 `PARAM.SFO`(System File Object)는 PSP 및 PS3 타이틀에서 제목, 카테고리, 버전, 부모 제어 레벨 등의 메타데이터를 저장하는 표준 바이너리 파일 형식이다.
 
-* 상태: **확인됨** (헤더 구조, 엔트리 테이블 구조, 형식 식별자)
+* 상태:
+  * 바이너리 사양 및 포맷 코드: **추정** (외부 개발자 위키 문서에 기반함)
+  * 파서 구현 동작: **확인됨** (손으로 작성한 합성 SFO 데이터를 통한 `module_probe` 검증 완료; 실제 디스크 덤프 검증은 reDMP1 issue #1에서 진행)
 * 출처: [PSP Developer Wiki - PARAM.SFO](https://www.psdevwiki.com/psp/PARAM.SFO), [PS3 Developer Wiki - PARAM.SFO](https://www.psdevwiki.com/ps3/PARAM.SFO)
 
-## 2. 파일 구조
+## 2. 파일 구조 (추정)
 
 ```mermaid
 flowchart TD
@@ -45,8 +47,10 @@ flowchart TD
 ## 1. Overview
 `PARAM.SFO` (System File Object) is the standard metadata file format for PSP and PS3 applications containing title, category, version, and parent rating information.
 
-* Status: **Confirmed** (header, entry structure, format codes)
+* Status:
+  * Binary layout specification and format codes: **Inferred** (derived from developer wiki documentation)
+  * Parser implementation: **Confirmed** (verified against synthetic SFO fixtures in `module_probe`; verification with retail UMD dumps follows in reDMP1 issue #1)
 * Sources: [PSP Developer Wiki - PARAM.SFO](https://www.psdevwiki.com/psp/PARAM.SFO), [PS3 Developer Wiki - PARAM.SFO](https://www.psdevwiki.com/ps3/PARAM.SFO)
 
-## 2. Binary Layout
+## 2. Binary Layout (Inferred)
 See the diagram and section descriptions above.

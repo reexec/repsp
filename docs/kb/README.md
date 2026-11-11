@@ -4,9 +4,9 @@ PSP 일반 지식(컨테이너 형식, Allegrex·VFPU, 펌웨어 모듈과 NID, 
 
 | 문서 | 내용 | 상태 |
 |---|---|---|
-| [`psp-memory-map.md`](psp-memory-map.md) | PSP 물리 메모리 맵과 0x1FFFFFFF 가상 미러 접기 규칙 | **확인됨** |
-| [`param-sfo.md`](param-sfo.md) | `PARAM.SFO` 바이너리 헤더, 엔트리 테이블 및 데이터 형식 | **확인됨** |
-| [`nid.md`](nid.md) | PSP 펌웨어 모듈 NID(Name ID) 정의 및 SHA-1 계산 알고리즘 | **확인됨** |
+| [`psp-memory-map.md`](psp-memory-map.md) | PSP 물리 메모리 맵과 0x1FFFFFFF 가상 미러 접기 규칙 | **추정** (repsp 512 MiB 창 예약 및 접기는 확인됨) |
+| [`param-sfo.md`](param-sfo.md) | `PARAM.SFO` 바이너리 헤더, 엔트리 테이블 및 데이터 형식 | **추정** (파서 구현 동작은 합성 데이터로 확인됨) |
+| [`nid.md`](nid.md) | PSP 펌웨어 모듈 NID(Name ID) 정의 및 SHA-1 계산 알고리즘 | **확인됨** (FIPS 180 벡터 및 공개 NID 대조) |
 
 ---
 
@@ -16,6 +16,6 @@ General PSP knowledge (container formats, the Allegrex and VFPU, firmware module
 
 | Document | Contents | Status |
 |---|---|---|
-| [`psp-memory-map.md`](psp-memory-map.md) | PSP physical memory map and 0x1FFFFFFF virtual mirror folding | **Confirmed** |
-| [`param-sfo.md`](param-sfo.md) | `PARAM.SFO` binary header, entry table, and data formats | **Confirmed** |
-| [`nid.md`](nid.md) | PSP firmware module NID definition and SHA-1 calculation | **Confirmed** |
+| [`psp-memory-map.md`](psp-memory-map.md) | PSP physical memory map and 0x1FFFFFFF virtual mirror folding | **Inferred** (repsp 512 MiB window and folding confirmed) |
+| [`param-sfo.md`](param-sfo.md) | `PARAM.SFO` binary header, entry table, and data formats | **Inferred** (parser behavior confirmed via synthetic probe) |
+| [`nid.md`](nid.md) | PSP firmware module NID definition and SHA-1 calculation | **Confirmed** (FIPS 180 vectors and published NIDs verified) |

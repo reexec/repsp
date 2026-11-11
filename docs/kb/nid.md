@@ -4,10 +4,12 @@
 
 PSP 펌웨어의 동적 모듈 링크 시스템(PRX)에서 함수 및 전역 변수 심볼은 문자열 이름 대신 32비트 정수인 **NID**(Name ID)로 식별된다.
 
-* 상태: **확인됨** (NID 계산 알고리즘: 함수 이름의 SHA-1 해시 앞 4바이트 리틀엔디언)
+* 상태:
+  * NID 계산 알고리즘: **확인됨** (FIPS 180 표준 SHA-1 테스트 벡터 및 공개 펌웨어 NID `sceDisplaySetMode`, `sceCtrlReadBufferPositive`, `sceCtrlPeekBufferPositive`, `sceKernelExitGame` 대조 검증 완료)
+  * 특정 커널 내부 난수화 NID 매핑: **추정**
 * 출처: [PSP Developer Wiki - NIDs](https://www.psdevwiki.com/psp/NIDs), [uOFW Documentation](https://github.com/uOFW/uOFW)
 
-## 2. NID 계산 알고리즘
+## 2. NID 계산 알고리즘 (확인됨)
 
 함수 이름 문자열(예: `"sceKernelExitGame"`)에 대해 표준 SHA-1 다이제스트(20바이트)를 생성한 뒤, 앞 4바이트(`digest[0..3]`)를 32비트 리틀엔디언 정수로 조합한다:
 
@@ -15,9 +17,9 @@ $$\text{NID} = \text{digest}[0] \mid (\text{digest}[1] \ll 8) \mid (\text{digest
 
 ```mermaid
 flowchart LR
-    NAME["Function Name String<br/>e.g. 'sceKernelExitGame'"] --> SHA["SHA-1 Hash (20 bytes)"]
+    NAME["Function Name String<br/>e.g. 'sceDisplaySetMode'"] --> SHA["SHA-1 Hash (20 bytes)"]
     SHA --> SLICE["First 4 bytes (digest[0..3])"]
-    SLICE --> NID["32-bit Little-Endian NID"]
+    SLICE --> NID["32-bit Little-Endian NID<br/>0x0E20F177"]
 ```
 
 ## 3. repsp에서의 NID 처리
@@ -34,10 +36,12 @@ flowchart LR
 ## 1. Overview
 In the PSP module linking system (PRX), exported and imported functions and variables are identified by 32-bit integers called NIDs rather than string names.
 
-* Status: **Confirmed** (NID calculation algorithm: first 4 bytes of function name SHA-1 in little-endian)
+* Status:
+  * NID calculation algorithm: **Confirmed** (verified against FIPS 180 standard test vectors and published firmware NIDs in `nid_probe`)
+  * Firmware-internal randomized NID tables: **Inferred**
 * Sources: [PSP Developer Wiki - NIDs](https://www.psdevwiki.com/psp/NIDs), [uOFW Documentation](https://github.com/uOFW/uOFW)
 
-## 2. Calculation Algorithm
+## 2. Calculation Algorithm (Confirmed)
 The NID is computed by hashing the function name with SHA-1 and reading the first four bytes in little-endian order.
 
 ## 3. Handling in repsp
