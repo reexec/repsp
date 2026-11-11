@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  verify-and-release:
+    name: Verify Tag and Publish Release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Verify Tag matches VERSION
+        run: |
+          FILE_VERSION="v$(tr -d '[:space:]' < VERSION)"
+          TAG_VERSION="${GITHUB_REF_NAME}"
+          echo "VERSION file: ${FILE_VERSION}"
+          echo "Tag: ${TAG_VERSION}"
+          if [ "${FILE_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "Error: Tag ${TAG_VERSION} does not match VERSION file ${FILE_VERSION}"
+            exit 1
+          fi
+
+      - name: Verify Tag is on main branch
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "Error: Tag commit is not an ancestor of main"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libpulse-dev libgl1-mesa-dev libx11-dev
+
+      - name: Build and test (Linux Release)
+        run: |
+          cmake --preset linux-x64-release
+          cmake --build build/linux-x64-release
+          ctest --test-dir build/linux-x64-release --output-on-failure
+
+      - name: Check release notes and publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_NOTE="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "${RELEASE_NOTE}" ]; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --notes-file "${RELEASE_NOTE}"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi
