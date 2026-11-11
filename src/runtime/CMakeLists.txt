@@ -1,3 +1,6 @@
 target_sources(repsp_runtime PRIVATE
-    runtime_stub.cpp
+    guest_memory.cpp
+    nid_registry.cpp
+    log.cpp
+    sha1.cpp
 )
