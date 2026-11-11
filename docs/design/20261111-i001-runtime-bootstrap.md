@@ -79,7 +79,7 @@ PSP의 메모리 맵(**추정**, 출처: psprecomp `docs/ARCHITECTURE.md`, [PSP 
 | `0x08800000` | 24 MiB | 사용자 RAM (게임) |
 
 * 가상 주소의 상위 3비트는 캐시·권한 미러다(`0x40000000` uncached, `0x80000000` 커널, `0xA0000000` 커널 uncached 등). `GuestMemory::Translate(addr)`는 `phys = addr & 0x1FFFFFFF`로 접고 `host = base + phys`로 바꾼다(based 모델, 모든 호스트에서 같은 코드).
-* 호스트에는 `0x0A000000`(160 MiB) 창을 예약하고 위 영역만 commit한다. 사이의 빈 곳은 예약만 해 두어 잘못된 접근이 보호 호출로 잡히게 한다.
+* 호스트에는 접기 결과 전체인 `0x20000000`(512 MiB) 창을 예약하고 위 영역만 commit한다. 접힌 주소는 어떤 값이든 이 창 안에 떨어지므로, 영역 밖 접근은 commit 안 된 예약 페이지에서 반드시 보호 호출로 잡힌다(창이 접기 범위보다 작으면 창 밖의 다른 호스트 메모리를 조용히 덮어쓸 수 있다; 처음 기준안의 160 MiB는 이 결함이 있어 리뷰에서 고쳤다).
 * 공개 계약: `Translate`, 스칼라 읽기·쓰기(little-endian), 블록 복사, 영역 질의, 그리고 어댑터가 빠른 경로를 만들 수 있도록 `Base()`와 접기 마스크를 노출한다(어댑터가 `base[addr & mask]`로 인라인할 수 있다). C에서도 쓸 수 있는 함수(`repsp_guest_base`, `repsp_guest_mask` 등)를 `include/repsp/recomp/`에 둔다.
 * 영역 밖 접근 정책: Debug에서는 즉시 보고하고 정지, Release에서는 보호 호출이 잡아 정지 보고. 측정 전까지 이것이 기본이다.
 
@@ -181,7 +181,7 @@ Consumer contract: a consumer does `add_subdirectory(third_party/repsp)` and lin
 The PSP memory map is in the table above (**inferred**, sources: psprecomp `docs/ARCHITECTURE.md`, the [PSP Developer Wiki](https://www.psdevwiki.com/psp/); PSP-1000, the extra RAM of PSP-2000 and later out of scope).
 
 * The top three bits of a virtual address select cache and privilege mirrors (`0x40000000` uncached, `0x80000000` kernel, `0xA0000000` kernel uncached, ...). `GuestMemory::Translate(addr)` folds with `phys = addr & 0x1FFFFFFF` and maps `host = base + phys` (the based model, one code path on every host).
-* The host reserves a `0x0A000000` (160 MiB) window and commits only the regions above; the gaps stay reserved so stray accesses are caught by the guarded call.
+* The host reserves a `0x20000000` (512 MiB) window, the whole fold range, and commits only the regions above. Every folded address lands inside the window, so a stray access always hits a reserved, uncommitted page and is caught by the guarded call (a window smaller than the fold range could silently overwrite other host memory beyond it; the first baseline of 160 MiB had this flaw and was fixed in review).
 * Public contract: `Translate`, little-endian scalar reads and writes, block copies, region queries, plus `Base()` and the fold mask so an adapter can build a fast path (`base[addr & mask]` inline). C-callable functions (`repsp_guest_base`, `repsp_guest_mask`, ...) live in `include/repsp/recomp/`.
 * Out-of-range policy: Debug reports and stops at once; Release stops through the guarded call's report. This is the default until measured.
 
