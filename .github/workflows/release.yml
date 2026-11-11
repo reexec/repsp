@@ -38,11 +38,18 @@ jobs:
             exit 1
           fi
 
-      # The default Azure Ubuntu mirror can stall apt for many minutes; pick the
-      # fastest healthy mirror first. Pinned to the 1.4.5 release commit because
-      # the action changes apt sources with sudo.
-      - name: Configure fast APT mirror
-        uses: vegardit/fast-apt-mirror.sh@806c59276adfff2df420124ad5e4587f018c358a # 1.4.5
+      # The default Azure Ubuntu mirror can stall apt for many minutes, so apt
+      # uses the Kakao mirror instead. ubuntu-24.04 keeps its sources in the
+      # deb822 file ubuntu.sources; the legacy sources.list is rewritten too in
+      # case an image still has entries there.
+      - name: Use the Kakao APT mirror
+        run: |
+          for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+            if [ -f "$f" ]; then
+              sudo sed -i -E 's#https?://([a-z0-9.-]+\.)?(archive|security)\.ubuntu\.com/ubuntu/?#https://mirror.kakao.com/ubuntu/#g' "$f"
+            fi
+          done
+          grep -rhE '^(URIs:|deb )' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true
 
       - name: Install dependencies
         run: |
