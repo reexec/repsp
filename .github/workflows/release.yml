@@ -38,15 +38,22 @@ jobs:
             exit 1
           fi
 
-      # The default Azure Ubuntu mirror can stall apt for many minutes, so apt
-      # uses the Kakao mirror instead. ubuntu-24.04 keeps its sources in the
-      # deb822 file ubuntu.sources; the legacy sources.list is rewritten too in
-      # case an image still has entries there.
+      # The default Azure Ubuntu mirror can stall apt for many minutes (each
+      # package waits 20 s and is skipped), so apt uses the Kakao mirror. The
+      # runner image does not name the archive in ubuntu.sources: its URIs line
+      # is mirror+file:/etc/apt/apt-mirrors.txt, a mirror list whose first entry
+      # is azure.archive.ubuntu.com. Both the list and every URI are rewritten.
       - name: Use the Kakao APT mirror
         run: |
+          KAKAO=https://mirror.kakao.com/ubuntu/
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            echo "$KAKAO" | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+          fi
           for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
             if [ -f "$f" ]; then
-              sudo sed -i -E 's#https?://([a-z0-9.-]+\.)?(archive|security)\.ubuntu\.com/ubuntu/?#https://mirror.kakao.com/ubuntu/#g' "$f"
+              sudo sed -i -E \
+                -e "s#mirror\+file:/etc/apt/apt-mirrors\.txt#${KAKAO}#g" \
+                -e "s#https?://([a-z0-9.-]+\.)?(archive|security)\.ubuntu\.com/ubuntu/?#${KAKAO}#g" "$f"
             fi
           done
           grep -rhE '^(URIs:|deb )' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true
