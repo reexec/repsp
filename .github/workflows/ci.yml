@@ -1,0 +1,94 @@
+name: CI
+
+# Every push to main and every pull request into main builds the project and
+# runs the probes (CTest). A task branch can be checked by hand before a pull
+# request exists: gh workflow run ci.yml --ref <branch>.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Windows Win64 (${{ matrix.config }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure CMake
+        run: |
+          $preset = if ("${{ matrix.config }}" -eq "Debug") { "win64-debug" } else { "win64-release" }
+          cmake --preset $preset
+
+      - name: Build
+        run: |
+          $preset = if ("${{ matrix.config }}" -eq "Debug") { "win64-debug" } else { "win64-release" }
+          cmake --build "build/$preset" --config ${{ matrix.config }}
+
+      - name: Test
+        run: |
+          $preset = if ("${{ matrix.config }}" -eq "Debug") { "win64-debug" } else { "win64-release" }
+          ctest --test-dir "build/$preset" -C ${{ matrix.config }} --output-on-failure
+
+  build-linux:
+    name: Linux x64 (${{ matrix.config }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # The default Azure Ubuntu mirror can stall apt for many minutes (each
+      # package waits 20 s and is skipped), so apt uses the Kakao mirror. The
+      # runner image does not name the archive in ubuntu.sources: its URIs line
+      # is mirror+file:/etc/apt/apt-mirrors.txt, a mirror list whose first entry
+      # is azure.archive.ubuntu.com. Both the list and every URI are rewritten.
+      - name: Use the Kakao APT mirror
+        run: |
+          KAKAO=https://mirror.kakao.com/ubuntu/
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            echo "$KAKAO" | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+          fi
+          for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+            if [ -f "$f" ]; then
+              sudo sed -i -E \
+                -e "s#mirror\+file:/etc/apt/apt-mirrors\.txt#${KAKAO}#g" \
+                -e "s#https?://([a-z0-9.-]+\.)?(archive|security)\.ubuntu\.com/ubuntu/?#${KAKAO}#g" "$f"
+            fi
+          done
+          grep -rhE '^(URIs:|deb )' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libpulse-dev libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxss-dev libxtst-dev libxfixes-dev libxkbcommon-dev libwayland-dev libdecor-0-dev libdrm-dev libgbm-dev libgl-dev libegl-dev
+
+      - name: Configure CMake
+        run: |
+          PRESET="linux-x64-$(echo "${{ matrix.config }}" | tr '[:upper:]' '[:lower:]')"
+          cmake --preset "${PRESET}"
+
+      - name: Build
+        run: |
+          PRESET="linux-x64-$(echo "${{ matrix.config }}" | tr '[:upper:]' '[:lower:]')"
+          cmake --build "build/${PRESET}"
+
+      - name: Test
+        run: |
+          PRESET="linux-x64-$(echo "${{ matrix.config }}" | tr '[:upper:]' '[:lower:]')"
+          ctest --test-dir "build/${PRESET}" --output-on-failure

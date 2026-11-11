@@ -1,0 +1,102 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 25,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "win64-debug",
+            "displayName": "Win64 Debug",
+            "description": "Windows x64 Debug build",
+            "generator": "Visual Studio 17 2022",
+            "binaryDir": "${sourceDir}/build/win64-debug",
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "REPSP_BUILD_PROBES": "ON"
+            }
+        },
+        {
+            "name": "win64-release",
+            "displayName": "Win64 Release",
+            "description": "Windows x64 Release build",
+            "generator": "Visual Studio 17 2022",
+            "binaryDir": "${sourceDir}/build/win64-release",
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "REPSP_BUILD_PROBES": "ON"
+            }
+        },
+        {
+            "name": "linux-x64-debug",
+            "displayName": "Linux x64 Debug",
+            "description": "Linux x64 Debug build",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/linux-x64-debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "REPSP_BUILD_PROBES": "ON"
+            }
+        },
+        {
+            "name": "linux-x64-release",
+            "displayName": "Linux x64 Release",
+            "description": "Linux x64 Release build",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/linux-x64-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "REPSP_BUILD_PROBES": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "win64-debug",
+            "configurePreset": "win64-debug",
+            "configuration": "Debug"
+        },
+        {
+            "name": "win64-release",
+            "configurePreset": "win64-release",
+            "configuration": "Release"
+        },
+        {
+            "name": "linux-x64-debug",
+            "configurePreset": "linux-x64-debug"
+        },
+        {
+            "name": "linux-x64-release",
+            "configurePreset": "linux-x64-release"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "win64-debug",
+            "configurePreset": "win64-debug",
+            "configuration": "Debug"
+        },
+        {
+            "name": "win64-release",
+            "configurePreset": "win64-release",
+            "configuration": "Release"
+        },
+        {
+            "name": "linux-x64-debug",
+            "configurePreset": "linux-x64-debug"
+        },
+        {
+            "name": "linux-x64-release",
+            "configurePreset": "linux-x64-release"
+        }
+    ]
+}
