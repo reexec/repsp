@@ -21,6 +21,22 @@ endif()
 
 option(REPSP_BUILD_PROBES "Build repsp verification probes" ${REPSP_STANDALONE})
 
+# Third-party dependencies
+option(REPSP_SDL_SHARED "Build SDL as a shared library instead of static" OFF)
+
+if(REPSP_SDL_SHARED)
+    set(SDL_SHARED ON CACHE BOOL "Build SDL shared library" FORCE)
+    set(SDL_STATIC OFF CACHE BOOL "Build SDL static library" FORCE)
+else()
+    set(SDL_SHARED OFF CACHE BOOL "Build SDL shared library" FORCE)
+    set(SDL_STATIC ON CACHE BOOL "Build SDL static library" FORCE)
+endif()
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "Build SDL test library" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "Build SDL test programs" FORCE)
+set(SDL_DISABLE_INSTALL ON CACHE BOOL "Disable SDL install rules" FORCE)
+
+add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
+
 # Public layer targets and aliases
 
 # Layer: platform
@@ -30,6 +46,7 @@ target_include_directories(repsp_platform PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+target_link_libraries(repsp_platform PRIVATE SDL3::SDL3)
 repsp_apply_host_flags(repsp_platform)
 
 # Layer: module
