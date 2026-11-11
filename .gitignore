@@ -1,0 +1,38 @@
+# repsp holds no title's data. Game dumps, executables, PRX modules and ISOs
+# never enter this repository, not even as test fixtures.
+roms/
+*.iso
+*.cso
+*.pbp
+*.prx
+EBOOT.BIN
+BOOT.BIN
+
+# PSP key material is supplied by the user and never committed.
+psp_keys.txt
+
+# Lifted C from any title.
+gen/
+
+# Build trees and local tool installs.
+build/
+out/
+tools/downloads/
+
+# Reference checkouts fetched for study only.
+third_party/refs/
+
+# Local run artifacts and logs.
+*.log
+run*.txt
+
+# IDE and OS clutter.
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.tmp
+*.obj
+__pycache__/
+*.pyc
