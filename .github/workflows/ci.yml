@@ -1,10 +1,14 @@
 name: CI
 
+# Every push to main and every pull request into main builds the project and
+# runs the probes (CTest). A task branch can be checked by hand before a pull
+# request exists: gh workflow run ci.yml --ref <branch>.
 on:
   push:
-    branches: [ "**" ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build-windows:
