@@ -133,6 +133,9 @@ int main()
     TEST_ASSERT(arg_bytes != nullptr);
     TEST_ASSERT(arg_bytes[0] == 'H');
 
+    // Restore GPR 4 for the save/restore test
+    g_fake_cpu.gprs[4] = 100;
+
     // 3. Test Return helper
     Return(static_cast<uint32_t>(0xCAFEBABE));
     TEST_ASSERT(g_fake_cpu.gprs[2] == 0xCAFEBABE); // $v0
