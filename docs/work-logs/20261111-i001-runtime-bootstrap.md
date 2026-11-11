@@ -131,6 +131,132 @@ Total Test time (real) = 0.47 sec
 
 ---
 
+## 6. 리뷰 1 반영 (Review 1 Application)
+
+작업 지시서 `docs/work-orders/20261111-i001-runtime-bootstrap.md`의 리뷰 1(R1~R7 및 질문 응답) 항목을 다음과 같이 반영하였습니다.
+
+### 6.1. 변경 내용 요약
+
+1. **R1 (CMakePresets Win64 제너레이터 고정 및 x64 아키텍처 전략 지정)**:
+   * `win64-debug`, `win64-release`의 `"generator"`를 `"Visual Studio 17 2022"`로 지정.
+   * `architecture` 오브젝트에 `"value": "x64"`, `"strategy": "set"` 지정하여 VS 2022 환경에서 경고 없이 일관되게 x64 대상 빌드가 이루어지도록 함.
+2. **R2 (Win32 GuardedRun 필터 하드웨어 예외로 한정)**:
+   * `src/platform/win32/guarded_run.cpp`에서 C++ 예외(`0xE06D7363`)나 디버거 브레이크포인트(`STATUS_BREAKPOINT`)를 잡지 않고 `EXCEPTION_CONTINUE_SEARCH`로 상위 디버거/런타임에 전달.
+   * 접근 위반(`STATUS_ACCESS_VIOLATION`), 페이징 에러(`STATUS_IN_PAGE_ERROR`), 불법 명령(`STATUS_ILLEGAL_INSTRUCTION`), 특권 명령(`STATUS_PRIVILEGED_INSTRUCTION`), 정렬 불량(`STATUS_DATATYPE_MISALIGNMENT`), 0 나눗셈(`STATUS_INTEGER_DIVIDE_BY_ZERO`, `STATUS_FLOAT_DIVIDE_BY_ZERO`), 스택 오버플로(`STATUS_STACK_OVERFLOW`, `_resetstkoflw()` 호출) 등 하드웨어 장애만 선별 포착.
+3. **R3 (Linux GuardedRun 스레드별 중첩 스택 및 신호 체이닝 방어)**:
+   * `src/platform/linux/guarded_run.cpp`에서 핸들러 등록을 `std::call_once`로 1회만 수행하고, 기존 등록된 핸들러(`g_prev_act`)를 보존하여 미처리 신호 시 체이닝 호출.
+   * 스레드 로컬 중첩 깊이(`g_guard_depth`)와 점프 버퍼 스택(`kMaxGuardDepth = 8`)을 두어 재귀적/중첩된 보호 실행과 다중 스레드 동시 실행을 안전하게 지원.
+   * `SIGSEGV`, `SIGBUS` 외 `SIGILL`, `SIGFPE` 신호 핸들러 등록.
+   * `tools/platform_probe/main.cpp`에 멀티스레드 동시 보호 실행(`TestConcurrentGuards`) 및 중첩 보호 실행(`TestNestedGuards`) 검증 테스트 추가.
+4. **R4 (게스트 메모리 예약 창 512 MiB 전체 확장 및 OOB 검증)**:
+   * 설계 §4 변경(커밋 5140896)에 따라 `GuestMemory`의 가상 주소 공간 예약 크기를 160 MiB에서 512 MiB 전체(`kWindowSize = 0x20000000`, `0x00000000`..`0x1FFFFFFF`)로 확장.
+   * 마스크를 `0x1FFFFFFF`로 일치시키고 미러링 접기 시 예약 범위를 벗어나지 않도록 보장.
+   * `tools/memory_probe/main.cpp`에 미매핑 영역인 `0x1FFFFFFC` 접근 시 `GuardedRun`이 OOB 읽기를 포착하는 테스트 추가.
+   * `docs/kb/psp-memory-map.md`와 `README.md`의 메모리 맵 수치 갱신.
+5. **R5 (`Arg<T*>` 포인터 타입 바이트/문자 한정 및 스택 ABI 추정 명시)**:
+   * `include/repsp/recomp_helpers.h`에서 포인터 타입 `Arg<T*>`에 대해 `static_assert`를 적용하여 `uint8_t*`, `const uint8_t*`, `char*`, `const char*`만 허용. 구조체 포인터나 임의 타입의 호스트 포인터 직접 전달을 컴파일 타임에 차단(구조체는 `GuestAddress`로 전달).
+   * 8개 초과 인자의 스택 오프셋(`$sp + (n - 8) * 4`)에 대해 reDMP1 바이너리 검증 전까지 **추정(inferred)**임을 주석으로 명시.
+6. **R6 (지식 기반 문서 확정/추정 상태 구분)**:
+   * `docs/kb/psp-memory-map.md`: 하드웨어 메모리 맵 및 레지스터 영역은 공식 문서/uOFW 기반 **추정(inferred)**으로 분류, reDMP1 실행 파일 검증 후 확정 예정 명시.
+   * `docs/kb/param-sfo.md`: 포맷 정의를 **추정(inferred)**으로 분류하고 probe 합성 데이터로 파서 동작을 확인하였으며 실제 디스크 샘플 검증 후 확정 예정 명시.
+   * `docs/kb/nid.md`: SHA-1 기반 NID 생성 공식 및 FIPS 180-1/펌웨어 공개 NID 대조 결과를 **확정(confirmed)**으로 분류.
+   * `docs/kb/README.md`에 문서별 상태 색인 갱신.
+7. **R7 (SHA-1 및 NID FIPS 180 / 펌웨어 공개 NID 대조 검증)**:
+   * `tools/nid_probe/main.cpp`에 FIPS 180-1 공식 테스트 벡터 1..4 (빈 문자열, "abc", 448비트 문자열, 100만 회 'a') 테스트 추가.
+   * 실제 펌웨어 공개 NID 4종(`sceDisplaySetMode` = `0x0E20F177`, `sceCtrlReadBufferPositive` = `0x1F803938`, `sceCtrlPeekBufferPositive` = `0x3A622550`, `sceKernelExitGame` = `0x05572A5F`)과 `ComputeNid` 일치 검증 추가.
+8. **테스트 픽스처 복원 버그 수정**:
+   * `tools/recomp_contract_probe/main.cpp`에서 문자열 인자 테스트 후 GPR 4($a0) 레지스터가 덮어써져 컨텍스트 복원 검증(`g_fake_cpu.gprs[4] == 100`)이 실패하던 문제를 테스트 전 레지스터 복원으로 수정.
+
+---
+
+### 6.2. 검증 결과
+
+#### Win64 Debug CTest
+```powershell
+ctest --test-dir build/win64-debug -C Debug --output-on-failure
+```
+```
+Test project E:/MYWORK/Projects/reexec/repsp/build/win64-debug
+    Start 1: memory_probe
+1/5 Test #1: memory_probe .....................   Passed    0.01 sec
+    Start 2: module_probe
+2/5 Test #2: module_probe .....................   Passed    0.02 sec
+    Start 3: nid_probe
+3/5 Test #3: nid_probe ........................   Passed    0.02 sec
+    Start 4: recomp_contract_probe
+4/5 Test #4: recomp_contract_probe ............   Passed    0.03 sec
+    Start 5: platform_probe
+5/5 Test #5: platform_probe ...................   Passed    0.44 sec
+
+100% tests passed, 0 tests failed out of 5
+Total Test time (real) = 0.54 sec
+```
+
+#### Win64 Release CTest
+```powershell
+ctest --test-dir build/win64-debug -C Release --output-on-failure
+```
+```
+Test project E:/MYWORK/Projects/reexec/repsp/build/win64-debug
+    Start 1: memory_probe
+1/5 Test #1: memory_probe .....................   Passed    0.03 sec
+    Start 2: module_probe
+2/5 Test #2: module_probe .....................   Passed    0.02 sec
+    Start 3: nid_probe
+3/5 Test #3: nid_probe ........................   Passed    0.02 sec
+    Start 4: recomp_contract_probe
+4/5 Test #4: recomp_contract_probe ............   Passed    0.05 sec
+    Start 5: platform_probe
+5/5 Test #5: platform_probe ...................   Passed    0.38 sec
+
+100% tests passed, 0 tests failed out of 5
+Total Test time (real) = 0.52 sec
+```
+
+#### Linux x64 Debug CTest (WSL Ubuntu-24.04, Ninja)
+```bash
+cmake -B /tmp/repsp-linux-debug -S /mnt/e/MYWORK/Projects/reexec/repsp -G Ninja -DCMAKE_BUILD_TYPE=Debug -DREPSP_BUILD_PROBES=ON && cmake --build /tmp/repsp-linux-debug && ctest --test-dir /tmp/repsp-linux-debug --output-on-failure
+```
+```
+Test project /tmp/repsp-linux-debug
+    Start 1: memory_probe
+1/5 Test #1: memory_probe .....................   Passed    0.00 sec
+    Start 2: module_probe
+2/5 Test #2: module_probe .....................   Passed    0.00 sec
+    Start 3: nid_probe
+3/5 Test #3: nid_probe ........................   Passed    0.01 sec
+    Start 4: recomp_contract_probe
+4/5 Test #4: recomp_contract_probe ............   Passed    0.00 sec
+    Start 5: platform_probe
+5/5 Test #5: platform_probe ...................   Passed    0.08 sec
+
+100% tests passed, 0 tests failed out of 5
+Total Test time (real) = 0.11 sec
+```
+
+#### Linux x64 Release CTest (WSL Ubuntu-24.04, Ninja)
+```bash
+cmake -B /tmp/repsp-linux-release -S /mnt/e/MYWORK/Projects/reexec/repsp -G Ninja -DCMAKE_BUILD_TYPE=Release -DREPSP_BUILD_PROBES=ON && cmake --build /tmp/repsp-linux-release && ctest --test-dir /tmp/repsp-linux-release --output-on-failure
+```
+```
+Test project /tmp/repsp-linux-release
+    Start 1: memory_probe
+1/5 Test #1: memory_probe .....................   Passed    0.00 sec
+    Start 2: module_probe
+2/5 Test #2: module_probe .....................   Passed    0.00 sec
+    Start 3: nid_probe
+3/5 Test #3: nid_probe ........................   Passed    0.01 sec
+    Start 4: recomp_contract_probe
+4/5 Test #4: recomp_contract_probe ............   Passed    0.00 sec
+    Start 5: platform_probe
+5/5 Test #5: platform_probe ...................   Passed    0.09 sec
+
+100% tests passed, 0 tests failed out of 5
+Total Test time (real) = 0.11 sec
+```
+
+---
+
 # Work Log: Runtime Bootstrap (English)
 
-See sections above for summary of work, verification outputs, contract adjustments, and questions for review.
+See sections above for summary of work, verification outputs, contract adjustments, review 1 application, and test outputs.
