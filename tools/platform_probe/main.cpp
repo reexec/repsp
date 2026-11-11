@@ -54,9 +54,55 @@ int main()
     TEST_ASSERT(!crash_result.succeeded);
     TEST_ASSERT(crash_result.fault_address != 0);
 
+    // 3. Concurrent guarded calls from two threads
+    bool thread_a_crashed = false;
+    bool thread_b_succeeded = false;
+
+    {
+        HostThread thread_a("ThreadA", [&]()
+        {
+            GuardedRunResult res = GuardedRun([&]()
+            {
+                volatile uint8_t val = *uncommitted_ptr;
+                (void)val;
+            });
+            thread_a_crashed = !res.succeeded && (res.fault_address != 0);
+        });
+
+        HostThread thread_b("ThreadB", [&]()
+        {
+            GuardedRunResult res = GuardedRun([&]()
+            {
+                byte_ptr[0] = 0x42;
+                volatile uint8_t val = byte_ptr[0];
+                (void)val;
+            });
+            thread_b_succeeded = res.succeeded;
+        });
+
+        thread_a.Join();
+        thread_b.Join();
+    }
+    TEST_ASSERT(thread_a_crashed);
+    TEST_ASSERT(thread_b_succeeded);
+
+    // 4. Nested guarded calls
+    bool inner_crashed = false;
+    GuardedRunResult outer_res = GuardedRun([&]()
+    {
+        GuardedRunResult inner_res = GuardedRun([&]()
+        {
+            volatile uint8_t val = *uncommitted_ptr;
+            (void)val;
+        });
+        inner_crashed = !inner_res.succeeded;
+    });
+    TEST_ASSERT(outer_res.succeeded);
+    TEST_ASSERT(inner_crashed);
+
     TEST_ASSERT(ReleaseAddressSpace(reserved, kReserveSize));
 
-    // 3. Host thread
+    // 5. Host thread properties
     std::atomic<bool> thread_ran{false};
     {
         HostThread thread("TestWorkerThread", [&thread_ran]()
@@ -72,13 +118,13 @@ int main()
         (void)cpu_time;
     }
 
-    // 4. Executable and user data paths
+    // 6. Executable and user data paths
     auto exe_dir = GetExecutableDirectory();
     TEST_ASSERT(!exe_dir.empty());
     auto user_dir = GetUserDataDirectory("repsp_test");
     TEST_ASSERT(!user_dir.empty());
 
-    // 5. SDL3 dummy initialization and shutdown
+    // 7. SDL3 dummy initialization and shutdown
     PlatformConfig plat_config;
     plat_config.headless = true;
     plat_config.display.dummy = true;
