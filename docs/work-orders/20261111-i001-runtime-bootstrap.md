@@ -34,3 +34,34 @@ Already done (main `f953910`, task branch `i001-runtime-bootstrap`): `LICENSE`, 
 Must hold: no psprecomp header or source is included or kept as a submodule (carried code is a copy reshaped to repsp types and listed in `THIRD_PARTY_NOTICES.md`); no title name or address appears in code. Commit per unit of work, titles ending in `(#1)`.
 
 Done when: design §9, items 1-4.
+
+---
+
+## 리뷰 1 (2026-11-12, `4cf4d72` 기준)
+
+검증: Win64 Debug/Release 빌드와 CTest 5/5, Linux x64(WSL Ubuntu 24.04, GCC 13) 빌드와 CTest 5/5를 리뷰어가 다시 실행해 통과를 확인했다. 아래를 고친다.
+
+| # | 위치 | 문제 | 요청 |
+|---|---|---|---|
+| R1 | `CMakePresets.json` | Win64 preset에 generator가 없어 `architecture`(strategy `external`)가 무시되고 x64가 보장되지 않는다. | `"generator": "Visual Studio 17 2022"`, `architecture` `{ "value": "x64", "strategy": "set" }`. |
+| R2 | `src/platform/win32/guarded_run_win32.cpp` | 필터가 모든 SEH 예외를 `EXECUTE_HANDLER`로 삼킨다. C++ 예외(`0xE06D7363`)와 브레이크포인트도 정지 보고가 된다. | 하드웨어 예외(접근 위반, in-page error, illegal/privileged instruction, 정수 0 나누기·overflow, stack overflow, datatype misalignment)만 잡고 나머지는 `EXCEPTION_CONTINUE_SEARCH`. stack overflow를 잡으면 `_resetstkoflw()`. |
+| R3 | `src/platform/linux/guarded_run_linux.cpp` | 호출마다 `sigaction`을 설치·복원한다. 처리기는 프로세스 전체 상태라 두 스레드의 동시 호출이 서로를 덮어쓰고, 중첩 호출은 jump buffer를 덮어쓴다. SIGSEGV·SIGBUS만 잡는다. | 처리기는 한 번만 설치(`std::call_once`)하고 보호 구간 밖의 시그널은 이전 처리기로 넘긴다. 스레드별 깊이와 jump buffer 스택. SIGILL, SIGFPE 추가. 잡힌 fault는 재개하지 않고 정지 보고에만 쓴다는 점을 주석에 적는다(`siglongjmp`는 C++ 소멸자를 건너뛴다). platform_probe에 두 스레드 동시 보호 호출과 중첩 보호 호출 검사를 더한다. |
+| R4 | `GuestMemory` | 창이 160 MiB(`0x0A000000`)인데 `Translate`는 `& 0x1FFFFFFF`로 512 MiB까지 낸다. `phys >= 0x0A000000`(잘못된 포인터, I/O 레지스터 `0x1C000000`대)이면 예약 밖 호스트 메모리를 가리킨다. 원인은 설계 기준안이며 설계를 고쳤다(`5140896`). | `kWindowSize = 0x20000000`. memory_probe에 `0x1FFFFFFC` 같은 영역 밖 주소의 읽기가 보호 호출로 잡히는 검사를 더한다. kb `psp-memory-map.md`도 맞춘다. |
+| R5 | `include/repsp/recomp/recomp_helpers.h` | `Arg<T*>`가 임의 포인터 형으로 게스트 메모리를 호스트 포인터로 바꿔 준다. 규칙상 게스트 구조체를 호스트 포인터로 다루지 않는다. | 포인터 형은 `uint8_t*`, `const uint8_t*`, `char*`, `const char*`만 허용(`static_assert`). 구조체는 `GuestAddress`로 받아 `GuestMemory` 접근 함수로 읽는다. |
+| R6 | `docs/kb/*.md`, `docs/kb/README.md` | 세 문서가 **확인됨**인데 근거가 외부 자료뿐이다. 규칙상 우리가 다시 확인하기 전까지 **추정**이다. | 메모리 맵은 **추정**(출처 유지). `PARAM.SFO`는 형식 설명은 **추정**, 합성 데이터 probe로 확인한 파서 동작만 따로 적는다(실제 디스크로 확인은 reDMP1 issue #1에서). NID는 R7 후 공개 NID와 맞으면 **확인됨**. 문서 안에서 항목별로 표시한다. |
+| R7 | `tools/nid_probe` | 자기 SHA-1로 계산한 값과 자기 `ComputeNid`를 비교할 뿐이라 SHA-1이 틀려도 통과한다. | SHA-1 표준 벡터(FIPS 180: `""`, `"abc"`, 448비트 메시지, 백만 개의 `a`)와 공개 NID 3개 이상(예: `sceKernelExitGame`, `sceDisplaySetMode`, `sceCtrlReadBufferPositive`; 값은 psdevwiki 또는 uOFW에서 확인하고 출처를 주석에 적는다)으로 검사한다. psprecomp의 코드는 가져오지 않는다. |
+
+작업 로그의 질문에 대한 답:
+
+* SDL 정적 빌드를 기본으로 하고 `REPSP_SDL_SHARED`로 바꾸는 구성은 그대로 둔다.
+* 9번째 이후 인자의 `$sp + (n - 8) * 4`는 **추정**으로 두고 `recomp_helpers.h` 주석과 kb에 그렇게 적는다. 인자가 8개를 넘는 펌웨어 함수를 처음 구현하는 task에서 확인한다.
+
+완료 기준: R1~R7 반영, Win64 Debug/Release와 Linux x64 빌드·CTest 통과, 작업 로그에 "리뷰 1 반영" 절 추가.
+
+## Review 1 (2026-11-12, at `4cf4d72`)
+
+Verification: the reviewer re-ran the Win64 Debug/Release builds with CTest 5/5 and the Linux x64 (WSL Ubuntu 24.04, GCC 13) build with CTest 5/5; all pass. Fix the items in the table above: R1 the Win64 presets need the Visual Studio 17 2022 generator with `architecture` strategy `set`; R2 the Win32 filter must catch hardware exceptions only and pass C++ exceptions and breakpoints on (`EXCEPTION_CONTINUE_SEARCH`), calling `_resetstkoflw()` after a stack overflow; R3 the Linux handler is installed once, chains signals outside guarded regions to the previous handler, keeps a per-thread depth and jump-buffer stack, adds SIGILL and SIGFPE, documents that a caught fault is never resumed, and platform_probe gains concurrent and nested guarded-call checks; R4 `kWindowSize` becomes `0x20000000` so every folded address stays inside the reservation (the design baseline's 160 MiB was the cause and is fixed in `5140896`), with a memory_probe check that an out-of-region read such as `0x1FFFFFFC` is caught and the kb memory map updated; R5 `Arg<T*>` accepts only byte and char pointers (`static_assert`), structures being read through `GuestMemory` by `GuestAddress`; R6 the kb documents mark each statement, external-only facts as **inferred**, the synthetic-probe-checked parser behavior separately, and NIDs **confirmed** only after R7; R7 `nid_probe` checks the FIPS 180 SHA-1 vectors and at least three published NIDs with their sources cited in comments, taking no code from psprecomp.
+
+Answers to the work log's questions: keep SDL static by default with `REPSP_SDL_SHARED` to switch; keep `$sp + (n - 8) * 4` for the ninth argument on as **inferred**, say so in the `recomp_helpers.h` comment and the kb, and confirm it in the first task that implements a firmware function with more than eight arguments.
+
+Done when: R1-R7 are in, the Win64 Debug/Release and Linux x64 builds and CTest pass, and the work log has a "Review 1" section.
