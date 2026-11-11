@@ -1,0 +1,5 @@
+add_subdirectory(platform)
+add_subdirectory(module)
+add_subdirectory(runtime)
+add_subdirectory(recomp)
+add_subdirectory(hle)
