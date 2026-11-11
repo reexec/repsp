@@ -9,6 +9,7 @@ jobs:
   verify-and-release:
     name: Verify Tag and Publish Release
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
@@ -36,6 +37,12 @@ jobs:
             echo "Error: Tag commit is not an ancestor of main"
             exit 1
           fi
+
+      # The default Azure Ubuntu mirror can stall apt for many minutes; pick the
+      # fastest healthy mirror first. Pinned to the 1.4.5 release commit because
+      # the action changes apt sources with sudo.
+      - name: Configure fast APT mirror
+        uses: vegardit/fast-apt-mirror.sh@806c59276adfff2df420124ad5e4587f018c358a # 1.4.5
 
       - name: Install dependencies
         run: |
