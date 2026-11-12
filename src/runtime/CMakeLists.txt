@@ -3,4 +3,5 @@ target_sources(repsp_runtime PRIVATE
     nid_registry.cpp
     log.cpp
     sha1.cpp
+    prx_loader.cpp
 )
