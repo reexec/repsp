@@ -108,7 +108,7 @@ void repsp_guest_write64(uint32_t addr, uint64_t val);
 재컴파일 코드의 임포트 스텁은 `repsp_recomp_hle_call(uint32_t nid)`을 호출합니다.
 1. 등록된 NID인 경우 등록된 핸들러가 실행됩니다.
 2. 미구현 NID인 경우 최초 호출 시 경고 로그를 기록하고, 호출 횟수를 통계에 누적하며, `$v0` (GPR 2)에 `0x80020002` (`SCE_KERNEL_ERROR_NOTIMPLEMENTED`)를 설정합니다.
-3. 환경 변수 `REPSP_STOP_ON_UNIMPLEMENTED=1`이 설정된 경우 미구현 NID 호출 시 즉시 프로그램을 정지합니다.
+3. 환경 변수 `REPSP_STOP_ON_UNIMPLEMENTED=1`이 설정되거나 레지스트리에 설정된 경우 미구현 NID 호출 시 `repsp::platform::RaiseStop`을 통해 가장 가까운 `GuardedRun`을 즉시 정지합니다.
 
 ### 2.6. PRX 로더 계약 (`prx.h`, `prx_loader.h`)
 
@@ -116,6 +116,13 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 * `repsp::module::ParsePrx`: 메모리 쓰기 없이 ELF 헤더, 세그먼트, 모듈 정보, 임포트/익스포트 표를 파싱하고 `LoadedPrx` 정보를 반환합니다.
 * `repsp::module::RelocateToBuffer`: PRX 세그먼트를 메모리 레이아웃 버퍼로 펼치고 재배치를 적용한 바이트 벡터를 반환합니다. 독립 구현(lifter의 재배치)과의 바이트 단위 비교 교차 검증에 사용됩니다.
 * `repsp::runtime::LoadPrx`: `RelocateToBuffer` 결과를 `GuestMemory`의 `base` 위치에 복사하고 BSS를 0으로 초기화하며, 대상 범위가 유효한 커밋 범위 내인지 검증합니다.
+
+### 2.7. 보호 실행 및 정지 계약 (`guarded_run.h`)
+
+하드웨어 결함(fault) 및 제어된 실행 정지(디스패치 미스, 미구현 NID/명령 등)를 감지하고 보고하기 위한 보호 실행 메커니즘을 제공합니다:
+* `GuardedRun(fn)`: 함수를 보호 컨텍스트 내에서 실행합니다. 결함 또는 정지가 발생하면 `GuardedRunResult`를 반환합니다 (`succeeded`, `stopped`, `stop_reason`).
+* `repsp::platform::RaiseStop(reason)` 및 C API `repsp_raise_stop(reason)`: 현재 실행 중인 가장 안쪽 `GuardedRun`을 정지시키고 `stop_reason`을 전달합니다. Win32에서는 전용 SEH 예외 코드(`0xE0000001`)를 사용하고 Linux에서는 스레드별 `siglongjmp`를 사용합니다.
+* **제약사항**: 정지를 유발한 C 프레임과 이를 감싸는 `GuardedRun` 호출 사이에는 **소멸자(destructor)를 가진 C++ 스택 프레임이 존재하지 않아야 합니다**. SEH 및 `siglongjmp` 언와인딩 과정에서 C++ 스택 소멸자가 호출되지 않으므로, 게스트 실행 스택은 순수 C 호출 규약으로 구성되어야 합니다.
 
 ---
 
@@ -142,10 +149,16 @@ repsp owns no register file. Consumers register the `repsp_guest_cpu_ops` callba
 Fast-path and inline memory operations (`repsp_guest_base()`, `repsp_guest_mask()`, `repsp_guest_read*`, `repsp_guest_write*`) are exposed with C linkage.
 
 ### 2.5. NID Calling Rules
-`repsp_recomp_hle_call(nid)` dispatches to registered handlers, or sets `$v0` to `0x80020002` (`SCE_KERNEL_ERROR_NOTIMPLEMENTED`) and tracks call counts.
+`repsp_recomp_hle_call(nid)` dispatches to registered handlers, or sets `$v0` to `0x80020002` (`SCE_KERNEL_ERROR_NOTIMPLEMENTED`) and tracks call counts. If `REPSP_STOP_ON_UNIMPLEMENTED=1` or configured on the registry, it invokes `repsp::platform::RaiseStop` to stop the innermost `GuardedRun`.
 
 ### 2.6. PRX Loader Contract (`prx.h`, `prx_loader.h`)
 Validates PSP PRX (`0xFFA0`) executables and applies `SHT_PRXRELOC` relocations to a caller-specified `base` address:
 * `repsp::module::ParsePrx`: Parses ELF headers, segments, module info, import/export tables without modifying memory and returns `LoadedPrx`.
 * `repsp::module::RelocateToBuffer`: Lays out PRX segments into a buffer and applies relocations, returning a relocated byte vector for cross-checking against independent implementations.
 * `repsp::runtime::LoadPrx`: Copies relocated buffer into `GuestMemory` at `base`, zeroes BSS, and verifies the range is inside committed guest memory.
+
+### 2.7. Guarded Run and Stop Contract (`guarded_run.h`)
+Provides guarded execution for catching hardware faults and explicit stop requests (dispatch misses, unimplemented NIDs/instructions):
+* `GuardedRun(fn)`: Executes function within guarded context, returning `GuardedRunResult` (`succeeded`, `stopped`, `stop_reason`).
+* `repsp::platform::RaiseStop(reason)` and C API `repsp_raise_stop(reason)`: Stops the innermost active `GuardedRun` and records `stop_reason`. Implemented via custom SEH exception (`0xE0000001`) on Win32 and per-thread `siglongjmp` on Linux.
+* **Constraint**: No C++ frames with destructors may reside between the caller of `RaiseStop` and the enclosing `GuardedRun` frame, as SEH/`siglongjmp` unwinding does not run non-trivial C++ destructors. Guest execution stacks must consist of pure C calling conventions.
