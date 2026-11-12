@@ -86,7 +86,7 @@ int main()
     TEST_ASSERT(thread_a_crashed);
     TEST_ASSERT(thread_b_succeeded);
 
-    // 4. Nested guarded calls
+    // 4. Nested guarded calls (hardware fault)
     bool inner_crashed = false;
     GuardedRunResult outer_res = GuardedRun([&]()
     {
@@ -99,6 +99,31 @@ int main()
     });
     TEST_ASSERT(outer_res.succeeded);
     TEST_ASSERT(inner_crashed);
+
+    // 4b. Guarded run stop mechanism (RaiseStop / repsp_raise_stop)
+    GuardedRunResult stop_res = GuardedRun([]()
+    {
+        repsp_raise_stop("Test explicit stop");
+    });
+    TEST_ASSERT(!stop_res.succeeded);
+    TEST_ASSERT(stop_res.stopped);
+    TEST_ASSERT(stop_res.stop_reason == "Test explicit stop");
+
+    // 4c. Nested guarded run with RaiseStop in inner frame
+    bool inner_stopped = false;
+    std::string inner_reason;
+    GuardedRunResult outer_stop_res = GuardedRun([&]()
+    {
+        GuardedRunResult inner_res = GuardedRun([]()
+        {
+            RaiseStop("Inner stop reason");
+        });
+        inner_stopped = inner_res.stopped;
+        inner_reason = inner_res.stop_reason;
+    });
+    TEST_ASSERT(outer_stop_res.succeeded);
+    TEST_ASSERT(inner_stopped);
+    TEST_ASSERT(inner_reason == "Inner stop reason");
 
     TEST_ASSERT(ReleaseAddressSpace(reserved, kReserveSize));
 

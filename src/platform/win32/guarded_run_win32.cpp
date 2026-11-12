@@ -10,14 +10,33 @@ namespace repsp::platform
 namespace
 {
 
+constexpr DWORD kExceptionCodeStop = 0xE0000001;
+
 struct CrashInfo
 {
     DWORD code = 0;
     ULONG_PTR fault_address = 0;
+    bool is_stop = false;
+    const char* stop_reason = nullptr;
 };
 
 int ExceptionFilter(unsigned int code, struct _EXCEPTION_POINTERS* ep, CrashInfo* info)
 {
+    if (code == kExceptionCodeStop)
+    {
+        if (info != nullptr)
+        {
+            info->code = code;
+            info->is_stop = true;
+            if (ep != nullptr && ep->ExceptionRecord != nullptr &&
+                ep->ExceptionRecord->NumberParameters >= 1)
+            {
+                info->stop_reason = reinterpret_cast<const char*>(ep->ExceptionRecord->ExceptionInformation[0]);
+            }
+        }
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
+
     bool is_hardware_fault = false;
 
     switch (code)
@@ -122,6 +141,13 @@ GuardedRunResult GuardedRun(const std::function<void()>& fn)
     {
         result.succeeded = true;
     }
+    else if (info.is_stop)
+    {
+        result.succeeded = false;
+        result.stopped = true;
+        result.stop_reason = info.stop_reason ? info.stop_reason : "";
+        result.description = "Execution stopped: " + result.stop_reason;
+    }
     else
     {
         result.succeeded = false;
@@ -133,4 +159,16 @@ GuardedRunResult GuardedRun(const std::function<void()>& fn)
     return result;
 }
 
+[[noreturn]] void RaiseStop(const char* reason)
+{
+    ULONG_PTR args[1] = { reinterpret_cast<ULONG_PTR>(reason) };
+    RaiseException(kExceptionCodeStop, EXCEPTION_NONCONTINUABLE, 1, args);
+    std::abort();
+}
+
 } // namespace repsp::platform
+
+extern "C" void repsp_raise_stop(const char* reason)
+{
+    repsp::platform::RaiseStop(reason);
+}

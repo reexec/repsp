@@ -20,6 +20,8 @@ struct GuardFrame
     sigjmp_buf jmp_buf;
     volatile sig_atomic_t signal_num = 0;
     uintptr_t fault_address = 0;
+    bool is_stop = false;
+    const char* stop_reason = nullptr;
 };
 
 constexpr size_t kMaxGuardDepth = 16;
@@ -139,6 +141,8 @@ GuardedRunResult GuardedRun(const std::function<void()>& fn)
     size_t frame_idx = g_guard_depth++;
     g_guard_stack[frame_idx].signal_num = 0;
     g_guard_stack[frame_idx].fault_address = 0;
+    g_guard_stack[frame_idx].is_stop = false;
+    g_guard_stack[frame_idx].stop_reason = nullptr;
 
     if (sigsetjmp(g_guard_stack[frame_idx].jmp_buf, 1) == 0)
     {
@@ -150,12 +154,38 @@ GuardedRunResult GuardedRun(const std::function<void()>& fn)
     {
         --g_guard_depth;
         result.succeeded = false;
-        result.native_exception_code = static_cast<uint32_t>(g_guard_stack[frame_idx].signal_num);
-        result.fault_address = g_guard_stack[frame_idx].fault_address;
-        result.description = SignalToDescription(g_guard_stack[frame_idx].signal_num);
+        if (g_guard_stack[frame_idx].is_stop)
+        {
+            result.stopped = true;
+            result.stop_reason = g_guard_stack[frame_idx].stop_reason ? g_guard_stack[frame_idx].stop_reason : "";
+            result.description = "Execution stopped: " + result.stop_reason;
+        }
+        else
+        {
+            result.native_exception_code = static_cast<uint32_t>(g_guard_stack[frame_idx].signal_num);
+            result.fault_address = g_guard_stack[frame_idx].fault_address;
+            result.description = SignalToDescription(g_guard_stack[frame_idx].signal_num);
+        }
     }
 
     return result;
 }
 
+[[noreturn]] void RaiseStop(const char* reason)
+{
+    if (g_guard_depth > 0)
+    {
+        size_t top = g_guard_depth - 1;
+        g_guard_stack[top].is_stop = true;
+        g_guard_stack[top].stop_reason = reason;
+        siglongjmp(g_guard_stack[top].jmp_buf, 2);
+    }
+    std::abort();
+}
+
 } // namespace repsp::platform
+
+extern "C" void repsp_raise_stop(const char* reason)
+{
+    repsp::platform::RaiseStop(reason);
+}

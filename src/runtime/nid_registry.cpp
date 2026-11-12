@@ -1,4 +1,5 @@
 #include "repsp/runtime/nid_registry.h"
+#include "repsp/platform/guarded_run.h"
 #include "repsp/runtime/log.h"
 #include "repsp/runtime/sha1.h"
 
@@ -64,7 +65,9 @@ bool NidRegistry::Invoke(uint32_t nid)
     if (stop_on_unimplemented_)
     {
         Log(LogLevel::kError, "[HLE] Stopping on unimplemented NID: 0x%08X", nid);
-        std::abort();
+        char reason[64];
+        std::snprintf(reason, sizeof(reason), "Unimplemented NID 0x%08X", nid);
+        platform::RaiseStop(reason);
     }
 
     return false;
