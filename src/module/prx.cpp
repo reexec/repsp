@@ -190,6 +190,10 @@ std::optional<RelocateResult> ProcessPrx(std::span<const uint8_t> file, uint32_t
                 SetError(error, "Compressed PRX relocations (0x700000A1) are not supported");
                 return std::nullopt;
             }
+            if (sh_type == 8 /* SHT_NOBITS */)
+            {
+                continue;
+            }
             uint32_t sh_offset = Read32(sh + 16);
             uint32_t sh_size = Read32(sh + 20);
             if (static_cast<size_t>(sh_offset) + sh_size > file.size())
