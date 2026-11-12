@@ -6,6 +6,7 @@ PSP 일반 지식(컨테이너 형식, Allegrex·VFPU, 펌웨어 모듈과 NID, 
 |---|---|---|
 | [`psp-memory-map.md`](psp-memory-map.md) | PSP 물리 메모리 맵과 0x1FFFFFFF 가상 미러 접기 규칙 | **추정** (repsp 512 MiB 창 예약 및 접기는 확인됨) |
 | [`param-sfo.md`](param-sfo.md) | `PARAM.SFO` 바이너리 헤더, 엔트리 테이블 및 데이터 형식 | **추정** (파서 구현 동작은 합성 데이터로 확인됨) |
+| [`prx-format.md`](prx-format.md) | PSP PRX 바이너리 헤더, `SHT_PRXRELOC` 재배치 형식 및 모듈 정보·스터브 구조 | **확인됨** (신세틱 프로브 및 원본 바이너리 측정 검증) |
 | [`nid.md`](nid.md) | PSP 펌웨어 모듈 NID(Name ID) 정의 및 SHA-1 계산 알고리즘 | **확인됨** (FIPS 180 벡터 및 공개 NID 대조) |
 
 ---
@@ -18,4 +19,5 @@ General PSP knowledge (container formats, the Allegrex and VFPU, firmware module
 |---|---|---|
 | [`psp-memory-map.md`](psp-memory-map.md) | PSP physical memory map and 0x1FFFFFFF virtual mirror folding | **Inferred** (repsp 512 MiB window and folding confirmed) |
 | [`param-sfo.md`](param-sfo.md) | `PARAM.SFO` binary header, entry table, and data formats | **Inferred** (parser behavior confirmed via synthetic probe) |
+| [`prx-format.md`](prx-format.md) | PSP PRX binary header, `SHT_PRXRELOC` relocation format, and module info/stub layout | **Confirmed** (verified via synthetic probe and disc binary measurements) |
 | [`nid.md`](nid.md) | PSP firmware module NID definition and SHA-1 calculation | **Confirmed** (FIPS 180 vectors and published NIDs verified) |

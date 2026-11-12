@@ -26,8 +26,8 @@ flowchart BT
 | 타깃 | 별칭 | 공개 헤더 경로 | 주요 책임 |
 |---|---|---|---|
 | `repsp_platform` | `repsp::platform` | `include/repsp/platform/` | 가상 메모리 예약/commit/보호, 보호 실행(`GuardedRun`), 호스트 스레드 생성/CPU 시간, 파일 경로, SDL3 연동 |
-| `repsp_module` | `repsp::module` | `include/repsp/module/` | `PARAM.SFO` 바이너리 파서 |
-| `repsp_runtime` | `repsp::runtime` | `include/repsp/runtime/` | 게스트 물리 메모리 매핑, 미러 접기, NID 레지스트리 및 미구현 집계, SHA-1, 로깅 |
+| `repsp_module` | `repsp::module` | `include/repsp/module/` | `PARAM.SFO` 바이너리 파서, PRX 로더 및 재배치 (`ParsePrx`, `RelocateToBuffer`) |
+| `repsp_runtime` | `repsp::runtime` | `include/repsp/runtime/` | 게스트 물리 메모리 매핑, 미러 접기, NID 레지스트리 및 미구현 집계, SHA-1, 로깅, PRX 메모리 로드 (`LoadPrx`) |
 | `repsp_recomp` | `repsp::recomp` | `include/repsp/recomp/` | lifter 중립 CPU 콜백 계약(`repsp_guest_cpu_ops`), 인자/반환 도우미, C 메모리 접근 함수 |
 | `repsp_hle_kernel` | `repsp::hle_kernel` | `include/repsp/hle/` | 커널 HLE 모듈 등록 진입점 |
 
@@ -110,6 +110,13 @@ void repsp_guest_write64(uint32_t addr, uint64_t val);
 2. 미구현 NID인 경우 최초 호출 시 경고 로그를 기록하고, 호출 횟수를 통계에 누적하며, `$v0` (GPR 2)에 `0x80020002` (`SCE_KERNEL_ERROR_NOTIMPLEMENTED`)를 설정합니다.
 3. 환경 변수 `REPSP_STOP_ON_UNIMPLEMENTED=1`이 설정된 경우 미구현 NID 호출 시 즉시 프로그램을 정지합니다.
 
+### 2.6. PRX 로더 계약 (`prx.h`, `prx_loader.h`)
+
+PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 주소(`base`)에 맞추어 `SHT_PRXRELOC` 재배치를 적용합니다:
+* `repsp::module::ParsePrx`: 메모리 쓰기 없이 ELF 헤더, 세그먼트, 모듈 정보, 임포트/익스포트 표를 파싱하고 `LoadedPrx` 정보를 반환합니다.
+* `repsp::module::RelocateToBuffer`: PRX 세그먼트를 메모리 레이아웃 버퍼로 펼치고 재배치를 적용한 바이트 벡터를 반환합니다. 독립 구현(lifter의 재배치)과의 바이트 단위 비교 교차 검증에 사용됩니다.
+* `repsp::runtime::LoadPrx`: `RelocateToBuffer` 결과를 `GuestMemory`의 `base` 위치에 복사하고 BSS를 0으로 초기화하며, 대상 범위가 유효한 커밋 범위 내인지 검증합니다.
+
 ---
 
 # Architecture and Consumer Contract (English)
@@ -136,3 +143,9 @@ Fast-path and inline memory operations (`repsp_guest_base()`, `repsp_guest_mask(
 
 ### 2.5. NID Calling Rules
 `repsp_recomp_hle_call(nid)` dispatches to registered handlers, or sets `$v0` to `0x80020002` (`SCE_KERNEL_ERROR_NOTIMPLEMENTED`) and tracks call counts.
+
+### 2.6. PRX Loader Contract (`prx.h`, `prx_loader.h`)
+Validates PSP PRX (`0xFFA0`) executables and applies `SHT_PRXRELOC` relocations to a caller-specified `base` address:
+* `repsp::module::ParsePrx`: Parses ELF headers, segments, module info, import/export tables without modifying memory and returns `LoadedPrx`.
+* `repsp::module::RelocateToBuffer`: Lays out PRX segments into a buffer and applies relocations, returning a relocated byte vector for cross-checking against independent implementations.
+* `repsp::runtime::LoadPrx`: Copies relocated buffer into `GuestMemory` at `base`, zeroes BSS, and verifies the range is inside committed guest memory.
