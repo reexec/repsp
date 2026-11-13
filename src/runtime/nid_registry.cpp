@@ -46,14 +46,16 @@ const HleEntry* NidRegistry::Find(uint32_t nid) const
 
 bool NidRegistry::Invoke(uint32_t nid)
 {
-    auto it = entries_.find(nid);
-    if (it != entries_.end())
     {
-        if (it->second.handler)
+        auto it = entries_.find(nid);
+        if (it != entries_.end())
         {
-            it->second.handler();
+            if (it->second.handler)
+            {
+                it->second.handler();
+            }
+            return true;
         }
-        return true;
     }
 
     uint64_t count = ++unimplemented_counts_[nid];
@@ -65,7 +67,7 @@ bool NidRegistry::Invoke(uint32_t nid)
     if (stop_on_unimplemented_)
     {
         Log(LogLevel::kError, "[HLE] Stopping on unimplemented NID: 0x%08X", nid);
-        char reason[64];
+        static thread_local char reason[64];
         std::snprintf(reason, sizeof(reason), "Unimplemented NID 0x%08X", nid);
         platform::RaiseStop(reason);
     }

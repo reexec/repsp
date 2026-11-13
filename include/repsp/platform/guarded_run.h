@@ -1,10 +1,6 @@
 #ifndef REPSP_PLATFORM_GUARDED_RUN_H
 #define REPSP_PLATFORM_GUARDED_RUN_H
 
-#include <cstdint>
-#include <functional>
-#include <string>
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -17,7 +13,10 @@ void repsp_raise_stop(const char* reason);
 
 #ifdef __cplusplus
 }
-#endif
+
+#include <cstdint>
+#include <functional>
+#include <string>
 
 namespace repsp::platform
 {
@@ -39,5 +38,6 @@ struct GuardedRunResult
 GuardedRunResult GuardedRun(const std::function<void()>& fn);
 
 } // namespace repsp::platform
+#endif // __cplusplus
 
 #endif // REPSP_PLATFORM_GUARDED_RUN_H

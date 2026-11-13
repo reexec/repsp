@@ -2,6 +2,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <cstdio>
 #include <malloc.h>
 
 namespace repsp::platform
@@ -161,7 +162,16 @@ GuardedRunResult GuardedRun(const std::function<void()>& fn)
 
 [[noreturn]] void RaiseStop(const char* reason)
 {
-    ULONG_PTR args[1] = { reinterpret_cast<ULONG_PTR>(reason) };
+    static thread_local char stop_reason_buf[512];
+    if (reason != nullptr)
+    {
+        std::snprintf(stop_reason_buf, sizeof(stop_reason_buf), "%s", reason);
+    }
+    else
+    {
+        stop_reason_buf[0] = '\0';
+    }
+    ULONG_PTR args[1] = { reinterpret_cast<ULONG_PTR>(stop_reason_buf) };
     RaiseException(kExceptionCodeStop, EXCEPTION_NONCONTINUABLE, 1, args);
     std::abort();
 }
