@@ -31,6 +31,7 @@ constexpr int kRegV0 = 2;
 constexpr int kRegA0 = 4;
 constexpr int kRegA1 = 5;
 constexpr int kRegA2 = 6;
+constexpr int kRegK0 = 26;
 constexpr int kRegGP = 28;
 constexpr int kRegSP = 29;
 constexpr int kRegRA = 31;
@@ -399,6 +400,18 @@ int32_t Scheduler::CreateThread(const std::string& name, uint32_t entry, int32_t
         return kErrNoMemory;
     }
 
+    // Fill thread stack with 0xFF by default, or 0x00 with CLEAR_STACK (uOFW threadman).
+    constexpr uint32_t kAttrNoFillStack = 0x00100000u;
+    constexpr uint32_t kAttrClearStack = 0x00400000u;
+    if ((attr & kAttrNoFillStack) == 0)
+    {
+        if (uint8_t* stack_ptr = GetGuestMemory().Translate(stack_addr))
+        {
+            const uint8_t fill_byte = ((attr & kAttrClearStack) != 0) ? 0x00u : 0xFFu;
+            std::memset(stack_ptr, fill_byte, aligned_stack);
+        }
+    }
+
     auto t = std::make_shared<GuestThread>();
     t->name = name;
     t->entry = entry;
@@ -439,22 +452,28 @@ int32_t Scheduler::StartThread(KernelUid thread_uid, uint32_t arglen, uint32_t a
             return kErrNotDormant;
         }
 
-        // Place optional argument block at top of guest stack (uOFW convention).
+        // Place optional argument block and 256-byte TLS ($k0) block at top of guest stack (uOFW convention).
         const uint32_t stack_top = t->stack_base + t->stack_size;
         uint32_t copied_arg_addr = 0;
-        uint32_t sp = (stack_top - 64u) & ~15u;
+        uint32_t top_cursor = stack_top;
         if (arglen > 0 && argp != 0)
         {
             const uint32_t aligned_arg = AlignUp(arglen, 16u);
-            copied_arg_addr = stack_top - aligned_arg;
-            if (copied_arg_addr >= t->stack_base + 64u)
+            if (stack_top - aligned_arg >= t->stack_base + 0x140u)
             {
+                copied_arg_addr = stack_top - aligned_arg;
                 const uint8_t* src = GetGuestMemory().Translate(argp);
                 uint8_t* dst = GetGuestMemory().Translate(copied_arg_addr);
                 std::memcpy(dst, src, arglen);
-                sp = (copied_arg_addr - 64u) & ~15u;
+                top_cursor = copied_arg_addr;
             }
         }
+        const uint32_t k0_addr = (top_cursor - 0x100u) & ~15u;
+        if (uint8_t* k0_ptr = GetGuestMemory().Translate(k0_addr))
+        {
+            std::memset(k0_ptr, 0, 0x100u);
+        }
+        const uint32_t sp = (k0_addr - 64u) & ~15u;
         t->initial_sp = sp;
 
         // Initialize guest thread CPU context using ops save/restore into a temporary slot.
@@ -477,6 +496,7 @@ int32_t Scheduler::StartThread(KernelUid thread_uid, uint32_t arglen, uint32_t a
             {
                 ops_->set_gpr(kRegA0, (copied_arg_addr != 0) ? arglen : 0);
                 ops_->set_gpr(kRegA1, copied_arg_addr);
+                ops_->set_gpr(kRegK0, k0_addr);
                 ops_->set_gpr(kRegGP, t->gp_value);
                 ops_->set_gpr(kRegSP, t->initial_sp);
                 ops_->set_gpr(kRegRA, 0);
