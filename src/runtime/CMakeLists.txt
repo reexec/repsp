@@ -4,4 +4,7 @@ target_sources(repsp_runtime PRIVATE
     log.cpp
     sha1.cpp
     prx_loader.cpp
+    kernel_objects.cpp
+    clock.cpp
+    vfs.cpp
 )
