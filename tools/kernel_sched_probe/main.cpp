@@ -81,6 +81,9 @@ constexpr uint32_t kAddrQueueW2   = 0x08809020u;
 constexpr uint32_t kAddrEvfMain   = 0x0880A000u;
 constexpr uint32_t kAddrEvfW1     = 0x0880A010u;
 constexpr uint32_t kAddrEvfW2     = 0x0880A020u;
+constexpr uint32_t kAddrPreemptA  = 0x0880B000u;
+constexpr uint32_t kAddrPreemptB  = 0x0880B010u;
+constexpr uint32_t kAddrPreemptH  = 0x0880B020u;
 
 int32_t g_steal_hi_tid = 0;
 
@@ -331,6 +334,30 @@ void FakeCallGuest(uint32_t addr)
         g_cpu.gpr[2] = 0;
         break;
     }
+    case kAddrPreemptA:
+    {
+        WriteStr(0x09000A00u, "pb");
+        WriteStr(0x09000A20u, "ph");
+        int32_t tb = static_cast<int32_t>(HleCall("sceKernelCreateThread", 0x09000A00u, kAddrPreemptB, 0x20, 0x4000, 0));
+        int32_t th = static_cast<int32_t>(HleCall("sceKernelCreateThread", 0x09000A20u, kAddrPreemptH, 0x10, 0x4000, 0));
+        HleCall("sceKernelStartThread", static_cast<uint32_t>(tb), 0, 0); // same prio -> queued behind A
+        HleCall("sceKernelStartThread", static_cast<uint32_t>(th), 0, 0); // higher prio -> preempts A!
+        g_log.push_back("a:resumed");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrPreemptB:
+    {
+        g_log.push_back("b:run");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrPreemptH:
+    {
+        g_log.push_back("h:run");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
     default:
         TEST_ASSERT(false);
     }
@@ -443,6 +470,13 @@ int main()
     int32_t t_evf = GetScheduler().CreateThread("evf_main", kAddrEvfMain, 0x20, 0x4000, 0, 0);
     GetScheduler().Run(t_evf);
     TEST_ASSERT((g_log == std::vector<std::string>{ "ew2:got", "after_set1", "ew1:got" }));
+
+    // 10. Preempted thread remains at front of its priority ready queue
+    kernel::Register(kernel::KernelConfig{});
+    g_log.clear();
+    int32_t t_pa = GetScheduler().CreateThread("pa", kAddrPreemptA, 0x20, 0x4000, 0, 0);
+    GetScheduler().Run(t_pa);
+    TEST_ASSERT((g_log == std::vector<std::string>{ "h:run", "a:resumed", "b:run" }));
 
     GetScheduler().Reset();
     std::printf("kernel_sched_probe passed.\n");

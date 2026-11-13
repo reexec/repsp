@@ -4,10 +4,15 @@
 
 ## 1. 스케줄링 모델
 
-* **단일 코어 고정 우선순위 선점형** (**추정**, [uOFW threadman](https://github.com/uofw/uofw)):
+* **단일 코어 고정 우선순위 선점형** (**추정**, [uOFW threadman](https://github.com/uofw/uofw), [uITRON 4.0 규격](https://www.tron.org/)):
   * 숫자가 작을수록 우선순위가 높다(예: `0x10`이 `0x20`보다 높음).
   * 동일 우선순위 스레드 사이는 선입선출(FIFO)로 전환된다.
+  * **선점 vs 자발적 양보** (**추정**, uITRON 4.0 §3.2 / `rot_rdq`): 더 높은 우선순위 스레드에게 선점당한 실행 스레드는 **같은 우선순위 준비 큐의 맨 앞(head)**에 남는다. 반면 자발적 양보(`RotateThreadReadyQueue` / `YieldCurrent`)나 대기 상태에서 깨어난 스레드는 **맨 뒤(tail)**에 들어간다.
   * `sceKernelStartThread`, `sceKernelSignalSema`, `sceKernelSetEventFlag`, `sceKernelWakeupThread` 등이 더 높은 우선순위 스레드를 준비 상태로 만들면 즉시 문맥 전환이 일어난다.
+* **동기화 객체 시그널 시점 인계 및 대기 큐 속성** (**추정**, [PSPSDK pspthreadman.h](https://github.com/pspdev/pspsdk), [uOFW threadman](https://github.com/uofw/uofw)):
+  * `sceKernelSignalSema`와 `sceKernelSetEventFlag`는 대기자를 단순히 깨우는 것이 아니라, **signal/set 시점에 대기 큐 순서대로 자원(sema count 차감, event flag 출력 비트 기록 및 clear 옵션 적용)을 직접 인계**한다.
+  * 속성 `0x100`(`PSP_SEMA_ATTR_PRIO` / `PSP_EVENT_WAITPRIO`): 대기 큐를 우선순위순(동일 우선순위는 FIFO)으로 정렬한다. 미설정(`0x000`)이면 FIFO다.
+  * 속성 `0x200`(`PSP_EVENT_WAITMULTIPLE`): 이벤트 플래그에서 다중 대기자를 허용한다. 미설정 시 두 번째 대기자는 대기에 들어가지 않고 오류를 반환한다.
 * **인터럽트 금지 (`CpuSuspendIntr` / `CpuResumeIntr`)** (**추정**, uOFW):
   * 인터럽트가 비활성화된 동안에는 안전점(`repsp_recomp_poll`) 선점과 콜백 전달이 지연된다.
 
@@ -40,7 +45,8 @@
 
 This document summarizes single-core thread scheduling, wait states, and callback execution rules in the PSP Allegrex kernel.
 
-* **Model**: Single-core fixed-priority preemptive scheduler (**inferred**, [uOFW threadman](https://github.com/uofw/uofw)); lower numerical priority value means higher priority, and equal priorities are FIFO.
+* **Model**: Single-core fixed-priority preemptive scheduler (**inferred**, [uOFW threadman](https://github.com/uofw/uofw), uITRON 4.0); lower numerical priority value means higher priority, and equal priorities are FIFO. A preempted thread stays at the **front** of its priority's ready queue, whereas voluntary yields (`RotateThreadReadyQueue`/`YieldCurrent`) and threads waking from wait go to the **back**.
+* **Sync Object Handoff & Queue Attributes**: `sceKernelSignalSema` and `sceKernelSetEventFlag` hand off resources directly at signal/set time in wait-queue order (attribute `0x100` selects priority order instead of FIFO; attribute `0x200` `PSP_EVENT_WAITMULTIPLE` is required for multiple concurrent event-flag waiters) (**inferred**, PSPSDK `pspthreadman.h`, uOFW).
 * **Stack & Arguments**: Thread stacks are allocated high in user partition 2 (256-byte aligned). `$gp` is inherited at creation time. `StartThread(arglen, argp)` copies `arglen` bytes to the top of the stack and sets `$a0 = arglen`, `$a1 = copied_addr` (**inferred**, uOFW).
 * **Wait Codes & Callbacks**: Wait results (`0`, timeout `0x800201A8`, cancel `0x800201A9`, release `0x800201AA`, delete `0x800201B5`) and callback deletion on non-zero return are **inferred** from uOFW.
 * **Verification**: Verified with synthetic tests in `kernel_sched_probe` (**confirmed** for synthetic probe behavior).

@@ -160,7 +160,7 @@ private:
     };
 
     std::shared_ptr<GuestThread> FindThreadLocked(KernelUid uid) const;
-    void MakeReadyLocked(const std::shared_ptr<GuestThread>& t);
+    void MakeReadyLocked(const std::shared_ptr<GuestThread>& t, bool at_front = false);
     void RemoveFromReadyQueueLocked(KernelUid uid);
     std::shared_ptr<GuestThread> PickNextReadyLocked();
     bool HasHigherPriorityReadyLocked(int32_t priority) const;

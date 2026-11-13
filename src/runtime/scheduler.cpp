@@ -128,7 +128,7 @@ void Scheduler::RemoveFromReadyQueueLocked(KernelUid uid)
     ready_queue_.erase(std::remove(ready_queue_.begin(), ready_queue_.end(), uid), ready_queue_.end());
 }
 
-void Scheduler::MakeReadyLocked(const std::shared_ptr<GuestThread>& t)
+void Scheduler::MakeReadyLocked(const std::shared_ptr<GuestThread>& t, bool at_front)
 {
     if (!t || t->state == ThreadState::kDead)
     {
@@ -139,7 +139,16 @@ void Scheduler::MakeReadyLocked(const std::shared_ptr<GuestThread>& t)
     t->wait_target_uid = 0;
     t->wait_detail.clear();
     t->has_timeout = false;
-    if (std::find(ready_queue_.begin(), ready_queue_.end(), t->uid) == ready_queue_.end())
+    auto it = std::find(ready_queue_.begin(), ready_queue_.end(), t->uid);
+    if (it != ready_queue_.end())
+    {
+        ready_queue_.erase(it);
+    }
+    if (at_front)
+    {
+        ready_queue_.insert(ready_queue_.begin(), t->uid);
+    }
+    else
     {
         ready_queue_.push_back(t->uid);
     }
@@ -1027,7 +1036,8 @@ void Scheduler::YieldIfPreempted()
     {
         return;
     }
-    MakeReadyLocked(cur);
+    // Preempted thread remains at the front of its priority ready queue (uITRON 4.0 scheduling rule).
+    MakeReadyLocked(cur, true);
     SwitchOutCurrentLocked(lock, cur);
 }
 
