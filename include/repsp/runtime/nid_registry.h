@@ -39,12 +39,22 @@ public:
     void SetStopOnUnimplemented(bool stop) { stop_on_unimplemented_ = stop; }
     bool GetStopOnUnimplemented() const { return stop_on_unimplemented_; }
 
+    void SetTraceEnabled(bool enabled) { trace_enabled_ = enabled; }
+    bool IsTraceEnabled() const { return trace_enabled_; }
+    void SetTraceLimit(uint64_t limit) { trace_limit_ = limit; }
+    const std::map<std::string, uint64_t>& GetCallCounts() const { return call_counts_; }
+
     void PrintUnimplementedSummary() const;
+    void PrintCallSummary() const;
 
 private:
     std::unordered_map<uint32_t, HleEntry> entries_;
     std::map<uint32_t, uint64_t> unimplemented_counts_;
+    std::map<std::string, uint64_t> call_counts_;
     bool stop_on_unimplemented_ = false;
+    bool trace_enabled_ = false;
+    uint64_t trace_count_ = 0;
+    uint64_t trace_limit_ = 0;
 };
 
 NidRegistry& GetNidRegistry();
