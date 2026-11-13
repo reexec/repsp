@@ -129,7 +129,7 @@ void Scheduler::RemoveFromReadyQueueLocked(KernelUid uid)
 
 void Scheduler::MakeReadyLocked(const std::shared_ptr<GuestThread>& t)
 {
-    if (!t || t->state == ThreadState::kDead || t->state == ThreadState::kDormant)
+    if (!t || t->state == ThreadState::kDead)
     {
         return;
     }

@@ -1,6 +1,7 @@
 #include "kernel_internal.h"
 #include "repsp/platform/guarded_run.h"
 #include "repsp/recomp/recomp_helpers.h"
+#include "repsp/runtime/kernel_objects.h"
 #include "repsp/runtime/log.h"
 #include "repsp/runtime/nid_registry.h"
 
