@@ -232,6 +232,9 @@ void Scheduler::SwitchOutCurrentLocked(std::unique_lock<std::mutex>& lock, const
 
     if (shutdown_ || fatal_stop_ || cur->state == ThreadState::kDead)
     {
+        // All outer frames (NidRegistry::Invoke, HLE wait wrappers) hold no mutex locks
+        // across RaiseStop. Only local objects in an inner waiting handler frame may
+        // be skipped if the thread is force-terminated while blocked.
         lock.unlock();
         platform::RaiseStop(kInternalThreadExitStop);
     }

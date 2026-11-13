@@ -238,6 +238,8 @@ void HleWaitSema()
         sema_name = sema->name;
     }
 
+    // The kernel sync mutex is released before WaitCurrent so no lock is held across
+    // RaiseStop if this waiting thread is force-terminated while blocked.
     int32_t wait_res = sched.WaitCurrent(
         runtime::WaitType::kSema,
         semaid,
@@ -475,6 +477,8 @@ void HleWaitEventFlag()
         evf_name = evf->name;
     }
 
+    // The kernel sync mutex is released before WaitCurrent so no lock is held across
+    // RaiseStop if this waiting thread is force-terminated while blocked.
     int32_t wait_res = sched.WaitCurrent(
         runtime::WaitType::kEventFlag,
         evfid,

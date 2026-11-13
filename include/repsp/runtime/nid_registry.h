@@ -20,6 +20,7 @@ struct HleEntry
     uint32_t nid = 0;
     std::string function_name;
     HleHandler handler;
+    uint64_t* call_count_ptr = nullptr; // Stable pointer into call_counts_ node (built at Register time)
 };
 
 class NidRegistry

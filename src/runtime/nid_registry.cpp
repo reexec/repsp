@@ -38,6 +38,9 @@ void NidRegistry::Register(const std::string& module_name, uint32_t nid, const s
     entry.nid = nid;
     entry.function_name = function_name;
     entry.handler = std::move(handler);
+    auto [count_it, inserted] = call_counts_.try_emplace(module_name + ":" + function_name, 0);
+    (void)inserted;
+    entry.call_count_ptr = &count_it->second;
     entries_[nid] = std::move(entry);
 }
 
@@ -59,24 +62,15 @@ const HleEntry* NidRegistry::Find(uint32_t nid) const
 
 bool NidRegistry::Invoke(uint32_t nid)
 {
-    HleHandler handler_copy;
-    std::string mod_name;
-    std::string fn_name;
-    bool found = false;
+    // Keep no owning objects (std::function, std::string) on the stack across
+    // handler(), because RaiseStop / thread exit may longjmp out of this frame.
+    const HleEntry* entry = Find(nid);
+    if (entry != nullptr)
     {
-        auto it = entries_.find(nid);
-        if (it != entries_.end())
+        if (entry->call_count_ptr != nullptr)
         {
-            found = true;
-            handler_copy = it->second.handler;
-            mod_name = it->second.module_name;
-            fn_name = it->second.function_name;
+            ++(*entry->call_count_ptr);
         }
-    }
-
-    if (found)
-    {
-        ++call_counts_[mod_name + ":" + fn_name];
         const bool should_trace = trace_enabled_ && (trace_limit_ == 0 || trace_count_ < trace_limit_);
         uint32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
         const auto* ops = GetScheduler().GetCpuOps();
@@ -88,9 +82,9 @@ bool NidRegistry::Invoke(uint32_t nid)
             a3 = ops->get_gpr(7);
         }
 
-        if (handler_copy)
+        if (entry->handler)
         {
-            handler_copy();
+            entry->handler();
         }
 
         if (should_trace)
@@ -98,7 +92,7 @@ bool NidRegistry::Invoke(uint32_t nid)
             ++trace_count_;
             uint32_t v0 = (ops != nullptr && ops->get_gpr != nullptr) ? ops->get_gpr(2) : 0;
             Log(LogLevel::kInfo, "[HLE_TRACE] %s:%s(0x%08X, 0x%08X, 0x%08X, 0x%08X) = 0x%08X",
-                mod_name.c_str(), fn_name.c_str(), a0, a1, a2, a3, v0);
+                entry->module_name.c_str(), entry->function_name.c_str(), a0, a1, a2, a3, v0);
         }
         return true;
     }

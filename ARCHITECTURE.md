@@ -129,6 +129,7 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 * 소비자는 `repsp::hle::kernel::Register(const KernelConfig&)`를 통해 장치 마운트(`disc0:`, `umd0:`, `ms0:` 등), 로드된 메인 모듈 이미지 범위(`module_image_base`, `module_image_size`)를 등록하고 65개 커널·UMD HLE 함수를 활성화합니다.
 * `repsp::runtime::GetScheduler()`는 `CreateThread`로 첫 `module_start` 스레드를 만들고 `Run(entry_thread_uid)`로 단일 코어 바톤 스케줄러를 구동합니다. 게스트 워커 스레드 내부의 `RaiseStop`이나 하드웨어 결함은 각 워커의 `GuardedRun`이 포착한 뒤, 모든 워커를 join하고 호출자 스레드의 바깥 `GuardedRun`으로 전파합니다. 교착 시에는 모든 스레드와 대기 대상을 담아 `RaiseStop`으로 멈춥니다.
 * 환경 변수 `REPSP_HLE_TRACE=1` 및 `REPSP_HLE_TRACE_LIMIT=<N>`으로 HLE 호출 추적을 제어하고 `PrintKernelSummary()`로 호출 횟수, 스레드, 열린 파일, 할당 블록을 요약할 수 있습니다.
+* **정지·대기 시 스택·잠금 계약**: `NidRegistry::Invoke`는 핸들러 실행 중 스택에 소유 객체(`std::function`, `std::string`)를 두지 않으며, `RaiseStop`/`WaitCurrent`/`YieldIfPreempted` 경로의 바깥 프레임은 뮤텍스 잠금을 유지하지 않습니다(대기 중 강제 종료되는 스레드의 안쪽 대기 핸들러 프레임 지역 객체만 누수 범위에 남습니다).
 
 ---
 
@@ -172,3 +173,4 @@ Provides guarded execution for catching hardware faults and explicit stop reques
 ### 2.8. Kernel Configuration and Scheduler Contract (`kernel.h`, `scheduler.h`)
 
 Consumers configure VFS mounts and reserve the loaded module image range via `repsp::hle::kernel::Register(const KernelConfig&)`, then create the initial entry thread and run the single-core baton scheduler via `repsp::runtime::GetScheduler().Run(entry_uid)`. Worker-thread `RaiseStop` or hardware faults are caught per-worker, joined cleanly, and re-raised on the caller's outer `GuardedRun`. `REPSP_HLE_TRACE=1` and `REPSP_HLE_TRACE_LIMIT` control call tracing, and `PrintKernelSummary()` prints call counts, threads, open files, and partition blocks.
+* **Stop/wait stack & lock contract**: `NidRegistry::Invoke` keeps no owning objects (`std::function`, `std::string`) on the stack while calling `handler()`, and all outer frames across `RaiseStop`/`WaitCurrent`/`YieldIfPreempted` hold no mutex locks (only local objects inside an inner waiting handler frame may be leaked if a blocked thread is force-terminated).
