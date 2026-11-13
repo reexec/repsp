@@ -2,6 +2,7 @@
 #include "repsp/runtime/guest_memory.h"
 #include "repsp/runtime/log.h"
 #include "repsp/runtime/nid_registry.h"
+#include "repsp/runtime/scheduler.h"
 
 namespace
 {
@@ -13,6 +14,7 @@ const repsp_guest_cpu_ops* g_cpu_ops = nullptr;
 void repsp_recomp_register_cpu(const repsp_guest_cpu_ops* ops)
 {
     g_cpu_ops = ops;
+    repsp::runtime::GetScheduler().SetCpuOps(ops);
 }
 
 const repsp_guest_cpu_ops* repsp_recomp_get_cpu_ops(void)
@@ -39,6 +41,7 @@ void repsp_recomp_syscall(uint32_t code)
 void repsp_recomp_poll(void)
 {
     // Safe point for scheduler baton pass or interrupt delivery
+    repsp::runtime::GetScheduler().Poll();
 }
 
 uint8_t* repsp_guest_base(void)

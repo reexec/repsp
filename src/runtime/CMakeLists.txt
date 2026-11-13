@@ -7,4 +7,6 @@ target_sources(repsp_runtime PRIVATE
     kernel_objects.cpp
     clock.cpp
     vfs.cpp
+    user_partition.cpp
+    scheduler.cpp
 )
