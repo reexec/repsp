@@ -90,6 +90,7 @@ public:
     int32_t TerminateThread(KernelUid thread_uid, bool delete_target);
     int32_t WaitThreadEnd(KernelUid thread_uid, uint32_t* timeout_us, bool allow_callbacks);
     KernelUid GetCurrentThreadId() const;
+    int32_t GetThreadPriority(KernelUid thread_uid) const;
     int32_t ChangeThreadPriority(KernelUid thread_uid, int32_t new_priority);
     int32_t SleepThread(bool allow_callbacks);
     int32_t WakeupThread(KernelUid thread_uid);
@@ -100,6 +101,7 @@ public:
     bool WakeOneWaiter(WaitType type, KernelUid target_uid, int32_t result);
     size_t WakeAllWaiters(WaitType type, KernelUid target_uid, int32_t result);
     bool WakeThreadFromWait(KernelUid thread_uid, int32_t result);
+    size_t WakeThreadsFromWait(const std::vector<KernelUid>& thread_uids, int32_t result);
 
     // Callbacks
     int32_t CreateCallback(const std::string& name, uint32_t entry, uint32_t common_arg);

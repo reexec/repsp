@@ -9,6 +9,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace repsp::hle::kernel::detail
 {
@@ -16,9 +17,32 @@ namespace repsp::hle::kernel::detail
 namespace
 {
 
+// Event flag wait mode flags (PSPSDK pspthreadman.h / uITRON).
 constexpr uint32_t kPspEventWaitOr = 0x01u;
 constexpr uint32_t kPspEventWaitClearAll = 0x10u;
 constexpr uint32_t kPspEventWaitClear = 0x20u;
+
+// Kernel object wait-queue attributes (PSPSDK pspthreadman.h / uOFW threadman).
+// 0x100: priority-ordered wait queue (PSP_SEMA_ATTR_PRIO / PSP_EVENT_WAITPRIO); 0x000 is FIFO.
+// 0x200: allow multiple waiting threads on an event flag (PSP_EVENT_WAITMULTIPLE).
+constexpr uint32_t kPspAttrWaitPrio = 0x100u;
+constexpr uint32_t kPspEventAttrWaitMultiple = 0x200u;
+
+struct SemaWaiter
+{
+    runtime::KernelUid thread_uid = 0;
+    int32_t priority = 0x20;
+    int32_t need_count = 0;
+};
+
+struct EventFlagWaiter
+{
+    runtime::KernelUid thread_uid = 0;
+    int32_t priority = 0x20;
+    uint32_t bits = 0;
+    uint32_t wait_mode = 0;
+    uint32_t out_bits_addr = 0;
+};
 
 struct SemaObject
 {
@@ -28,7 +52,7 @@ struct SemaObject
     uint32_t attr = 0;
     int32_t count = 0;
     int32_t max_count = 0;
-    int32_t num_wait_threads = 0;
+    std::vector<SemaWaiter> waiters;
 };
 
 struct EventFlagObject
@@ -39,8 +63,34 @@ struct EventFlagObject
     uint32_t attr = 0;
     uint32_t init_pattern = 0;
     uint32_t current_pattern = 0;
-    int32_t num_wait_threads = 0;
+    std::vector<EventFlagWaiter> waiters;
 };
+
+template <typename WaiterT>
+void InsertWaiter(std::vector<WaiterT>& queue, const WaiterT& item, bool priority_order)
+{
+    if (!priority_order)
+    {
+        queue.push_back(item);
+        return;
+    }
+    auto it = std::find_if(queue.begin(), queue.end(), [&](const WaiterT& existing)
+    {
+        return item.priority < existing.priority;
+    });
+    queue.insert(it, item);
+}
+
+template <typename WaiterT>
+void RemoveWaiterByThread(std::vector<WaiterT>& queue, runtime::KernelUid thread_uid)
+{
+    queue.erase(
+        std::remove_if(queue.begin(), queue.end(), [&](const WaiterT& w)
+        {
+            return w.thread_uid == thread_uid;
+        }),
+        queue.end());
+}
 
 std::string ReadGuestCString(uint32_t addr, size_t max_len = 32)
 {
@@ -115,7 +165,17 @@ void HleDeleteSema()
     }
 
     runtime::GetKernelObjects().Remove(semaid, runtime::KernelObjectType::kSema);
-    runtime::GetScheduler().WakeAllWaiters(runtime::WaitType::kSema, semaid, kSceKernelErrorWaitDelete);
+    std::vector<runtime::KernelUid> to_wake;
+    {
+        std::lock_guard<std::mutex> lock(sema->mutex);
+        to_wake.reserve(sema->waiters.size());
+        for (const auto& w : sema->waiters)
+        {
+            to_wake.push_back(w.thread_uid);
+        }
+        sema->waiters.clear();
+    }
+    runtime::GetScheduler().WakeThreadsFromWait(to_wake, kSceKernelErrorWaitDelete);
     recomp::Return(0);
 }
 
@@ -131,6 +191,18 @@ void HleWaitSema()
         return;
     }
 
+    std::shared_ptr<SemaObject> sema;
+    if (runtime::GetKernelObjects().LookupAs(semaid, runtime::KernelObjectType::kSema, &sema) != runtime::LookupStatus::kOk)
+    {
+        recomp::Return(kSceKernelErrorUnknownSemid);
+        return;
+    }
+    if (signal > sema->max_count)
+    {
+        recomp::Return(kSceKernelErrorError);
+        return;
+    }
+
     uint32_t timeout_val = 0;
     uint32_t* timeout_ptr = nullptr;
     if (timeout_addr != 0)
@@ -139,63 +211,53 @@ void HleWaitSema()
         timeout_ptr = &timeout_val;
     }
 
-    while (true)
+    auto& sched = runtime::GetScheduler();
+    const runtime::KernelUid cur_uid = sched.GetCurrentThreadId();
+    const int32_t cur_prio = sched.GetThreadPriority(cur_uid);
+
+    std::string sema_name;
     {
-        std::shared_ptr<SemaObject> sema;
-        if (runtime::GetKernelObjects().LookupAs(semaid, runtime::KernelObjectType::kSema, &sema) != runtime::LookupStatus::kOk)
+        std::lock_guard<std::mutex> lock(sema->mutex);
+        if (sema->waiters.empty() && sema->count >= signal)
         {
-            recomp::Return(kSceKernelErrorUnknownSemid);
+            sema->count -= signal;
+            if (timeout_addr != 0)
+            {
+                runtime::GetGuestMemory().WriteU32(timeout_addr, 0);
+            }
+            recomp::Return(0);
             return;
         }
-        if (signal > sema->max_count)
+        if (timeout_ptr != nullptr && *timeout_ptr == 0)
         {
-            recomp::Return(kSceKernelErrorError);
+            recomp::Return(kSceKernelErrorWaitTimeout);
             return;
         }
-
-        std::string sema_name;
-        {
-            std::lock_guard<std::mutex> lock(sema->mutex);
-            if (sema->count >= signal)
-            {
-                sema->count -= signal;
-                if (timeout_addr != 0)
-                {
-                    runtime::GetGuestMemory().WriteU32(timeout_addr, 0);
-                }
-                recomp::Return(0);
-                return;
-            }
-            if (timeout_ptr != nullptr && *timeout_ptr == 0)
-            {
-                recomp::Return(kSceKernelErrorWaitTimeout);
-                return;
-            }
-            ++sema->num_wait_threads;
-            sema_name = sema->name;
-        }
-
-        int32_t wait_res = runtime::GetScheduler().WaitCurrent(
-            runtime::WaitType::kSema,
-            semaid,
-            "WaitSema:" + sema_name,
-            timeout_ptr,
-            false);
-
-        {
-            std::lock_guard<std::mutex> lock(sema->mutex);
-            if (sema->num_wait_threads > 0)
-            {
-                --sema->num_wait_threads;
-            }
-        }
-
-        if (wait_res != 0)
-        {
-            recomp::Return(wait_res);
-            return;
-        }
+        const bool prio_order = (sema->attr & kPspAttrWaitPrio) != 0;
+        InsertWaiter(sema->waiters, SemaWaiter{cur_uid, cur_prio, signal}, prio_order);
+        sema_name = sema->name;
     }
+
+    int32_t wait_res = sched.WaitCurrent(
+        runtime::WaitType::kSema,
+        semaid,
+        "WaitSema:" + sema_name,
+        timeout_ptr,
+        false);
+
+    if (wait_res != 0)
+    {
+        std::lock_guard<std::mutex> lock(sema->mutex);
+        RemoveWaiterByThread(sema->waiters, cur_uid);
+        recomp::Return(wait_res);
+        return;
+    }
+
+    if (timeout_addr != 0)
+    {
+        runtime::GetGuestMemory().WriteU32(timeout_addr, 0);
+    }
+    recomp::Return(0);
 }
 
 void HleSignalSema()
@@ -216,6 +278,7 @@ void HleSignalSema()
         return;
     }
 
+    std::vector<runtime::KernelUid> to_wake;
     {
         std::lock_guard<std::mutex> lock(sema->mutex);
         if (sema->count + signal > sema->max_count)
@@ -224,9 +287,22 @@ void HleSignalSema()
             return;
         }
         sema->count += signal;
+
+        // Handoff at signal time in wait-queue order (stop at head if count < need_count).
+        while (!sema->waiters.empty())
+        {
+            const SemaWaiter& head = sema->waiters.front();
+            if (sema->count < head.need_count)
+            {
+                break;
+            }
+            sema->count -= head.need_count;
+            to_wake.push_back(head.thread_uid);
+            sema->waiters.erase(sema->waiters.begin());
+        }
     }
 
-    runtime::GetScheduler().WakeAllWaiters(runtime::WaitType::kSema, semaid, 0);
+    runtime::GetScheduler().WakeThreadsFromWait(to_wake, 0);
     recomp::Return(0);
 }
 
@@ -256,7 +332,17 @@ void HleDeleteEventFlag()
     }
 
     runtime::GetKernelObjects().Remove(evfid, runtime::KernelObjectType::kEventFlag);
-    runtime::GetScheduler().WakeAllWaiters(runtime::WaitType::kEventFlag, evfid, kSceKernelErrorWaitDelete);
+    std::vector<runtime::KernelUid> to_wake;
+    {
+        std::lock_guard<std::mutex> lock(evf->mutex);
+        to_wake.reserve(evf->waiters.size());
+        for (const auto& w : evf->waiters)
+        {
+            to_wake.push_back(w.thread_uid);
+        }
+        evf->waiters.clear();
+    }
+    runtime::GetScheduler().WakeThreadsFromWait(to_wake, kSceKernelErrorWaitDelete);
     recomp::Return(0);
 }
 
@@ -272,12 +358,32 @@ void HleSetEventFlag()
         return;
     }
 
+    std::vector<runtime::KernelUid> to_wake;
     {
         std::lock_guard<std::mutex> lock(evf->mutex);
         evf->current_pattern |= bits;
+
+        // Handoff at set time in wait-queue order: write out_bits and apply clear options per satisfied waiter.
+        for (auto it = evf->waiters.begin(); it != evf->waiters.end(); )
+        {
+            if (CheckEventFlagCondition(evf->current_pattern, it->bits, it->wait_mode))
+            {
+                if (it->out_bits_addr != 0)
+                {
+                    runtime::GetGuestMemory().WriteU32(it->out_bits_addr, evf->current_pattern);
+                }
+                ApplyEventFlagClear(&evf->current_pattern, it->bits, it->wait_mode);
+                to_wake.push_back(it->thread_uid);
+                it = evf->waiters.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
     }
 
-    runtime::GetScheduler().WakeAllWaiters(runtime::WaitType::kEventFlag, evfid, 0);
+    runtime::GetScheduler().WakeThreadsFromWait(to_wake, 0);
     recomp::Return(0);
 }
 
@@ -313,6 +419,13 @@ void HleWaitEventFlag()
         return;
     }
 
+    std::shared_ptr<EventFlagObject> evf;
+    if (runtime::GetKernelObjects().LookupAs(evfid, runtime::KernelObjectType::kEventFlag, &evf) != runtime::LookupStatus::kOk)
+    {
+        recomp::Return(kSceKernelErrorUnknownEvfid);
+        return;
+    }
+
     uint32_t timeout_val = 0;
     uint32_t* timeout_ptr = nullptr;
     if (timeout_addr != 0)
@@ -321,71 +434,71 @@ void HleWaitEventFlag()
         timeout_ptr = &timeout_val;
     }
 
-    while (true)
+    auto& sched = runtime::GetScheduler();
+    const runtime::KernelUid cur_uid = sched.GetCurrentThreadId();
+    const int32_t cur_prio = sched.GetThreadPriority(cur_uid);
+
+    std::string evf_name;
     {
-        std::shared_ptr<EventFlagObject> evf;
-        if (runtime::GetKernelObjects().LookupAs(evfid, runtime::KernelObjectType::kEventFlag, &evf) != runtime::LookupStatus::kOk)
+        std::lock_guard<std::mutex> lock(evf->mutex);
+        if ((evf->attr & kPspEventAttrWaitMultiple) == 0 && !evf->waiters.empty())
         {
-            recomp::Return(kSceKernelErrorUnknownEvfid);
+            // Without PSP_EVENT_WAITMULTIPLE (0x200), a second concurrent waiter is rejected.
+            recomp::Return(kSceKernelErrorError);
             return;
         }
-
-        std::string evf_name;
-        {
-            std::lock_guard<std::mutex> lock(evf->mutex);
-            if (CheckEventFlagCondition(evf->current_pattern, bits, wait_mode))
-            {
-                if (out_bits_addr != 0)
-                {
-                    runtime::GetGuestMemory().WriteU32(out_bits_addr, evf->current_pattern);
-                }
-                ApplyEventFlagClear(&evf->current_pattern, bits, wait_mode);
-                if (timeout_addr != 0)
-                {
-                    runtime::GetGuestMemory().WriteU32(timeout_addr, 0);
-                }
-                recomp::Return(0);
-                return;
-            }
-            if (timeout_ptr != nullptr && *timeout_ptr == 0)
-            {
-                if (out_bits_addr != 0)
-                {
-                    runtime::GetGuestMemory().WriteU32(out_bits_addr, evf->current_pattern);
-                }
-                recomp::Return(kSceKernelErrorWaitTimeout);
-                return;
-            }
-            ++evf->num_wait_threads;
-            evf_name = evf->name;
-        }
-
-        int32_t wait_res = runtime::GetScheduler().WaitCurrent(
-            runtime::WaitType::kEventFlag,
-            evfid,
-            "WaitEventFlag:" + evf_name,
-            timeout_ptr,
-            false);
-
-        {
-            std::lock_guard<std::mutex> lock(evf->mutex);
-            if (evf->num_wait_threads > 0)
-            {
-                --evf->num_wait_threads;
-            }
-        }
-
-        if (wait_res != 0)
+        if (CheckEventFlagCondition(evf->current_pattern, bits, wait_mode))
         {
             if (out_bits_addr != 0)
             {
-                std::lock_guard<std::mutex> lock(evf->mutex);
                 runtime::GetGuestMemory().WriteU32(out_bits_addr, evf->current_pattern);
             }
-            recomp::Return(wait_res);
+            ApplyEventFlagClear(&evf->current_pattern, bits, wait_mode);
+            if (timeout_addr != 0)
+            {
+                runtime::GetGuestMemory().WriteU32(timeout_addr, 0);
+            }
+            recomp::Return(0);
             return;
         }
+        if (timeout_ptr != nullptr && *timeout_ptr == 0)
+        {
+            if (out_bits_addr != 0)
+            {
+                runtime::GetGuestMemory().WriteU32(out_bits_addr, evf->current_pattern);
+            }
+            recomp::Return(kSceKernelErrorWaitTimeout);
+            return;
+        }
+        const bool prio_order = (evf->attr & kPspAttrWaitPrio) != 0;
+        InsertWaiter(evf->waiters, EventFlagWaiter{cur_uid, cur_prio, bits, wait_mode, out_bits_addr}, prio_order);
+        evf_name = evf->name;
     }
+
+    int32_t wait_res = sched.WaitCurrent(
+        runtime::WaitType::kEventFlag,
+        evfid,
+        "WaitEventFlag:" + evf_name,
+        timeout_ptr,
+        false);
+
+    if (wait_res != 0)
+    {
+        std::lock_guard<std::mutex> lock(evf->mutex);
+        RemoveWaiterByThread(evf->waiters, cur_uid);
+        if (out_bits_addr != 0)
+        {
+            runtime::GetGuestMemory().WriteU32(out_bits_addr, evf->current_pattern);
+        }
+        recomp::Return(wait_res);
+        return;
+    }
+
+    if (timeout_addr != 0)
+    {
+        runtime::GetGuestMemory().WriteU32(timeout_addr, 0);
+    }
+    recomp::Return(0);
 }
 
 void HlePollEventFlag()
@@ -469,7 +582,7 @@ void HleReferEventFlagStatus()
     }
     if (info_size >= 52)
     {
-        runtime::GetGuestMemory().WriteU32(status_addr + 48, static_cast<uint32_t>(evf->num_wait_threads));
+        runtime::GetGuestMemory().WriteU32(status_addr + 48, static_cast<uint32_t>(evf->waiters.size()));
     }
 
     recomp::Return(0);

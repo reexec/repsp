@@ -72,6 +72,17 @@ constexpr uint32_t kAddrSleep    = 0x08805000u;
 constexpr uint32_t kAddrCbMain   = 0x08806000u;
 constexpr uint32_t kAddrCbFunc   = 0x08806010u;
 constexpr uint32_t kAddrDeadlock = 0x08807000u;
+constexpr uint32_t kAddrStealSig = 0x08808000u;
+constexpr uint32_t kAddrStealLow = 0x08808010u;
+constexpr uint32_t kAddrStealHi  = 0x08808020u;
+constexpr uint32_t kAddrQueueMain = 0x08809000u;
+constexpr uint32_t kAddrQueueW1   = 0x08809010u;
+constexpr uint32_t kAddrQueueW2   = 0x08809020u;
+constexpr uint32_t kAddrEvfMain   = 0x0880A000u;
+constexpr uint32_t kAddrEvfW1     = 0x0880A010u;
+constexpr uint32_t kAddrEvfW2     = 0x0880A020u;
+
+int32_t g_steal_hi_tid = 0;
 
 void FakeCallGuest(uint32_t addr)
 {
@@ -197,6 +208,129 @@ void FakeCallGuest(uint32_t addr)
         g_cpu.gpr[2] = 0;
         break;
     }
+    case kAddrStealSig:
+    {
+        WriteStr(0x09000700u, "steal_hi");
+        WriteStr(0x09000720u, "steal_lo");
+        g_steal_hi_tid = static_cast<int32_t>(HleCall("sceKernelCreateThread", 0x09000700u, kAddrStealHi, 0x10, 0x4000, 0));
+        int32_t lo = static_cast<int32_t>(HleCall("sceKernelCreateThread", 0x09000720u, kAddrStealLow, 0x30, 0x4000, 0));
+        HleCall("sceKernelStartThread", static_cast<uint32_t>(g_steal_hi_tid), 0, 0); // runs & sleeps
+        HleCall("sceKernelStartThread", static_cast<uint32_t>(lo), 0, 0);
+        HleCall("sceKernelDelayThread", 1000); // let lo block on WaitSema
+        g_log.push_back("sig:before_signal");
+        HleCall("sceKernelSignalSema", static_cast<uint32_t>(g_sema), 1); // hands off to lo
+        // Wake higher-priority thread right after SignalSema; must NOT steal sema from lo!
+        HleCall("sceKernelWakeupThread", static_cast<uint32_t>(g_steal_hi_tid));
+        HleCall("sceKernelWaitThreadEnd", static_cast<uint32_t>(lo), 0);
+        HleCall("sceKernelWaitThreadEnd", static_cast<uint32_t>(g_steal_hi_tid), 0);
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrStealHi:
+    {
+        HleCall("sceKernelSleepThread");
+        g_log.push_back("hi:try_wait");
+        TEST_ASSERT(HleCall("sceKernelWaitSema", static_cast<uint32_t>(g_sema), 1, 0) == 0);
+        g_log.push_back("hi:got");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrStealLow:
+    {
+        g_log.push_back("lo:wait");
+        TEST_ASSERT(HleCall("sceKernelWaitSema", static_cast<uint32_t>(g_sema), 1, 0) == 0);
+        g_log.push_back("lo:got");
+        HleCall("sceKernelSignalSema", static_cast<uint32_t>(g_sema), 1);
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrQueueMain:
+    {
+        WriteStr(0x09000800u, "qw1");
+        WriteStr(0x09000820u, "qw2");
+        int32_t w1 = static_cast<int32_t>(HleCall("sceKernelCreateThread", 0x09000800u, kAddrQueueW1, 0x30, 0x4000, 0));
+        int32_t w2 = static_cast<int32_t>(HleCall("sceKernelCreateThread", 0x09000820u, kAddrQueueW2, 0x25, 0x4000, 0));
+        HleCall("sceKernelStartThread", static_cast<uint32_t>(w1), 0, 0);
+        HleCall("sceKernelDelayThread", 500); // w1 enters wait queue first
+        HleCall("sceKernelStartThread", static_cast<uint32_t>(w2), 0, 0);
+        HleCall("sceKernelDelayThread", 500); // w2 enters wait queue second
+        HleCall("sceKernelSignalSema", static_cast<uint32_t>(g_sema), 1);
+        HleCall("sceKernelDelayThread", 500);
+        HleCall("sceKernelSignalSema", static_cast<uint32_t>(g_sema), 1);
+        HleCall("sceKernelWaitThreadEnd", static_cast<uint32_t>(w1), 0);
+        HleCall("sceKernelWaitThreadEnd", static_cast<uint32_t>(w2), 0);
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrQueueW1:
+    {
+        TEST_ASSERT(HleCall("sceKernelWaitSema", static_cast<uint32_t>(g_sema), 1, 0) == 0);
+        g_log.push_back("qw1:got");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrQueueW2:
+    {
+        TEST_ASSERT(HleCall("sceKernelWaitSema", static_cast<uint32_t>(g_sema), 1, 0) == 0);
+        g_log.push_back("qw2:got");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrEvfMain:
+    {
+        // First test single-waiter (attr=0): second waiter must be rejected.
+        WriteStr(0x09000900u, "evf_s");
+        int32_t single_evf = static_cast<int32_t>(HleCall("sceKernelCreateEventFlag", 0x09000900u, 0, 0));
+        WriteStr(0x09000920u, "ew1");
+        WriteStr(0x09000940u, "ew2");
+        g_evf = single_evf;
+        int32_t sw1 = static_cast<int32_t>(HleCall("sceKernelCreateThread", 0x09000920u, kAddrEvfW1, 0x30, 0x4000, 0));
+        HleCall("sceKernelStartThread", static_cast<uint32_t>(sw1), 0, 0);
+        HleCall("sceKernelDelayThread", 500);
+        int32_t second_res = static_cast<int32_t>(HleCall("sceKernelWaitEventFlag", static_cast<uint32_t>(single_evf), 0x1u, 0, 0, 0));
+        TEST_ASSERT(second_res == kSceKernelErrorError);
+        HleCall("sceKernelSetEventFlag", static_cast<uint32_t>(single_evf), 0x1u);
+        HleCall("sceKernelWaitThreadEnd", static_cast<uint32_t>(sw1), 0);
+
+        // Next test WAITMULTIPLE (0x200) | WAITPRIO (0x100) + CLEAR (0x20) handoff order.
+        WriteStr(0x09000960u, "evf_m");
+        g_evf = static_cast<int32_t>(HleCall("sceKernelCreateEventFlag", 0x09000960u, 0x300u, 0));
+        g_log.clear();
+        int32_t mw1 = static_cast<int32_t>(HleCall("sceKernelCreateThread", 0x09000920u, kAddrEvfW1, 0x30, 0x4000, 0));
+        int32_t mw2 = static_cast<int32_t>(HleCall("sceKernelCreateThread", 0x09000940u, kAddrEvfW2, 0x25, 0x4000, 0));
+        HleCall("sceKernelStartThread", static_cast<uint32_t>(mw1), 0, 0);
+        HleCall("sceKernelDelayThread", 500); // mw1 waits on 0x1
+        HleCall("sceKernelStartThread", static_cast<uint32_t>(mw2), 0, 0);
+        HleCall("sceKernelDelayThread", 500); // mw2 (higher prio) waits on 0x1 with CLEAR (0x20)
+        // First SetEventFlag(0x1): mw2 runs first in prio queue, records out_bits=0x1, clears 0x1 -> mw1 stays waiting!
+        HleCall("sceKernelSetEventFlag", static_cast<uint32_t>(g_evf), 0x1u);
+        HleCall("sceKernelDelayThread", 500);
+        g_log.push_back("after_set1");
+        // Second SetEventFlag(0x1): now mw1 wakes and gets out_bits=0x1.
+        HleCall("sceKernelSetEventFlag", static_cast<uint32_t>(g_evf), 0x1u);
+        HleCall("sceKernelWaitThreadEnd", static_cast<uint32_t>(mw1), 0);
+        HleCall("sceKernelWaitThreadEnd", static_cast<uint32_t>(mw2), 0);
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrEvfW1:
+    {
+        GetGuestMemory().WriteU32(0x09000980u, 0);
+        TEST_ASSERT(HleCall("sceKernelWaitEventFlag", static_cast<uint32_t>(g_evf), 0x1u, 0, 0x09000980u, 0) == 0);
+        TEST_ASSERT(GetGuestMemory().ReadU32(0x09000980u) == 0x1u);
+        g_log.push_back("ew1:got");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrEvfW2:
+    {
+        GetGuestMemory().WriteU32(0x09000984u, 0);
+        TEST_ASSERT(HleCall("sceKernelWaitEventFlag", static_cast<uint32_t>(g_evf), 0x1u, 0x20u, 0x09000984u, 0) == 0);
+        TEST_ASSERT(GetGuestMemory().ReadU32(0x09000984u) == 0x1u);
+        g_log.push_back("ew2:got");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
     default:
         TEST_ASSERT(false);
     }
@@ -275,6 +409,40 @@ int main()
     TEST_ASSERT(guard.stopped);
     TEST_ASSERT(guard.stop_reason.find("Deadlock") != std::string::npos);
     TEST_ASSERT(guard.stop_reason.find("deadlock_t") != std::string::npos);
+
+    // 7. Sema signal-time handoff (higher-priority thread cannot steal after SignalSema)
+    kernel::Register(kernel::KernelConfig{});
+    g_log.clear();
+    WriteStr(0x09000740u, "sema_steal");
+    g_sema = static_cast<int32_t>(HleCall("sceKernelCreateSema", 0x09000740u, 0, 0, 1));
+    int32_t t_steal = GetScheduler().CreateThread("steal_sig", kAddrStealSig, 0x20, 0x4000, 0, 0);
+    GetScheduler().Run(t_steal);
+    TEST_ASSERT((g_log == std::vector<std::string>{ "lo:wait", "sig:before_signal", "hi:try_wait", "lo:got", "hi:got" }));
+
+    // 8a. Sema FIFO wait queue (attr=0): qw1 (prio 0x30) wakes before qw2 (prio 0x25)
+    kernel::Register(kernel::KernelConfig{});
+    g_log.clear();
+    WriteStr(0x09000840u, "sema_fifo");
+    g_sema = static_cast<int32_t>(HleCall("sceKernelCreateSema", 0x09000840u, 0, 0, 1));
+    int32_t t_qfifo = GetScheduler().CreateThread("q_fifo", kAddrQueueMain, 0x20, 0x4000, 0, 0);
+    GetScheduler().Run(t_qfifo);
+    TEST_ASSERT((g_log == std::vector<std::string>{ "qw1:got", "qw2:got" }));
+
+    // 8b. Sema Priority wait queue (attr=0x100): qw2 (prio 0x25) wakes before qw1 (prio 0x30)
+    kernel::Register(kernel::KernelConfig{});
+    g_log.clear();
+    WriteStr(0x09000860u, "sema_prio");
+    g_sema = static_cast<int32_t>(HleCall("sceKernelCreateSema", 0x09000860u, 0x100u, 0, 1));
+    int32_t t_qprio = GetScheduler().CreateThread("q_prio", kAddrQueueMain, 0x20, 0x4000, 0, 0);
+    GetScheduler().Run(t_qprio);
+    TEST_ASSERT((g_log == std::vector<std::string>{ "qw2:got", "qw1:got" }));
+
+    // 9. EventFlag WAITMULTIPLE refusal, 0x100 prio order, and CLEAR handoff
+    kernel::Register(kernel::KernelConfig{});
+    g_log.clear();
+    int32_t t_evf = GetScheduler().CreateThread("evf_main", kAddrEvfMain, 0x20, 0x4000, 0, 0);
+    GetScheduler().Run(t_evf);
+    TEST_ASSERT((g_log == std::vector<std::string>{ "ew2:got", "after_set1", "ew1:got" }));
 
     GetScheduler().Reset();
     std::printf("kernel_sched_probe passed.\n");

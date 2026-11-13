@@ -651,6 +651,18 @@ KernelUid Scheduler::GetCurrentThreadId() const
     return active_thread_uid_;
 }
 
+int32_t Scheduler::GetThreadPriority(KernelUid thread_uid) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    KernelUid target_uid = (thread_uid == 0) ? active_thread_uid_ : thread_uid;
+    auto target = FindThreadLocked(target_uid);
+    if (!target)
+    {
+        return kErrUnknownThid;
+    }
+    return target->current_priority;
+}
+
 int32_t Scheduler::ChangeThreadPriority(KernelUid thread_uid, int32_t new_priority)
 {
     if (new_priority <= 0 || new_priority > 0x7F)
@@ -888,6 +900,43 @@ bool Scheduler::WakeThreadFromWait(KernelUid thread_uid, int32_t result)
         YieldIfPreempted();
     }
     return woke;
+}
+
+size_t Scheduler::WakeThreadsFromWait(const std::vector<KernelUid>& thread_uids, int32_t result)
+{
+    if (thread_uids.empty())
+    {
+        return 0;
+    }
+    size_t count = 0;
+    bool should_yield = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto cur = FindThreadLocked(active_thread_uid_);
+        for (KernelUid uid : thread_uids)
+        {
+            auto t = FindThreadLocked(uid);
+            if (t && t->state == ThreadState::kWaiting)
+            {
+                t->wait_result = result;
+                MakeReadyLocked(t);
+                ++count;
+                if (cur && intr_enabled_ && t->current_priority < cur->current_priority)
+                {
+                    should_yield = true;
+                }
+            }
+        }
+        if (count > 0)
+        {
+            cv_.notify_all();
+        }
+    }
+    if (should_yield)
+    {
+        YieldIfPreempted();
+    }
+    return count;
 }
 
 int32_t Scheduler::CreateCallback(const std::string& name, uint32_t entry, uint32_t common_arg)
