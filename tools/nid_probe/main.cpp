@@ -103,6 +103,81 @@ int main()
     TEST_ASSERT(counts.find(unreg_nid) != counts.end());
     TEST_ASSERT(counts.at(unreg_nid) == 2);
 
+    // 5. Verify all 65 kernel/UMD NIDs from the initial consumer import table
+    struct NidExpected { const char* name; uint32_t nid; };
+    static const NidExpected kKernelNids[] = {
+        { "sceKernelCreateThread", 0x446D8DE6u },
+        { "sceKernelStartThread", 0xF475845Du },
+        { "sceKernelExitThread", 0xAA73C935u },
+        { "sceKernelDeleteThread", 0x9FA03CD3u },
+        { "sceKernelTerminateDeleteThread", 0x383F7BCCu },
+        { "sceKernelWaitThreadEnd", 0x278C0DF5u },
+        { "sceKernelGetThreadId", 0x293B45B8u },
+        { "sceKernelChangeThreadPriority", 0x71BC9871u },
+        { "sceKernelSleepThread", 0x9ACE131Eu },
+        { "sceKernelWakeupThread", 0xD59EAD2Fu },
+        { "sceKernelDelayThread", 0xCEADEB47u },
+        { "sceKernelDelayThreadCB", 0x68DA9E36u },
+        { "sceKernelCreateSema", 0xD6DA4BA1u },
+        { "sceKernelDeleteSema", 0x28B6489Cu },
+        { "sceKernelWaitSema", 0x4E3A1105u },
+        { "sceKernelSignalSema", 0x3F53E640u },
+        { "sceKernelCreateEventFlag", 0x55C20A00u },
+        { "sceKernelDeleteEventFlag", 0xEF9E4C70u },
+        { "sceKernelSetEventFlag", 0x1FB15A32u },
+        { "sceKernelClearEventFlag", 0x812346E4u },
+        { "sceKernelWaitEventFlag", 0x402FCF22u },
+        { "sceKernelPollEventFlag", 0x30FD48F0u },
+        { "sceKernelReferEventFlagStatus", 0xA66B0120u },
+        { "sceKernelCreateCallback", 0xE81CAF8Fu },
+        { "sceKernelCheckCallback", 0x349D6D6Cu },
+        { "sceKernelGetSystemTimeWide", 0x82BC5777u },
+        { "sceKernelGetSystemTimeLow", 0x369ED59Du },
+        { "sceIoOpen", 0x109F50BCu },
+        { "sceIoClose", 0x810C4BC3u },
+        { "sceIoRead", 0x6A638D83u },
+        { "sceIoWrite", 0x42EC03ACu },
+        { "sceIoLseek", 0x27EB27B8u },
+        { "sceIoOpenAsync", 0x89AA9906u },
+        { "sceIoReadAsync", 0xA0B5A7C2u },
+        { "sceIoLseekAsync", 0x71B19E77u },
+        { "sceIoWaitAsync", 0xE23EEC33u },
+        { "sceIoWaitAsyncCB", 0x35DBD746u },
+        { "sceIoPollAsync", 0x3251EA56u },
+        { "sceKernelLoadModule", 0x977DE386u },
+        { "sceKernelStartModule", 0x50F0C1ECu },
+        { "sceKernelStopModule", 0xD1FF982Au },
+        { "sceKernelUnloadModule", 0x2E0911AAu },
+        { "sceKernelSelfStopUnloadModule", 0xD675EBB8u },
+        { "sceKernelAllocPartitionMemory", 0x237DBD4Fu },
+        { "sceKernelFreePartitionMemory", 0xB6D61D02u },
+        { "sceKernelGetBlockHeadAddr", 0x9D9A5BA1u },
+        { "sceKernelDcacheWritebackAll", 0x79D1C3FAu },
+        { "sceKernelDcacheWritebackInvalidateAll", 0xB435DEC5u },
+        { "sceKernelGetGPI", 0x37FB5C42u },
+        { "sceKernelSetGPO", 0x6AD345D7u },
+        { "sceKernelStdin", 0x172D316Eu },
+        { "sceKernelStdout", 0xA6BAB2E9u },
+        { "sceKernelStderr", 0xF78BA90Au },
+        { "sceKernelCpuSuspendIntr", 0x092968F4u },
+        { "sceKernelCpuResumeIntr", 0x5F10D406u },
+        { "sceKernelExitGame", 0x05572A5Fu },
+        { "sceKernelRegisterExitCallback", 0x4AC57943u },
+        { "sceKernelPowerTick", 0x090CCB3Fu },
+        { "scePowerRegisterCallback", 0x04B7766Eu },
+        { "sceUmdActivate", 0xC6183D47u },
+        { "sceUmdDeactivate", 0xE83742BAu },
+        { "sceUmdGetDriveStat", 0x6B4A146Cu },
+        { "sceUmdWaitDriveStat", 0x8EF08FCEu },
+        { "sceUmdWaitDriveStatWithTimer", 0x56202973u },
+        { "sceUmdCancelWaitDriveStat", 0x6AF9B50Au },
+    };
+    static_assert(sizeof(kKernelNids) / sizeof(kKernelNids[0]) == 65, "Expected 65 kernel NIDs");
+    for (const auto& item : kKernelNids)
+    {
+        TEST_ASSERT(ComputeNid(item.name) == item.nid);
+    }
+
     std::printf("nid_probe passed.\n");
     return 0;
 }
