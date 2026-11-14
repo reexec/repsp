@@ -38,6 +38,7 @@ constexpr uint32_t kGeTme = 0x1E;
 constexpr uint32_t kGeAbe = 0x21;
 constexpr uint32_t kGeAte = 0x22;
 constexpr uint32_t kGeZte = 0x23;
+constexpr uint32_t kGeCte = 0x27;
 constexpr uint32_t kGeWms = 0x3A;
 constexpr uint32_t kGeWorld = 0x3B;
 constexpr uint32_t kGeVms = 0x3C;
@@ -87,6 +88,9 @@ constexpr uint32_t kGePsm = 0xD2;
 constexpr uint32_t kGeClear = 0xD3;
 constexpr uint32_t kGeScissor1 = 0xD4;
 constexpr uint32_t kGeScissor2 = 0xD5;
+constexpr uint32_t kGeCtest = 0xD8;
+constexpr uint32_t kGeCref = 0xD9;
+constexpr uint32_t kGeCmsk = 0xDA;
 constexpr uint32_t kGeAtst = 0xDB;
 constexpr uint32_t kGeZtst = 0xDE;
 constexpr uint32_t kGeAlpha = 0xDF;
@@ -653,6 +657,7 @@ void GeInterpreter::RunList(QueueSlot* q)
         case kGeTme:   ds_.tex_enable = arg & 1; break;
         case kGeAbe:   ds_.blend = arg & 1; break;
         case kGeAte:   ds_.atest = arg & 1; break;
+        case kGeCte:   ds_.ctest = arg & 1; break;
         case kGeShade: ds_.gouraud = arg & 1; break;
         case kGeAmc:   material_ = (material_ & 0xFF000000u) | arg; break;
         case kGeAma:   material_ = (material_ & 0x00FFFFFFu) | ((arg & 0xFFu) << 24); break;
@@ -722,6 +727,9 @@ void GeInterpreter::RunList(QueueSlot* q)
             ds_.sc_x1 = static_cast<int>(arg & 0x3FFu);
             ds_.sc_y1 = static_cast<int>((arg >> 10) & 0x3FFu);
             break;
+        case kGeCtest: ds_.ctest_func = static_cast<int>(arg & 3u); break;
+        case kGeCref:  ds_.ctest_ref = arg & 0x00FFFFFFu; break;
+        case kGeCmsk:  ds_.ctest_mask = arg & 0x00FFFFFFu; break;
         case kGeAtst:
             ds_.atest_func = static_cast<int>(arg & 7u);
             ds_.atest_ref = static_cast<int>((arg >> 8) & 0xFFu);

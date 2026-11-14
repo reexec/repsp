@@ -619,6 +619,52 @@ int main()
         TEST_ASSERT(nids.Find(0x4C06E472u) == nullptr); // sceGeContinue unregistered
     }
 
+    // 12. Color test (CTE/CTEST/CREF/CMSK): NOTEQUAL discards masked color-key pixels
+    {
+        const VertexColorPos2D bg[2] = {
+            { 0xFF112233u, 30, 200, 0, 0 },
+            { 0xFF112233u, 50, 220, 0, 0 },
+        };
+        const VertexColorPos2D key_rect[2] = {
+            { 0xFFFF00FFu, 32, 202, 0, 0 },
+            { 0xFFFF00FFu, 42, 212, 0, 0 },
+        };
+        const VertexColorPos2D pass_rect[2] = {
+            { 0xFF00AA00u, 42, 202, 0, 0 },
+            { 0xFF00AA00u, 48, 212, 0, 0 },
+        };
+        constexpr uint32_t kCtestVertAddr = kVertAddr + 0x200u;
+        std::memcpy(mem.Translate(kCtestVertAddr), bg, sizeof(bg));
+        std::memcpy(mem.Translate(kCtestVertAddr + 0x20u), key_rect, sizeof(key_rect));
+        std::memcpy(mem.Translate(kCtestVertAddr + 0x40u), pass_rect, sizeof(pass_rect));
+
+        const std::vector<uint32_t> cmds = {
+            GeCmd(kOpFbp, kFbAddr & 0x00FFFFFFu),
+            GeCmd(kOpFbw, ((kFbAddr >> 8) & 0x00FF0000u) | kFbw),
+            GeCmd(kOpPsm, 3u), // 8888
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2)),
+            GeCmd(kOpBase, (kCtestVertAddr >> 8) & 0x00FF0000u),
+            GeCmd(kOpVaddr, kCtestVertAddr & 0x00FFFFFFu),
+            GeCmd(0x27u, 0u), // CTE off
+            GeCmd(kOpPrim, (6u << 16) | 2u),
+            GeCmd(0x27u, 1u),        // CTE on
+            GeCmd(0xD8u, 3u),        // CTEST = NOTEQUAL
+            GeCmd(0xD9u, 0xC000C0u), // CREF = masked magenta
+            GeCmd(0xDAu, 0xC0C0C0u), // CMSK
+            GeCmd(kOpVaddr, (kCtestVertAddr + 0x20u) & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u), // magenta -> discarded
+            GeCmd(kOpVaddr, (kCtestVertAddr + 0x40u) & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u), // green -> drawn
+            GeCmd(0x27u, 0u),                // CTE off
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kListAddr, cmds);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 35, 205) == 0xFF112233u);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 45, 205) == 0xFF00AA00u);
+    }
+
     std::printf("ge_probe passed.\n");
     return 0;
 }

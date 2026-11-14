@@ -30,6 +30,7 @@ GE 명령의 포인터 인자는 24비트이므로 32비트 주소를 구성하�
 
 * **즉시 실행과 `SIGNAL` 핸들러 실행 시점 (미확정/현재 한계)**: 현재 GE 해석기는 `sceGeListEnQueue` 시점에 동기·즉시 실행되므로, `SIGNAL` 인터럽트 핸들러는 리스트 전체가 끝난 뒤 스케줄러 안전점에서 실행됩니다(behavior `1` 등의 일시정지 후 재개 의미와 다름).
 * **`kPrimTriangles` 픽셀 중심 + top-left fill rule (`render_backend.cpp`, 확인됨)**: `SwTri`는 픽셀 중심 `(x + 0.5, y + 0.5)`을 표본으로 삼고, 와인딩 정규화(`area < 0`이면 `v1`↔`v2` 스왑) 후 `IsTopLeftEdge`(`dy == 0 && dx > 0` 또는 `dy > 0`)로 배타적 아래쪽·오른쪽 경계를 제외합니다. 이를 통해 2-삼각형 사각형 경계 밖의 1픽셀 아틀라스 패딩(`#FF00FF`) 샘플링을 방지합니다(`ge_probe` 검증).
+* **Color Test (`CTE` `0x27`, `CTEST` `0xD8`, `CREF` `0xD9`, `CMSK` `0xDA`, 추정: [PSPSDK `pspgu.h`](https://github.com/pspdev/pspsdk); 확인됨: `ge_probe`)**: `CTE`가 활성화되면 텍스처 결합 후, 알파 테스트 전에 `(c & 0x00FFFFFF & mask)`와 `(ref & mask)`를 `0=NEVER`, `1=ALWAYS`, `2=EQUAL`, `3=NOTEQUAL`로 비교해 불합격 프래그먼트를 폐기합니다.
 * **480×272 고정 클립 (미구현)**: 소프트웨어 래스터라이저는 `0..479 × 0..271`로 고정 클립되어 화면 밖(off-screen) 렌더 타깃이나 480×272 초과 크기의 타깃을 그리지 않습니다.
 * **미지원 primitive 및 그래픽 기능 (미구현)**:
   * primitive: `points`, `lines`, `line-strip`, `bezier`, `spline`은 그리지 않고 `unsupported` 통계로만 셉니다.
@@ -67,5 +68,6 @@ The PSP GE executes 32-bit command words (`[31:24]` opcode, `[23:0]` 24-bit argu
 
 * **Immediate execution vs `SIGNAL` handlers (unconfirmed / current limitation)**: Because the interpreter executes synchronously at enqueue time, `SIGNAL` handlers run at safe points after the list returns rather than pausing mid-list (unlike hardware behavior `1` pause/resume semantics).
 * **`kPrimTriangles` pixel-center + top-left fill rule (`render_backend.cpp`, confirmed)**: `SwTri` samples pixel centers `(x + 0.5, y + 0.5)`, normalizes negative-area winding (`area < 0` swaps `v1`/`v2`), and applies `IsTopLeftEdge` (`dy == 0 && dx > 0` or `dy > 0`) to exclude bottom/right exclusive edges, preventing 1-pixel spills into adjacent atlas padding (`#FF00FF`), verified by `ge_probe`.
+* **Color Test (`CTE` `0x27`, `CTEST` `0xD8`, `CREF` `0xD9`, `CMSK` `0xDA`, inferred: [PSPSDK `pspgu.h`](https://github.com/pspdev/pspsdk); confirmed: `ge_probe`)**: When `CTE` is enabled, `ColorPass` compares `(c & 0x00FFFFFF & mask)` against `(ref & mask)` using `0=NEVER`, `1=ALWAYS`, `2=EQUAL`, or `3=NOTEQUAL` after texture combining and before alpha testing, discarding failing fragments.
 * **Fixed 480×272 clip (unimplemented)**: The software rasterizer clips to `0..479 × 0..271` and does not support off-screen render targets outside those bounds.
 * **Unimplemented primitives and features (unimplemented)**: `points`, `lines`, `line-strip`, `bezier`, and `spline` are counted as `unsupported` without drawing; culling, stencil, colour mask, fog, texture filtering/mipmaps, and skinning/morphing are not yet implemented.

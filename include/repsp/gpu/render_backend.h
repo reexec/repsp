@@ -95,6 +95,11 @@ struct DrawState
     int atest_ref = 0;
     int atest_mask = 0xFF;
 
+    int ctest = 0;          // CTE (0x27)
+    int ctest_func = 1;     // CTEST (0xD8): 0=never, 1=always, 2=equal, 3=notequal
+    uint32_t ctest_ref = 0; // CREF (0xD9): 0x00BBGGRR
+    uint32_t ctest_mask = 0xFFFFFFu; // CMSK (0xDA): 0x00BBGGRR
+
     int sc_x0 = 0;          // SCISSOR1/2, inclusive
     int sc_y0 = 0;
     int sc_x1 = 479;
