@@ -180,6 +180,7 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 * 소비자는 `repsp::hle::ge::Register()`와 `repsp::hle::display::Register(const DisplayHleConfig&)`로 `sceGe_user`와 `sceDisplay` HLE를 등록하고, 종료 시 `repsp::hle::display::Shutdown()`으로 VBlank·SDL 스레드를 정리합니다.
 * `DisplayHleConfig::headless`가 `true`이면 SDL 더미 비디오 드라이버로 창 없이 실행하며, `frame_dump_dir`·`frame_dump_limit`(또는 소비자 환경 변수 `REPSP_FRAME_DUMP`·`REPSP_FRAME_DUMP_LIMIT`)로 `frame_NNNN.bmp`를 기록할 수 있습니다.
 * `repsp::hle::ge::FormatStats()`와 `repsp::hle::display::FormatStats()`로 디스플레이 리스트·명령·프리미티브·FBP/FBW/PSM·VBlank 통계를 조회합니다.
+* 소프트웨어 래스터화기(`SwTri`)는 `kPrimTriangles`를 픽셀 중심 `(x + 0.5, y + 0.5)` 표본과 와인딩 정규화(음수 면적 시 정점 스왑) 기반 top-left fill rule로 평가해 아래쪽/오른쪽 배타 경계 1픽셀 넘침을 방지하며, `ge_probe`가 이를 검증합니다.
 
 ### 2.10. 컨트롤러 입력 및 DMAC 계약 (`ctrl.h`, `dmac.h`)
 
@@ -254,7 +255,7 @@ Consumers configure VFS mounts and reserve the loaded module image range via `re
 
 ### 2.9. GE, Display, and Frame Dump Contract (`ge.h`, `display.h`)
 
-Consumers register `repsp::hle::ge::Register()` and `repsp::hle::display::Register(const DisplayHleConfig&)` and call `repsp::hle::display::Shutdown()` on exit (`display` subscribes to the shared runtime `VblankClock`). `headless = true` runs with the SDL dummy video driver; `frame_dump_dir` / `frame_dump_limit` write `frame_NNNN.bmp` dumps; `FormatStats()` exposes GE and Display counters.
+Consumers register `repsp::hle::ge::Register()` and `repsp::hle::display::Register(const DisplayHleConfig&)` and call `repsp::hle::display::Shutdown()` on exit (`display` subscribes to the shared runtime `VblankClock`). `headless = true` runs with the SDL dummy video driver; `frame_dump_dir` / `frame_dump_limit` write `frame_NNNN.bmp` dumps; `FormatStats()` exposes GE and Display counters. The `kPrimTriangles` software rasterizer (`SwTri`) samples pixel centers `(x + 0.5, y + 0.5)` with winding-normalized top-left fill rule evaluation to prevent 1-pixel spills past exclusive bottom/right quad edges, verified by `ge_probe`.
 
 ### 2.10. Controller Input and DMAC Contract (`ctrl.h`, `dmac.h`)
 

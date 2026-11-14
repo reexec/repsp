@@ -554,7 +554,39 @@ int main()
         TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 185, 185) == 0xFFBBBBBBu);
     }
 
-    // 10. Unsupported primitives & out-of-bounds VRAM write counting + sceGeBreak unregistered
+    // 10. Triangle top-left fill rule: axis-aligned 2-triangle quad excludes bottom/right edges
+    {
+        const VertexColorPos2D quad[6] = {
+            { 0xFF00FF00u, 10, 200, 0, 0 },
+            { 0xFF00FF00u, 20, 200, 0, 0 },
+            { 0xFF00FF00u, 10, 210, 0, 0 },
+            { 0xFF00FF00u, 10, 210, 0, 0 },
+            { 0xFF00FF00u, 20, 200, 0, 0 },
+            { 0xFF00FF00u, 20, 210, 0, 0 },
+        };
+        constexpr uint32_t kQuadVertAddr = kVertAddr + 0x100u;
+        std::memcpy(mem.Translate(kQuadVertAddr), quad, sizeof(quad));
+
+        const std::vector<uint32_t> cmds = {
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2)),
+            GeCmd(kOpBase, (kQuadVertAddr >> 8) & 0x00FF0000u),
+            GeCmd(kOpVaddr, kQuadVertAddr & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (3u << 16) | 6u), // triangles, 6 verts
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kListAddr, cmds);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+        // Interior [10, 20) x [200, 210) is filled
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 10, 200) == 0xFF00FF00u);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 19, 209) == 0xFF00FF00u);
+        // Right edge (x=20) and bottom edge (y=210) remain untouched (0x00000000)
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 20, 200) == 0x00000000u);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 10, 210) == 0x00000000u);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 20, 210) == 0x00000000u);
+    }
+
+    // 11. Unsupported primitives & out-of-bounds VRAM write counting + sceGeBreak unregistered
     {
         const std::vector<uint32_t> cmds = {
             GeCmd(kOpPrim, (0u << 16) | 1u), // points (unsupported)
