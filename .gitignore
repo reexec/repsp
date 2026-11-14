@@ -22,6 +22,9 @@ tools/downloads/
 # Reference checkouts fetched for study only.
 third_party/refs/
 
+# Optional local FFmpeg LGPL shared build fetched by scripts/fetch_ffmpeg.py.
+third_party/_ffmpeg/
+
 # Local run artifacts and logs.
 *.log
 run*.txt
