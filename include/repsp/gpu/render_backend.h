@@ -5,6 +5,7 @@
 #define REPSP_GPU_RENDER_BACKEND_H
 
 #include <cstdint>
+#include <vector>
 
 namespace repsp::gpu
 {
@@ -133,15 +134,37 @@ struct RenderBackend
     void (*present)() = nullptr;
 };
 
-// Select a backend by name ("software", "null"). Returns 0 on success,
-// -1 if the name is unknown, leaving the current backend in place.
+// Select a backend by name ("software", "opengl", "null"). Returns 0 on success,
+// -1 if the name is unknown or unavailable, leaving the current backend in place.
 int SelectRenderBackend(const char* name);
 
 // The active backend. Never nullptr -- defaults to software.
 const RenderBackend* GetRenderBackend();
 
 extern const RenderBackend kSoftwareBackend;
+extern const RenderBackend kOpenGlBackend;
 extern const RenderBackend kNullBackend;
+
+void SetInternalScale(int scale);
+int GetInternalScale();
+
+bool HasGlTargetForAddress(uint32_t addr);
+bool PresentGlTarget(uint32_t addr);
+bool ReadGlTargetRgba8(uint32_t addr, int output_scale, std::vector<uint8_t>& out_rgba, int& out_w, int& out_h);
+
+struct OpenGlStats
+{
+    uint64_t draw_calls = 0;
+    uint64_t fbo_switches = 0;
+    uint64_t texture_uploads = 0;
+    uint64_t texture_cache_hits = 0;
+    uint64_t cpu_write_overlaps = 0;
+    uint64_t approximated_blends = 0;
+    uint64_t unsupported_ops = 0;
+};
+
+OpenGlStats GetOpenGlStats();
+void ResetOpenGlStats();
 
 uint64_t GetRenderedPixelCount();
 void ResetRenderedPixelCount();
