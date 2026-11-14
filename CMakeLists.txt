@@ -135,6 +135,33 @@ target_include_directories(repsp_hle_dmac PUBLIC
 target_link_libraries(repsp_hle_dmac PUBLIC repsp_runtime)
 repsp_apply_host_flags(repsp_hle_dmac)
 
+add_library(repsp_hle_audio STATIC)
+add_library(repsp::hle_audio ALIAS repsp_hle_audio)
+target_include_directories(repsp_hle_audio PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(repsp_hle_audio PUBLIC repsp_runtime repsp_platform)
+repsp_apply_host_flags(repsp_hle_audio)
+
+add_library(repsp_hle_sascore STATIC)
+add_library(repsp::hle_sascore ALIAS repsp_hle_sascore)
+target_include_directories(repsp_hle_sascore PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(repsp_hle_sascore PUBLIC repsp_runtime)
+repsp_apply_host_flags(repsp_hle_sascore)
+
+add_library(repsp_hle_atrac STATIC)
+add_library(repsp::hle_atrac ALIAS repsp_hle_atrac)
+target_include_directories(repsp_hle_atrac PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(repsp_hle_atrac PUBLIC repsp_runtime)
+repsp_apply_host_flags(repsp_hle_atrac)
+
 add_subdirectory(src)
 
 if(REPSP_BUILD_PROBES)

@@ -18,6 +18,10 @@ namespace
 
 constexpr const char* kInternalThreadExitStop = "__repsp_internal_thread_exit__";
 
+// Tracks the guest thread executing on the current host thread so external host
+// threads (vblank/audio clocks) never invoke YieldIfPreempted on themselves.
+thread_local KernelUid t_current_thread_uid = 0;
+
 constexpr int32_t kErrUnknownThid = static_cast<int32_t>(0x80020198u);       // SCE_KERNEL_ERROR_UNKNOWN_THID (uOFW)
 constexpr int32_t kErrUnknownCbid = static_cast<int32_t>(0x8002019Du);       // SCE_KERNEL_ERROR_UNKNOWN_CBID (uOFW)
 constexpr int32_t kErrIllegalPrio = static_cast<int32_t>(0x800201A3u);       // SCE_KERNEL_ERROR_ILLEGAL_PRIORITY (uOFW)
@@ -67,6 +71,7 @@ const char* WaitTypeName(WaitType wt)
     case WaitType::kEventFlag: return "EventFlag";
     case WaitType::kAsyncIo: return "AsyncIo";
     case WaitType::kUmd: return "Umd";
+    case WaitType::kAudio: return "Audio";
     case WaitType::kCustom: return "Custom";
     default: return "Unknown";
     }
@@ -342,6 +347,14 @@ int32_t Scheduler::RunPendingCallbacksLocked(std::unique_lock<std::mutex>& lock,
 
 void Scheduler::ThreadEntry(std::shared_ptr<GuestThread> self)
 {
+    struct ResetCurrentThreadUid
+    {
+        ~ResetCurrentThreadUid()
+        {
+            t_current_thread_uid = 0;
+        }
+    } reset_uid_guard;
+
     {
         std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait(lock, [&]()
@@ -352,6 +365,7 @@ void Scheduler::ThreadEntry(std::shared_ptr<GuestThread> self)
         {
             return;
         }
+        t_current_thread_uid = self->uid;
         if (ops_ != nullptr && ops_->restore != nullptr && !self->cpu_context.empty())
         {
             ops_->restore(self->cpu_context.data());
@@ -853,7 +867,7 @@ bool Scheduler::WakeOneWaiter(WaitType type, KernelUid target_uid, int32_t resul
                 MakeReadyLocked(t);
                 woke = true;
                 auto cur = FindThreadLocked(active_thread_uid_);
-                if (cur && intr_enabled_ && t->current_priority < cur->current_priority)
+                if (cur && cur->uid == t_current_thread_uid && intr_enabled_ && t->current_priority < cur->current_priority)
                 {
                     should_yield = true;
                 }
@@ -886,7 +900,7 @@ size_t Scheduler::WakeAllWaiters(WaitType type, KernelUid target_uid, int32_t re
                 t->wait_result = result;
                 MakeReadyLocked(t);
                 ++count;
-                if (cur && intr_enabled_ && t->current_priority < cur->current_priority)
+                if (cur && cur->uid == t_current_thread_uid && intr_enabled_ && t->current_priority < cur->current_priority)
                 {
                     should_yield = true;
                 }
@@ -917,7 +931,7 @@ bool Scheduler::WakeThreadFromWait(KernelUid thread_uid, int32_t result)
             MakeReadyLocked(t);
             woke = true;
             auto cur = FindThreadLocked(active_thread_uid_);
-            if (cur && intr_enabled_ && t->current_priority < cur->current_priority)
+            if (cur && cur->uid == t_current_thread_uid && intr_enabled_ && t->current_priority < cur->current_priority)
             {
                 should_yield = true;
             }
@@ -950,7 +964,7 @@ size_t Scheduler::WakeThreadsFromWait(const std::vector<KernelUid>& thread_uids,
                 t->wait_result = result;
                 MakeReadyLocked(t);
                 ++count;
-                if (cur && intr_enabled_ && t->current_priority < cur->current_priority)
+                if (cur && cur->uid == t_current_thread_uid && intr_enabled_ && t->current_priority < cur->current_priority)
                 {
                     should_yield = true;
                 }
@@ -1166,12 +1180,12 @@ void Scheduler::DeliverPendingInterrupts()
 void Scheduler::YieldIfPreempted()
 {
     std::unique_lock<std::mutex> lock(mutex_);
-    if (!intr_enabled_ || in_interrupt_ || active_thread_uid_ == 0)
+    if (!intr_enabled_ || in_interrupt_ || active_thread_uid_ == 0 || t_current_thread_uid == 0)
     {
         return;
     }
     auto cur = FindThreadLocked(active_thread_uid_);
-    if (!cur || !HasHigherPriorityReadyLocked(cur->current_priority))
+    if (!cur || cur->uid != t_current_thread_uid || !HasHigherPriorityReadyLocked(cur->current_priority))
     {
         return;
     }
@@ -1227,6 +1241,28 @@ void Scheduler::SetExternalWaitSources(uint32_t count)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     external_wait_sources_ = count;
+    cv_.notify_all();
+}
+
+void Scheduler::AddExternalWaitSource(uint32_t count)
+{
+    if (count == 0)
+    {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    external_wait_sources_ += count;
+    cv_.notify_all();
+}
+
+void Scheduler::RemoveExternalWaitSource(uint32_t count)
+{
+    if (count == 0)
+    {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    external_wait_sources_ = (external_wait_sources_ > count) ? (external_wait_sources_ - count) : 0u;
     cv_.notify_all();
 }
 

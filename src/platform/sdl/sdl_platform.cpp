@@ -3,11 +3,13 @@
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace repsp::platform
@@ -404,33 +406,57 @@ public:
 
     bool Initialize(const AudioConfig& config) override
     {
+        Shutdown();
+
         config_ = config;
-        if (config.dummy)
+        if (config_.sample_rate <= 0)
         {
-            SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+            config_.sample_rate = 44100;
+        }
+        if (config_.channels <= 0)
+        {
+            config_.channels = 2;
+        }
+        if (config_.buffer_frames <= 0)
+        {
+            config_.buffer_frames = 256;
+        }
+
+        if (config_.dummy)
+        {
+            dummy_stop_ = false;
+            dummy_reset_clock_ = true;
+            dummy_thread_ = std::thread(&SdlAudioBackend::DummyThreadMain, this);
+            initialized_ = true;
+            return true;
         }
 
         if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
         {
             return false;
         }
+        audio_subsys_init_ = true;
 
         SDL_AudioSpec spec;
         SDL_zero(spec);
         spec.format = SDL_AUDIO_S16LE;
-        spec.channels = config.channels;
-        spec.freq = config.sample_rate;
+        spec.channels = config_.channels;
+        spec.freq = config_.sample_rate;
 
-        stream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
-        if (stream_ == nullptr && !config.dummy)
+        stream_ = SDL_OpenAudioDeviceStream(
+            SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+            &spec,
+            &SdlAudioBackend::SdlStreamGetCallback,
+            this);
+        if (stream_ == nullptr)
         {
+            SDL_QuitSubSystem(SDL_INIT_AUDIO);
+            audio_subsys_init_ = false;
             return false;
         }
 
-        if (stream_ != nullptr)
-        {
-            SDL_ResumeAudioStreamDevice(stream_);
-        }
+        SDL_ResumeAudioStreamDevice(stream_);
+        initialized_ = true;
         return true;
     }
 
@@ -438,10 +464,39 @@ public:
     {
         if (stream_ != nullptr)
         {
+            // Destroy stream first so SDL stops invoking SdlStreamGetCallback before callback state clears.
             SDL_DestroyAudioStream(stream_);
             stream_ = nullptr;
         }
-        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+
+        {
+            std::lock_guard<std::mutex> lock(pull_mutex_);
+            dummy_stop_ = true;
+            pull_callback_ = nullptr;
+        }
+        dummy_cv_.notify_all();
+
+        if (dummy_thread_.joinable())
+        {
+            dummy_thread_.join();
+        }
+
+        if (audio_subsys_init_)
+        {
+            SDL_QuitSubSystem(SDL_INIT_AUDIO);
+            audio_subsys_init_ = false;
+        }
+        initialized_ = false;
+    }
+
+    void SetPullCallback(AudioPullCallback callback) override
+    {
+        {
+            std::lock_guard<std::mutex> lock(pull_mutex_);
+            pull_callback_ = std::move(callback);
+            dummy_reset_clock_ = true;
+        }
+        dummy_cv_.notify_all();
     }
 
     bool QueueAudio(const int16_t* samples, size_t frame_count) override
@@ -450,13 +505,159 @@ public:
         {
             return config_.dummy;
         }
-        int byte_count = static_cast<int>(frame_count * config_.channels * sizeof(int16_t));
+        int byte_count = static_cast<int>(frame_count * static_cast<size_t>(config_.channels) * sizeof(int16_t));
         return SDL_PutAudioStreamData(stream_, samples, byte_count);
     }
 
 private:
+    static void SDLCALL SdlStreamGetCallback(
+        void* userdata,
+        SDL_AudioStream* stream,
+        int additional_amount,
+        int /*total_amount*/)
+    {
+        auto* self = static_cast<SdlAudioBackend*>(userdata);
+        if (self == nullptr || stream == nullptr || additional_amount <= 0)
+        {
+            return;
+        }
+
+        AudioPullCallback cb;
+        {
+            std::lock_guard<std::mutex> lock(self->pull_mutex_);
+            cb = self->pull_callback_;
+        }
+        if (!cb)
+        {
+            // Allow legacy QueueAudio push mode without zero injection.
+            return;
+        }
+
+        const size_t channels = static_cast<size_t>(std::max<int32_t>(1, self->config_.channels));
+        const size_t frame_bytes = channels * sizeof(int16_t);
+        const size_t frames_needed = (static_cast<size_t>(additional_amount) + frame_bytes - 1) / frame_bytes;
+        if (frames_needed == 0)
+        {
+            return;
+        }
+
+        self->sdl_scratch_.assign(frames_needed * channels, 0);
+        cb(self->sdl_scratch_.data(), frames_needed);
+        SDL_PutAudioStreamData(
+            stream,
+            self->sdl_scratch_.data(),
+            static_cast<int>(frames_needed * frame_bytes));
+    }
+
+    void DummyThreadMain()
+    {
+        const uint64_t rate = static_cast<uint64_t>(std::max<int32_t>(1, config_.sample_rate));
+        const size_t channels = static_cast<size_t>(std::max<int32_t>(1, config_.channels));
+        const size_t period_frames = static_cast<size_t>(std::max<int32_t>(64, config_.buffer_frames));
+        std::vector<int16_t> scratch(period_frames * channels, 0);
+
+        auto base_time = std::chrono::steady_clock::now();
+        uint64_t pulled_frames = 0;
+
+        for (;;)
+        {
+            AudioPullCallback cb;
+            {
+                std::unique_lock<std::mutex> lock(pull_mutex_);
+                dummy_cv_.wait(lock, [this]()
+                {
+                    return dummy_stop_ || static_cast<bool>(pull_callback_);
+                });
+                if (dummy_stop_)
+                {
+                    break;
+                }
+                if (dummy_reset_clock_)
+                {
+                    base_time = std::chrono::steady_clock::now();
+                    pulled_frames = 0;
+                    dummy_reset_clock_ = false;
+                }
+                cb = pull_callback_;
+            }
+
+            if (!cb)
+            {
+                continue;
+            }
+
+            const uint64_t next_target = pulled_frames + period_frames;
+            const auto next_wakeup =
+                base_time + std::chrono::nanoseconds((next_target * 1000000000ull) / rate);
+
+            {
+                std::unique_lock<std::mutex> lock(pull_mutex_);
+                dummy_cv_.wait_until(lock, next_wakeup, [this]()
+                {
+                    return dummy_stop_ || !pull_callback_ || dummy_reset_clock_;
+                });
+                if (dummy_stop_)
+                {
+                    break;
+                }
+                if (!pull_callback_ || dummy_reset_clock_)
+                {
+                    continue;
+                }
+                cb = pull_callback_;
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            if (now <= base_time)
+            {
+                continue;
+            }
+
+            const uint64_t elapsed_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(now - base_time).count());
+            const uint64_t due_total = (elapsed_ns * rate) / 1000000000ull;
+            if (due_total <= pulled_frames)
+            {
+                continue;
+            }
+
+            uint64_t frames_due = due_total - pulled_frames;
+            const uint64_t max_burst = rate / 5ull; // cap burst to 200 ms on OS stall
+            if (frames_due > max_burst)
+            {
+                pulled_frames = due_total - max_burst;
+                frames_due = max_burst;
+            }
+
+            while (frames_due >= period_frames)
+            {
+                {
+                    std::lock_guard<std::mutex> lock(pull_mutex_);
+                    if (dummy_stop_ || !pull_callback_ || dummy_reset_clock_)
+                    {
+                        break;
+                    }
+                    cb = pull_callback_;
+                }
+                std::fill(scratch.begin(), scratch.end(), int16_t{0});
+                cb(scratch.data(), period_frames);
+                pulled_frames += period_frames;
+                frames_due -= period_frames;
+            }
+        }
+    }
+
     AudioConfig config_;
+    bool initialized_ = false;
+    bool audio_subsys_init_ = false;
     SDL_AudioStream* stream_ = nullptr;
+    std::mutex pull_mutex_;
+    std::condition_variable dummy_cv_;
+    AudioPullCallback pull_callback_;
+    bool dummy_stop_ = false;
+    bool dummy_reset_clock_ = true;
+    std::thread dummy_thread_;
+    std::vector<int16_t> sdl_scratch_;
 };
 
 std::unique_ptr<SdlDisplayBackend> g_display;

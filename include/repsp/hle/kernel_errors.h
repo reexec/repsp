@@ -57,6 +57,53 @@ constexpr int32_t kSceKernelErrorInvalidSize = static_cast<int32_t>(0x80000104u)
 constexpr int32_t kSceKernelErrorInvalidMode = static_cast<int32_t>(0x80000107u);     // SCE_ERROR_INVALID_MODE
 constexpr int32_t kSceKernelErrorInvalidValue = static_cast<int32_t>(0x800001FEu);    // SCE_ERROR_INVALID_VALUE
 
+// ModuleMgr errors (uOFW)
+constexpr int32_t kSceKernelErrorPrxTypeUnsupported = static_cast<int32_t>(0x80020148u); // SCE_KERNEL_ERROR_PRX_TYPE_UNSUPPORTED
+
+// sceAudio errors (uOFW kd/audio, PSPSDK pspaudio.h)
+constexpr int32_t kSceAudioErrorNotInitialized = static_cast<int32_t>(0x80260001u);   // SCE_AUDIO_ERROR_NOT_INITIALIZED
+constexpr int32_t kSceAudioErrorOutputBusy = static_cast<int32_t>(0x80260002u);       // SCE_AUDIO_ERROR_OUTPUT_BUSY
+constexpr int32_t kSceAudioErrorInvalidCh = static_cast<int32_t>(0x80260003u);        // SCE_AUDIO_ERROR_INVALID_CH
+constexpr int32_t kSceAudioErrorPrivRequired = static_cast<int32_t>(0x80260004u);     // SCE_AUDIO_ERROR_PRIV_REQUIRED
+constexpr int32_t kSceAudioErrorNotFound = static_cast<int32_t>(0x80260005u);         // SCE_AUDIO_ERROR_NOT_FOUND
+constexpr int32_t kSceAudioErrorInvalidSize = static_cast<int32_t>(0x80260006u);      // SCE_AUDIO_ERROR_INVALID_SIZE
+constexpr int32_t kSceAudioErrorInvalidFormat = static_cast<int32_t>(0x80260007u);    // SCE_AUDIO_ERROR_INVALID_FORMAT
+constexpr int32_t kSceAudioErrorNotReserved = static_cast<int32_t>(0x80260008u);      // SCE_AUDIO_ERROR_NOT_RESERVED
+constexpr int32_t kSceAudioErrorNotOutput = static_cast<int32_t>(0x80260009u);        // SCE_AUDIO_ERROR_NOT_OUTPUT
+constexpr int32_t kSceAudioErrorInvalidFrequency = static_cast<int32_t>(0x8026000Au); // SCE_AUDIO_ERROR_INVALID_FREQUENCY
+constexpr int32_t kSceAudioErrorInvalidVolume = static_cast<int32_t>(0x8026000Bu);    // SCE_AUDIO_ERROR_INVALID_VOLUME
+
+// sceSasCore errors (public Sony/PSP SDK facility 0x8042)
+constexpr int32_t kSceSasErrorInvalidGrain = static_cast<int32_t>(0x80420001u);       // SCE_SAS_ERROR_NSMPL / INVALID_GRAIN
+constexpr int32_t kSceSasErrorInvalidMaxVoices = static_cast<int32_t>(0x80420002u);   // SCE_SAS_ERROR_INVALID_MAX_VOICES
+constexpr int32_t kSceSasErrorInvalidVoice = static_cast<int32_t>(0x80420010u);       // SCE_SAS_ERROR_INVALID_VOICE
+constexpr int32_t kSceSasErrorInvalidParameter = static_cast<int32_t>(0x80420014u);   // SCE_SAS_ERROR_ADPCM_SIZE / INVALID_PARAMETER
+constexpr int32_t kSceSasErrorInvalidFxType = static_cast<int32_t>(0x80420020u);      // SCE_SAS_ERROR_FX_TYPE
+
+// sceAtrac3plus errors (PSPSDK pspatrac3.h)
+constexpr int32_t kSceAtracErrorParamFail = static_cast<int32_t>(0x80630001u);            // PSP_ATRAC_ERROR_PARAM_FAIL
+constexpr int32_t kSceAtracErrorApiFail = static_cast<int32_t>(0x80630002u);              // PSP_ATRAC_ERROR_API_FAIL
+constexpr int32_t kSceAtracErrorNoAtracId = static_cast<int32_t>(0x80630003u);            // PSP_ATRAC_ERROR_NO_ATRACID
+constexpr int32_t kSceAtracErrorBadCodecType = static_cast<int32_t>(0x80630004u);         // PSP_ATRAC_ERROR_BAD_CODECTYPE
+constexpr int32_t kSceAtracErrorBadAtracId = static_cast<int32_t>(0x80630005u);           // PSP_ATRAC_ERROR_BAD_ATRACID
+constexpr int32_t kSceAtracErrorUnknownFormat = static_cast<int32_t>(0x80630006u);         // PSP_ATRAC_ERROR_UNKNOWN_FORMAT
+constexpr int32_t kSceAtracErrorUnmatchFormat = static_cast<int32_t>(0x80630007u);         // PSP_ATRAC_ERROR_UNMATCH_FORMAT
+constexpr int32_t kSceAtracErrorBadData = static_cast<int32_t>(0x80630008u);               // PSP_ATRAC_ERROR_BAD_DATA
+constexpr int32_t kSceAtracErrorAllDataIsOnMemory = static_cast<int32_t>(0x80630009u);    // PSP_ATRAC_ERROR_ALLDATA_IS_ONMEMORY
+constexpr int32_t kSceAtracErrorUnsetData = static_cast<int32_t>(0x80630010u);             // PSP_ATRAC_ERROR_UNSET_DATA
+constexpr int32_t kSceAtracErrorReadSizeIsTooSmall = static_cast<int32_t>(0x80630011u);    // PSP_ATRAC_ERROR_READSIZE_IS_TOO_SMALL
+constexpr int32_t kSceAtracErrorNeedSecondBuffer = static_cast<int32_t>(0x80630012u);      // PSP_ATRAC_ERROR_NEED_SECOND_BUFFER
+constexpr int32_t kSceAtracErrorReadSizeOverBuffer = static_cast<int32_t>(0x80630013u);    // PSP_ATRAC_ERROR_READSIZE_OVER_BUFFER
+constexpr int32_t kSceAtracErrorNot4ByteAlignment = static_cast<int32_t>(0x80630014u);    // PSP_ATRAC_ERROR_NOT_4BYTE_ALIGNMENT
+constexpr int32_t kSceAtracErrorBadSample = static_cast<int32_t>(0x80630015u);             // PSP_ATRAC_ERROR_BAD_SAMPLE
+constexpr int32_t kSceAtracErrorWriteByteFirstBuffer = static_cast<int32_t>(0x80630016u); // PSP_ATRAC_ERROR_WRITEBYTE_FIRST_BUFFER
+constexpr int32_t kSceAtracErrorWriteByteSecondBuffer = static_cast<int32_t>(0x80630017u);// PSP_ATRAC_ERROR_WRITEBYTE_SECOND_BUFFER
+constexpr int32_t kSceAtracErrorAddDataIsTooBig = static_cast<int32_t>(0x80630018u);      // PSP_ATRAC_ERROR_ADD_DATA_IS_TOO_BIG
+constexpr int32_t kSceAtracErrorUnsetParam = static_cast<int32_t>(0x80630021u);            // PSP_ATRAC_ERROR_UNSET_PARAM
+constexpr int32_t kSceAtracErrorNoNeedSecondBuffer = static_cast<int32_t>(0x80630022u);  // PSP_ATRAC_ERROR_NONEED_SECOND_BUFFER
+constexpr int32_t kSceAtracErrorNoDataInBuffer = static_cast<int32_t>(0x80630023u);      // PSP_ATRAC_ERROR_NODATA_IN_BUFFER
+constexpr int32_t kSceAtracErrorAllDataWasDecoded = static_cast<int32_t>(0x80630024u);   // PSP_ATRAC_ERROR_ALLDATA_WAS_DECODED
+
 } // namespace repsp::hle
 
 #endif // REPSP_HLE_KERNEL_ERRORS_H

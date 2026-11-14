@@ -37,6 +37,7 @@ enum class WaitType
     kEventFlag,
     kAsyncIo,
     kUmd,
+    kAudio,
     kCustom,
 };
 
@@ -133,8 +134,10 @@ public:
     void YieldCurrent();
     void Poll();
 
-    // External event notification (e.g. vblank or host event)
+    // External event notification (e.g. vblank or host audio clock)
     void SetExternalWaitSources(uint32_t count);
+    void AddExternalWaitSource(uint32_t count = 1);
+    void RemoveExternalWaitSource(uint32_t count = 1);
     void NotifyExternalEvent();
     void RequestStop(const std::string& reason);
 

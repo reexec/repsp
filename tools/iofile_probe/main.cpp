@@ -147,6 +147,40 @@ int main()
 
     TEST_ASSERT(CallHle3("sceIoClose", static_cast<uint32_t>(afd), 0, 0) == 0);
 
+    // 5. ModuleMgr HLE PRX whitelist checks (AV modules vs unknown PRX)
+    {
+        const std::filesystem::path mod_dir = tmp_root / "disc" / "PSP_GAME" / "USRDIR" / "modules";
+        std::filesystem::create_directories(mod_dir, ec);
+        const char* kWhitelistPrxs[] = {
+            "sc_sascore.prx",
+            "audiocodec.prx",
+            "libatrac3plus.prx",
+            "videocodec.prx",
+            "mpegbase.prx",
+            "mpeg.prx",
+        };
+        for (const char* name : kWhitelistPrxs)
+        {
+            std::ofstream f(mod_dir / name, std::ios::binary);
+            f.write("~PSP", 4);
+            f.close();
+
+            WriteGuestStr(path_addr, std::string("disc0:/PSP_GAME/USRDIR/modules/") + name);
+            const int32_t modid = CallHle3("sceKernelLoadModule", path_addr, 0, 0);
+            TEST_ASSERT(modid > 0);
+            TEST_ASSERT(CallHle3("sceKernelStartModule", static_cast<uint32_t>(modid), 0, 0) == 0);
+            TEST_ASSERT(CallHle3("sceKernelStopModule", static_cast<uint32_t>(modid), 0, 0) == 0);
+            TEST_ASSERT(CallHle3("sceKernelUnloadModule", static_cast<uint32_t>(modid), 0, 0) == 0);
+        }
+
+        std::ofstream unk(mod_dir / "unknown_test.prx", std::ios::binary);
+        unk.write("~PSP", 4);
+        unk.close();
+        WriteGuestStr(path_addr, "disc0:/PSP_GAME/USRDIR/modules/unknown_test.prx");
+        const int32_t unk_err = CallHle3("sceKernelLoadModule", path_addr, 0, 0);
+        TEST_ASSERT(unk_err == kSceKernelErrorPrxTypeUnsupported);
+    }
+
     kernel::Register(kernel::KernelConfig{}); // closes any remaining files cleanly
     std::filesystem::remove_all(tmp_root, ec);
 

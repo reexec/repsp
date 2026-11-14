@@ -5,9 +5,11 @@
 #include "repsp/platform/virtual_memory.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 
 #define TEST_ASSERT(cond) \
     do \
@@ -169,6 +171,24 @@ int main()
         TEST_ASSERT(st.ly == 0.0f);
     }
     TEST_ASSERT(GetAudio() != nullptr);
+    {
+        std::atomic<uint64_t> pulled_frames{0};
+        GetAudio()->SetPullCallback([&pulled_frames](int16_t* out, size_t frames) {
+            if (out != nullptr && frames > 0)
+            {
+                for (size_t i = 0; i < frames * 2; ++i)
+                {
+                    out[i] = 0;
+                }
+            }
+            pulled_frames.fetch_add(frames, std::memory_order_relaxed);
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        GetAudio()->SetPullCallback(nullptr);
+        // 60 ms at 44.1 kHz is ~2646 frames; allow wide host scheduling tolerance while proving real-time pacing.
+        const uint64_t frames = pulled_frames.load(std::memory_order_relaxed);
+        TEST_ASSERT(frames >= 400 && frames <= 15000);
+    }
     Shutdown();
     TEST_ASSERT(GetInput() == nullptr);
 

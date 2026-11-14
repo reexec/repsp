@@ -10,7 +10,7 @@ repsp는 여러 PSP 타이틀 정적 재컴파일 프로젝트가 공유하는 �
 
 ```mermaid
 flowchart BT
-    PLAT["repsp_platform<br/>Virtual memory, Guarded run (SEH/signals), Host threads, SDL3 display/input"]
+    PLAT["repsp_platform<br/>Virtual memory, Guarded run (SEH/signals), Host threads, SDL3 display/input/audio"]
     MOD["repsp_module<br/>PARAM.SFO parser, PRX loader"]
     RT["repsp_runtime<br/>GuestMemory, NID registry & names, Scheduler + IRQ stack, VFS, VblankClock"]
     GPU["repsp_gpu<br/>GE display list interpreter & software rasterizer"]
@@ -20,6 +20,9 @@ flowchart BT
     HLED["repsp_hle_display<br/>sceDisplay HLE"]
     HLEC["repsp_hle_ctrl<br/>sceCtrl HLE & ring buffer"]
     HLEDM["repsp_hle_dmac<br/>sceDmacMemcpy HLE"]
+    HAUD["repsp_hle_audio<br/>sceAudio HLE & mixer"]
+    HSAS["repsp_hle_sascore<br/>sceSasCore VAG synth"]
+    HATR["repsp_hle_atrac<br/>sceAtrac3plus & AtracDecoder"]
 
     MOD --> PLAT
     RT --> MOD
@@ -34,6 +37,10 @@ flowchart BT
     HLEC --> REC
     HLEC --> PLAT
     HLEDM --> REC
+    HAUD --> REC
+    HAUD --> PLAT
+    HSAS --> REC
+    HATR --> REC
 ```
 
 | 타깃 | 별칭 | 공개 헤더 경로 | 주요 책임 |
@@ -48,6 +55,9 @@ flowchart BT
 | `repsp_hle_display` | `repsp::hle_display` | `include/repsp/hle/display.h` | `sceDisplay` 6개 NID 등록(`repsp::hle::display::Register`), `VblankClock` 구독, RGBA8 변환 및 BMP 프레임 덤프 |
 | `repsp_hle_ctrl` | `repsp::hle_ctrl` | `include/repsp/hle/ctrl.h` | `sceCtrl` 3개 NID 등록(`repsp::hle::ctrl::Register`), `VblankClock` 기반 64항목 입력 링 버퍼, 테스트/스크립트용 `SetInputSource` 주입 |
 | `repsp_hle_dmac` | `repsp::hle_dmac` | `include/repsp/hle/dmac.h` | `sceDmac` `sceDmacMemcpy` NID 등록(`repsp::hle::dmac::Register`) |
+| `repsp_hle_audio` | `repsp::hle_audio` | `include/repsp/hle/audio.h` | `sceAudio` 6개 NID 등록, 8채널 이중 버퍼 대기, 끌어가기(pull) 믹서 및 더미 단조 시계 동기 |
+| `repsp_hle_sascore` | `repsp::hle_sascore` | `include/repsp/hle/sascore.h` | `sceSasCore` 13개 NID 등록, Sony VAG ADPCM/ADSR 32-보이스 믹서(드라이 전용 리버브) |
+| `repsp_hle_atrac` | `repsp::hle_atrac` | `include/repsp/hle/atrac.h` | `sceAtrac3plus` 11개 NID 등록, RIFF 파서·스트림 상태 머신, 교체형 `AtracDecoder`/`SilentDecoder` |
 
 ---
 
@@ -164,6 +174,13 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 * `repsp::hle::ctrl::SetInputSource(fn)`을 호출하면 기본 `platform::InputBackend` 폴링 대신 합성/스크립트 입력 공급자 `fn(vcount) -> ControllerState`를 사용할 수 있으며, `nullptr`로 복원할 수 있습니다.
 * `repsp::hle::ctrl::GetStats()` / `FormatStats()`로 샘플링 주기·모드·생성/읽기 통계를 조회할 수 있습니다.
 
+### 2.11. 오디오·SAS·ATRAC 계약 (`audio.h`, `sascore.h`, `atrac.h`)
+
+* 소비자는 `repsp::hle::audio::Register()`, `repsp::hle::sascore::Register()`, `repsp::hle::atrac::Register()`로 30개 오디오 NID(`sceAudio` 6, `sceSasCore` 13, `sceAtrac3plus` 11)를 등록하고 종료 시 각각 `Shutdown()`으로 정리합니다.
+* `repsp::platform::AudioBackend::SetPullCallback`은 끌어가기(pull) 모델을 사용합니다. 실제 장치가 열리면 `SDL_OpenAudioDeviceStream` 콜백이, `audio.dummy = true`인 헤드리스 모드에서는 호스트 단조 시계 스레드가 44.1 kHz 속도로 `MixPull()`을 구동하며 `WaitType::kAudio`와 `AddExternalWaitSource`/`RemoveExternalWaitSource`를 통해 `VblankClock`과 외부 대기 원천을 안전하게 합성합니다.
+* `repsp::hle::atrac::SetDecoder(AtracDecoder*)`로 코덱 디코더를 교체할 수 있으며, 기본값은 `SilentDecoder`(PCM 0 출력)입니다. `FormatStats()`는 항상 `"ATRAC decode: silent"`(또는 활성 디코더 이름)와 SAS의 `"reverb=dry only (not mixed)"` 상태를 명시합니다.
+* `ModuleMgr` HLE 화이트리스트는 HLE가 제공하는 Sony AV PRX(`sc_sascore.prx`, `audiocodec.prx`, `libatrac3plus.prx`, `videocodec.prx`, `mpegbase.prx`, `mpeg.prx`)만 성공 핸들을 돌려주고 알 수 없는 PRX는 `kSceKernelErrorPrxTypeUnsupported`(`0x80020148`)로 거부합니다.
+
 ---
 
 # Architecture and Consumer Contract (English)
@@ -177,7 +194,7 @@ Layers depend strictly downward as shown in the diagram and table above.
 ## 2. Consumer Contract
 
 ### 2.1. CMake Integration
-Consumers add repsp via `add_subdirectory(third_party/repsp)` and link against public alias targets (`repsp::platform`, `repsp::module`, `repsp::runtime`, `repsp::gpu`, `repsp::recomp`, `repsp::hle_kernel`, `repsp::hle_ge`, `repsp::hle_display`, `repsp::hle_ctrl`, `repsp::hle_dmac`).
+Consumers add repsp via `add_subdirectory(third_party/repsp)` and link against public alias targets (`repsp::platform`, `repsp::module`, `repsp::runtime`, `repsp::gpu`, `repsp::recomp`, `repsp::hle_kernel`, `repsp::hle_ge`, `repsp::hle_display`, `repsp::hle_ctrl`, `repsp::hle_dmac`, `repsp::hle_audio`, `repsp::hle_sascore`, `repsp::hle_atrac`).
 
 ### 2.2. CPU Register Contract (`guest_cpu.h`)
 repsp owns no register file. Consumers register the `repsp_guest_cpu_ops` callback table (including `get_fpr`/`set_fpr` for COP1 float returns) at startup.
@@ -216,3 +233,7 @@ Consumers register `repsp::hle::ge::Register()` and `repsp::hle::display::Regist
 ### 2.10. Controller Input and DMAC Contract (`ctrl.h`, `dmac.h`)
 
 Consumers register `repsp::hle::ctrl::Register()` and `repsp::hle::dmac::Register()` for `sceCtrl` (3 NIDs) and `sceDmac` (`sceDmacMemcpy`), and call `Shutdown()` on exit. `repsp::hle::ctrl::SetInputSource(fn)` injects a custom `fn(vcount) -> ControllerState` source instead of polling `platform::InputBackend` (pass `nullptr` to restore). `repsp::hle::ctrl::GetStats()` / `FormatStats()` expose sampling cycle/mode and sample counters.
+
+### 2.11. Audio, SAS Synthesizer, and ATRAC Contract (`audio.h`, `sascore.h`, `atrac.h`)
+
+Consumers register `repsp::hle::audio::Register()`, `repsp::hle::sascore::Register()`, and `repsp::hle::atrac::Register()` for 30 audio NIDs (`sceAudio` 6, `sceSasCore` 13, `sceAtrac3plus` 11) and call `Shutdown()` on exit. `platform::AudioBackend::SetPullCallback` drives synchronous mixing via SDL3 pull stream or a 44.1 kHz steady-clock dummy thread, composing `WaitType::kAudio` with `VblankClock` via `AddExternalWaitSource`/`RemoveExternalWaitSource`. `repsp::hle::atrac::SetDecoder(AtracDecoder*)` swaps the codec decoder (defaulting to `SilentDecoder`), and `FormatStats()` explicitly reports `"ATRAC decode: silent"` and SAS `"reverb=dry only (not mixed)"`. `ModuleMgr` whitelists HLE-backed Sony AV PRXs and rejects unknown PRXs with `kSceKernelErrorPrxTypeUnsupported` (`0x80020148`).
