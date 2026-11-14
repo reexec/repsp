@@ -123,14 +123,6 @@ public:
     {
         if (config_.dummy)
         {
-            SDL_Event event;
-            while (SDL_PollEvent(&event))
-            {
-                if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
-                {
-                    return false;
-                }
-            }
             return true;
         }
         return !close_requested_.load();

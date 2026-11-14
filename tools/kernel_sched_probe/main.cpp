@@ -415,7 +415,7 @@ void FakeCallGuest(uint32_t addr)
 }
 
 const repsp_guest_cpu_ops g_fake_ops = {
-    sizeof(FakeCpuState), FakeSave, FakeRestore, FakeGetGpr, FakeSetGpr, FakeCallGuest
+    sizeof(FakeCpuState), FakeSave, FakeRestore, FakeGetGpr, FakeSetGpr, FakeCallGuest, nullptr, nullptr
 };
 
 } // namespace
