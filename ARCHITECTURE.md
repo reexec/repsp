@@ -25,6 +25,7 @@ flowchart BT
     HSAS["repsp_hle_sascore<br/>sceSasCore VAG synth"]
     HATR["repsp_hle_atrac<br/>sceAtrac3plus & AU queue"]
     HMPEG["repsp_hle_mpeg<br/>sceMpeg HLE, PSMF & PS demux"]
+    HUTIL["repsp_hle_utility<br/>sceUtility Savedata & MsgDialog"]
 
     MOD --> PLAT
     RT --> MOD
@@ -47,6 +48,8 @@ flowchart BT
     HATR --> CODEC
     HMPEG --> REC
     HMPEG --> CODEC
+    HUTIL --> REC
+    HUTIL --> PLAT
 ```
 
 | 타깃 | 별칭 | 공개 헤더 경로 | 주요 책임 |
@@ -66,6 +69,7 @@ flowchart BT
 | `repsp_hle_sascore` | `repsp::hle_sascore` | `include/repsp/hle/sascore.h` | `sceSasCore` 13개 NID 등록, Sony VAG ADPCM/ADSR 32-보이스 믹서(드라이 전용 리버브) |
 | `repsp_hle_atrac` | `repsp::hle_atrac` | `include/repsp/hle/atrac.h` | `sceAtrac3plus` 11개 NID 등록, RIFF 파서·스트림 상태 머신 (`repsp::codec::AtracDecoder` 사용) |
 | `repsp_hle_mpeg` | `repsp::hle_mpeg` | `include/repsp/hle/mpeg.h` | `sceMpeg` 24개 NID 등록, PSMF 파서, MPEG-2 PS/PES 디먹서, 링 버퍼 게스트 콜백, AVC/ATRAC AU 큐 (`repsp::codec` 디코더 사용) |
+| `repsp_hle_utility` | `repsp::hle_utility` | `include/repsp/hle/utility.h` | `sceUtility` 8개 NID 등록(Savedata·MsgDialog), 단일 다이얼로그 상태 머신, 호스트 평문 슬롯/`PARAM.SFO` 입출력, `DialogPolicy` |
 
 ---
 
@@ -196,6 +200,12 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 * 소비자는 `repsp::hle::mpeg::Register()`로 24개 `sceMpeg` NID를 등록하고 종료 시 `repsp::hle::mpeg::Shutdown()`으로 정리합니다.
 * `repsp::hle::mpeg::SetAvcDecoder(AvcDecoder*)` 및 `SetAtracDecoder(AtracDecoder*)`로 디코더를 교체할 수 있으며, 기본값은 불투명 검은 프레임(`BlankAvcDecoder`)과 무음(`SilentDecoder`)입니다. `FormatStats()`는 `"AVC decode: blank"`와 `"ATRAC decode: silent"` 및 디코딩·분리 통계를 보고합니다.
 
+### 2.13. `sceUtility` 세이브 데이터 및 메시지 다이얼로그 계약 (`utility.h`)
+
+* 소비자는 `repsp::hle::utility::Register(const Config&)`로 `sceUtility` 8개 NID(`SavedataInitStart/GetStatus/Update/ShutdownStart`, `MsgDialogInitStart/GetStatus/Update/ShutdownStart`)를 등록하고 종료 시 `Shutdown()`으로 정리합니다.
+* `Config::save_root`가 비어 있으면 `platform::GetUserDataDirectory("repsp") / "savedata"` 아래에 `<gameName><saveName>/` 슬롯 디렉터리를 두고 평문 세이브 데이터, `ParamSfo::Parse` 호환 `PARAM.SFO`, 보조 자산(`ICON0.PNG`, `ICON1.PMF`, `PIC1.PNG`, `SND0.AT3`)을 임시 파일 교체 방식으로 기록/로드합니다. 구현되지 않은 savedata 모드는 `platform::RaiseStop`으로 멈춥니다.
+* 다이얼로그 UI는 직접 그리지 않으며(`FormatStats()`에 `"dialog UI: not drawn"` 명시), `SetDialogPolicy(DialogPolicy)`로 `Yes/No`/확인 응답을 주입하고 모든 다이얼로그 텍스트·선택지를 `Stats::dialog_records`에 남깁니다. `utility_probe`로 상태 전이, 세이브/로드 왕복, 오류 코드, 미구현 모드 정지, 정책 응답을 검증합니다.
+
 ---
 
 # Architecture and Consumer Contract (English)
@@ -209,7 +219,7 @@ Layers depend strictly downward as shown in the diagram and table above.
 ## 2. Consumer Contract
 
 ### 2.1. CMake Integration
-Consumers add repsp via `add_subdirectory(third_party/repsp)` and link against public alias targets (`repsp::platform`, `repsp::module`, `repsp::runtime`, `repsp::codec`, `repsp::gpu`, `repsp::recomp`, `repsp::hle_kernel`, `repsp::hle_ge`, `repsp::hle_display`, `repsp::hle_ctrl`, `repsp::hle_dmac`, `repsp::hle_audio`, `repsp::hle_sascore`, `repsp::hle_atrac`, `repsp::hle_mpeg`).
+Consumers add repsp via `add_subdirectory(third_party/repsp)` and link against public alias targets (`repsp::platform`, `repsp::module`, `repsp::runtime`, `repsp::codec`, `repsp::gpu`, `repsp::recomp`, `repsp::hle_kernel`, `repsp::hle_ge`, `repsp::hle_display`, `repsp::hle_ctrl`, `repsp::hle_dmac`, `repsp::hle_audio`, `repsp::hle_sascore`, `repsp::hle_atrac`, `repsp::hle_mpeg`, `repsp::hle_utility`).
 
 ### 2.2. CPU Register Contract (`guest_cpu.h`)
 repsp owns no register file. Consumers register the `repsp_guest_cpu_ops` callback table (including `get_fpr`/`set_fpr` for COP1 float returns) at startup.
@@ -257,3 +267,7 @@ Consumers register `repsp::hle::audio::Register()`, `repsp::hle::sascore::Regist
 ### 2.12. Codec and `sceMpeg` Contract (`codec/`, `mpeg.h`)
 
 `repsp_codec` holds shared decoder contracts (`repsp::codec::AtracDecoder`/`SilentDecoder`, `repsp::codec::AvcDecoder`/`BlankAvcDecoder`) so HLE modules never link each other (`repsp::hle::atrac::` exposes `using` aliases for compatibility). Consumers register the 24 `sceMpeg` NIDs with `repsp::hle::mpeg::Register()` and tear down with `Shutdown()`. `SetAvcDecoder`/`SetAtracDecoder` swap decoders (defaulting to `BlankAvcDecoder` opaque black frames and `SilentDecoder` silence); `FormatStats()` reports `"AVC decode: blank"`, `"ATRAC decode: silent"`, and demux/decode counts.
+
+### 2.13. `sceUtility` Savedata and MsgDialog Contract (`utility.h`)
+
+Consumers register the 8 `sceUtility` NIDs (`Savedata*` and `MsgDialog*`) via `repsp::hle::utility::Register(const Config&)` and tear down with `Shutdown()`. Slots are stored under `Config::save_root` (defaulting to `GetUserDataDirectory("repsp") / "savedata"`) using unencrypted payloads, `ParamSfo::Parse`-compatible `PARAM.SFO`, auxiliary media files, and atomic `.tmp` renames; unimplemented modes stop via `RaiseStop`. Dialog UI is not drawn (`FormatStats()` reports `"dialog UI: not drawn"`); `SetDialogPolicy(DialogPolicy)` handles prompt answers while recording every dialog in `Stats::dialog_records`. `utility_probe` verifies transitions, round-trip I/O, errors, unimplemented mode stops, and policy callbacks.
