@@ -11,25 +11,36 @@ repsp는 여러 PSP 타이틀 정적 재컴파일 프로젝트가 공유하는 �
 ```mermaid
 flowchart BT
     PLAT["repsp_platform<br/>Virtual memory, Guarded run (SEH/signals), Host threads, SDL3"]
-    MOD["repsp_module<br/>PARAM.SFO parser (ELF/PRX, PBP, ISO9660 later)"]
-    RT["repsp_runtime<br/>GuestMemory (based + mirror fold), NID registry, SHA-1, logging"]
+    MOD["repsp_module<br/>PARAM.SFO parser, PRX loader"]
+    RT["repsp_runtime<br/>GuestMemory, NID registry & names, Scheduler + IRQ stack, VFS"]
+    GPU["repsp_gpu<br/>GE display list interpreter & software rasterizer"]
     REC["repsp_recomp<br/>Lifter-neutral CPU contract, MIPS ABI helpers, C memory API"]
-    HLE["repsp_hle_kernel<br/>Kernel firmware HLE entry points"]
+    HLEK["repsp_hle_kernel<br/>Kernel/UMD HLE"]
+    HLEG["repsp_hle_ge<br/>sceGe_user HLE"]
+    HLED["repsp_hle_display<br/>sceDisplay HLE & VBlank"]
 
     MOD --> PLAT
     RT --> MOD
     RT --> PLAT
+    GPU --> RT
     REC --> RT
-    HLE --> REC
+    HLEK --> REC
+    HLEG --> REC
+    HLEG --> GPU
+    HLED --> REC
+    HLED --> PLAT
 ```
 
 | 타깃 | 별칭 | 공개 헤더 경로 | 주요 책임 |
 |---|---|---|---|
-| `repsp_platform` | `repsp::platform` | `include/repsp/platform/` | 가상 메모리 예약/commit/보호, 보호 실행(`GuardedRun`), 호스트 스레드 생성/CPU 시간, 파일 경로, SDL3 연동 |
+| `repsp_platform` | `repsp::platform` | `include/repsp/platform/` | 가상 메모리 예약/commit/보호, 보호 실행(`GuardedRun`), 호스트 스레드 생성/CPU 시간, 파일 경로, SDL3 창/RGBA8 출력 |
 | `repsp_module` | `repsp::module` | `include/repsp/module/` | `PARAM.SFO` 바이너리 파서, PRX 로더 및 재배치 (`ParsePrx`, `RelocateToBuffer`) |
-| `repsp_runtime` | `repsp::runtime` | `include/repsp/runtime/` | 게스트 물리 메모리, 미러 접기, NID 레지스트리 및 `REPSP_HLE_TRACE`, 커널 객체 표(`KernelObjectTable`), 단조 시계(`Clock`), `Vfs`, `UserPartition`, 단일 코어 `Scheduler`, PRX 메모리 로드 |
-| `repsp_recomp` | `repsp::recomp` | `include/repsp/recomp/` | lifter 중립 CPU 콜백 계약(`repsp_guest_cpu_ops`), 인자/반환 도우미, C 메모리 접근 함수, 안전점 `repsp_recomp_poll` |
+| `repsp_runtime` | `repsp::runtime` | `include/repsp/runtime/` | 게스트 물리 메모리, 미러 접기, NID 레지스트리·SHA-1 이름표(`nid_names.h`), 커널 객체 표, `Clock`, `Vfs`, `UserPartition`, 단일 코어 `Scheduler`·인터럽트 큐 |
+| `repsp_gpu` | `repsp::gpu` | `include/repsp/gpu/` | GE 디스플레이 리스트 해석기(`GeInterpreter`) 및 소프트웨어 래스터라이저(`RenderBackend`) |
+| `repsp_recomp` | `repsp::recomp` | `include/repsp/recomp/` | lifter 중립 CPU 콜백 계약(`repsp_guest_cpu_ops`), 인자/반환 도우미(GPR/FPR), C 메모리 접근 함수, 안전점 `repsp_recomp_poll` |
 | `repsp_hle_kernel` | `repsp::hle_kernel` | `include/repsp/hle/` | `KernelConfig` 기반 커널/UMD HLE 65개 함수 등록(`repsp::hle::kernel::Register`), 오류 코드 정의(`kernel_errors.h`) |
+| `repsp_hle_ge` | `repsp::hle_ge` | `include/repsp/hle/ge.h` | `sceGe_user` 7개 NID 등록(`repsp::hle::ge::Register`), `SIGNAL`/`FINISH` 인터럽트 콜백 전달 |
+| `repsp_hle_display` | `repsp::hle_display` | `include/repsp/hle/display.h` | `sceDisplay` 6개 NID 등록(`repsp::hle::display::Register`), 59.94 Hz VBlank 스레드, RGBA8 변환 및 BMP 프레임 덤프 |
 
 ---
 
@@ -66,6 +77,8 @@ typedef struct repsp_guest_cpu_ops
     uint32_t (*get_gpr)(int index);               /* MIPS GPR 0..31 */
     void (*set_gpr)(int index, uint32_t value);
     void (*call_guest)(uint32_t address);         /* run a guest function until it returns */
+    uint32_t (*get_fpr)(int index);               /* MIPS COP1 FPR 0..31 bit pattern */
+    void (*set_fpr)(int index, uint32_t value);
 } repsp_guest_cpu_ops;
 
 void repsp_recomp_register_cpu(const repsp_guest_cpu_ops* ops);
@@ -128,8 +141,15 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 
 * 소비자는 `repsp::hle::kernel::Register(const KernelConfig&)`를 통해 장치 마운트(`disc0:`, `umd0:`, `ms0:` 등), 로드된 메인 모듈 이미지 범위(`module_image_base`, `module_image_size`)를 등록하고 65개 커널·UMD HLE 함수를 활성화합니다.
 * `repsp::runtime::GetScheduler()`는 `CreateThread`로 첫 `module_start` 스레드를 만들고 `Run(entry_thread_uid)`로 단일 코어 바톤 스케줄러를 구동합니다. 게스트 워커 스레드 내부의 `RaiseStop`이나 하드웨어 결함은 각 워커의 `GuardedRun`이 포착한 뒤, 모든 워커를 join하고 호출자 스레드의 바깥 `GuardedRun`으로 전파합니다. 교착 시에는 모든 스레드와 대기 대상을 담아 `RaiseStop`으로 멈춥니다.
+* **인터럽트 전달 계약**: `Scheduler::QueueInterrupt`로 적재된 인터럽트(예: GE `SIGNAL`/`FINISH`)는 `repsp_recomp_hle_call` 종료 시점, `repsp_recomp_poll()`, 유휴 루프 등 안전점에서 16 KiB 커널 인터럽트 스택(`0x08010000`)을 사용해 전달됩니다. 인터럽트 핸들러 안에서는 블로킹 대기·명시적 양보(`WaitCurrent`/`YieldCurrent`)가 금지되며 위반 시 즉시 `RaiseStop`으로 정지합니다.
 * 환경 변수 `REPSP_HLE_TRACE=1` 및 `REPSP_HLE_TRACE_LIMIT=<N>`으로 HLE 호출 추적을 제어하고 `PrintKernelSummary()`로 호출 횟수, 스레드, 열린 파일, 할당 블록을 요약할 수 있습니다.
 * **정지·대기 시 스택·잠금 계약**: `NidRegistry::Invoke`는 핸들러 실행 중 스택에 소유 객체(`std::function`, `std::string`)를 두지 않으며, `RaiseStop`/`WaitCurrent`/`YieldIfPreempted` 경로의 바깥 프레임은 뮤텍스 잠금을 유지하지 않습니다(대기 중 강제 종료되는 스레드의 안쪽 대기 핸들러 프레임 지역 객체만 누수 범위에 남습니다).
+
+### 2.9. GE·디스플레이 및 프레임 덤프 계약 (`ge.h`, `display.h`)
+
+* 소비자는 `repsp::hle::ge::Register()`와 `repsp::hle::display::Register(const DisplayHleConfig&)`로 `sceGe_user`와 `sceDisplay` HLE를 등록하고, 종료 시 `repsp::hle::display::Shutdown()`으로 VBlank·SDL 스레드를 정리합니다.
+* `DisplayHleConfig::headless`가 `true`이면 SDL 더미 비디오 드라이버로 창 없이 실행하며, `frame_dump_dir`·`frame_dump_limit`(또는 소비자 환경 변수 `REPSP_FRAME_DUMP`·`REPSP_FRAME_DUMP_LIMIT`)로 `frame_NNNN.bmp`를 기록할 수 있습니다.
+* `repsp::hle::ge::FormatStats()`와 `repsp::hle::display::FormatStats()`로 디스플레이 리스트·명령·프리미티브·FBP/FBW/PSM·VBlank 통계를 조회합니다.
 
 ---
 
@@ -144,10 +164,10 @@ Layers depend strictly downward as shown in the diagram and table above.
 ## 2. Consumer Contract
 
 ### 2.1. CMake Integration
-Consumers add repsp via `add_subdirectory(third_party/repsp)` and link against public alias targets (`repsp::platform`, `repsp::module`, `repsp::runtime`, `repsp::recomp`, `repsp::hle_kernel`).
+Consumers add repsp via `add_subdirectory(third_party/repsp)` and link against public alias targets (`repsp::platform`, `repsp::module`, `repsp::runtime`, `repsp::gpu`, `repsp::recomp`, `repsp::hle_kernel`, `repsp::hle_ge`, `repsp::hle_display`).
 
 ### 2.2. CPU Register Contract (`guest_cpu.h`)
-repsp owns no register file. Consumers register the `repsp_guest_cpu_ops` callback table at startup.
+repsp owns no register file. Consumers register the `repsp_guest_cpu_ops` callback table (including `get_fpr`/`set_fpr` for COP1 float returns) at startup.
 
 ### 2.3. Calling Convention Helpers (`recomp_helpers.h`)
 `Arg<T>(n)` reads MIPS arguments (0..3 in `$a0..$a3`, 4..7 in `$t0..$t3`, 8+ from stack `$sp`). `Return(v)` writes `$v0` (or `$v0:$v1` for 64-bit values).
@@ -174,3 +194,8 @@ Provides guarded execution for catching hardware faults and explicit stop reques
 
 Consumers configure VFS mounts and reserve the loaded module image range via `repsp::hle::kernel::Register(const KernelConfig&)`, then create the initial entry thread and run the single-core baton scheduler via `repsp::runtime::GetScheduler().Run(entry_uid)`. Worker-thread `RaiseStop` or hardware faults are caught per-worker, joined cleanly, and re-raised on the caller's outer `GuardedRun`. `REPSP_HLE_TRACE=1` and `REPSP_HLE_TRACE_LIMIT` control call tracing, and `PrintKernelSummary()` prints call counts, threads, open files, and partition blocks.
 * **Stop/wait stack & lock contract**: `NidRegistry::Invoke` keeps no owning objects (`std::function`, `std::string`) on the stack while calling `handler()`, and all outer frames across `RaiseStop`/`WaitCurrent`/`YieldIfPreempted` hold no mutex locks (only local objects inside an inner waiting handler frame may be leaked if a blocked thread is force-terminated).
+* **Interrupt delivery contract**: Queued interrupts (`Scheduler::QueueInterrupt`) are delivered at safe points using the dedicated 16 KiB kernel interrupt stack (`0x08010000`). Blocking waits or explicit yields inside an interrupt handler trigger `RaiseStop`.
+
+### 2.9. GE, Display, and Frame Dump Contract (`ge.h`, `display.h`)
+
+Consumers register `repsp::hle::ge::Register()` and `repsp::hle::display::Register(const DisplayHleConfig&)` and call `repsp::hle::display::Shutdown()` on exit. `headless = true` runs with the SDL dummy video driver; `frame_dump_dir` / `frame_dump_limit` write `frame_NNNN.bmp` dumps; `FormatStats()` exposes GE and Display counters.
