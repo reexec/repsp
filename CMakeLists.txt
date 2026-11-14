@@ -181,6 +181,15 @@ target_include_directories(repsp_hle_mpeg PUBLIC
 target_link_libraries(repsp_hle_mpeg PUBLIC repsp_runtime repsp_codec)
 repsp_apply_host_flags(repsp_hle_mpeg)
 
+add_library(repsp_hle_utility STATIC)
+add_library(repsp::hle_utility ALIAS repsp_hle_utility)
+target_include_directories(repsp_hle_utility PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(repsp_hle_utility PUBLIC repsp_runtime)
+repsp_apply_host_flags(repsp_hle_utility)
+
 add_subdirectory(src)
 
 if(REPSP_BUILD_PROBES)

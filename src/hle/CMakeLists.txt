@@ -53,3 +53,8 @@ target_sources(repsp_hle_mpeg PRIVATE
     mpeg/hle_mpeg.cpp
 )
 target_link_libraries(repsp_hle_mpeg PUBLIC repsp_recomp repsp_codec)
+
+target_sources(repsp_hle_utility PRIVATE
+    utility/hle_utility.cpp
+)
+target_link_libraries(repsp_hle_utility PUBLIC repsp_recomp)

@@ -10,6 +10,7 @@ function(add_repsp_probe name)
         repsp_hle_sascore
         repsp_hle_atrac
         repsp_hle_mpeg
+        repsp_hle_utility
         repsp_codec
         repsp_gpu
         repsp_recomp
@@ -39,3 +40,4 @@ add_repsp_probe(audio_probe)
 add_repsp_probe(sas_probe)
 add_repsp_probe(atrac_probe)
 add_repsp_probe(mpeg_probe)
+add_repsp_probe(utility_probe)
