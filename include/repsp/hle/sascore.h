@@ -27,7 +27,7 @@ struct SasStats
     uint64_t voices_set = 0;
     uint32_t active_voices = 0;
     uint32_t end_flags = 0xFFFFFFFFu;
-    int32_t reverb_type = 0;
+    int32_t reverb_type = -1;
     bool reverb_dry = true;
     bool reverb_wet = false;
     bool reverb_applied = false;

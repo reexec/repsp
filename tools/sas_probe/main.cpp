@@ -118,8 +118,10 @@ int main()
     TEST_ASSERT(CallNid7(kNidSasInit, kCoreAddr, 64u, 32u, 0u, 44100u) == 0);
     TEST_ASSERT(static_cast<uint32_t>(CallNid7(kNidSasGetEndFlag, kCoreAddr)) == 0xFFFFFFFFu);
 
-    // 2. Reverb control parameter checks (dry-only mixer semantics).
+    // 2. Reverb control parameter checks (dry-only mixer semantics; -1 = OFF).
+    TEST_ASSERT(CallNid7(kNidSasRevType, kCoreAddr, static_cast<uint32_t>(-2)) == kSceSasErrorInvalidFxType);
     TEST_ASSERT(CallNid7(kNidSasRevType, kCoreAddr, 99u) == kSceSasErrorInvalidFxType);
+    TEST_ASSERT(CallNid7(kNidSasRevType, kCoreAddr, static_cast<uint32_t>(-1)) == 0);
     TEST_ASSERT(CallNid7(kNidSasRevType, kCoreAddr, 5u) == 0);
     TEST_ASSERT(CallNid7(kNidSasRevEvol, kCoreAddr, 0x0800u, 0x0800u) == 0);
     TEST_ASSERT(CallNid7(kNidSasRevVon, kCoreAddr, 1u, 1u) == 0);

@@ -47,7 +47,7 @@ PS1/PS2/PSP SPU 계열 공용 VAG ADPCM 형식(**추정** — 출처: `psx-spx` 
   * `env2`: bits `0..4` Release Shift, bit `5` Release Mode, bits `6..7` Sustain Step, bits `8..12` Sustain Shift, bit `14` Sustain Dir, bit `15` Sustain Mode.
   * `shift == 31`은 무한 유지(rate 0)에 해당한다.
 * **`__sceSasSetADSR` 커브**: 정확한 PSP 펌웨어 내부 비선형 룩업 테이블은 **추정** 상태이며, `repsp_hle_sascore`는 30비트 선형/지수 근사 스텝으로 결정적 감쇠·상승을 구현한다.
-* **리버브(`RevType`, `RevEVOL`, `RevVON`)**: 유효성(`RevType` `0..9`)과 설정 값만 기록하며, wet 리버브 믹싱은 현재 구현 범위 밖(Dry-only)이다. `FormatStats()`와 통계 필드에 `reverb=dry only (not mixed)`를 명시한다.
+* **리버브(`RevType`, `RevEVOL`, `RevVON`)**: 유효성(`RevType` `-1..9`, `-1`은 PSPSDK `PSP_SAS_EFFECT_TYPE_OFF`이며 실제 타이틀 호출에서 확인됨)과 설정 값만 기록하며, wet 리버브 믹싱은 현재 구현 범위 밖(Dry-only)이다. `FormatStats()`와 통계 필드에 `reverb=dry only (not mixed)`를 명시한다.
 
 ---
 
@@ -70,4 +70,4 @@ This document summarizes `sceSasCore` synthesis, Sony VAG 4-bit ADPCM decoding, 
 ## 3. ADSR Envelope and Reverb Scope
 
 * **`__sceSasSetSimpleADSR`**: Uses the 16-bit SPU `env1`/`env2` register bitfields (**Inferred** from `psx-spx`). Exact firmware lookup tables for `__sceSasSetADSR` rates are **inferred** (modeled deterministically in 30-bit fixed point).
-* **Reverb (`RevType`/`RevEVOL`/`RevVON`)**: Parameters are validated (`0..9`) and recorded, while wet reverb is **not mixed** (dry-only). This is surfaced explicitly in `FormatStats()`.
+* **Reverb (`RevType`/`RevEVOL`/`RevVON`)**: Parameters are validated (`-1..9`, where `-1` is PSPSDK `PSP_SAS_EFFECT_TYPE_OFF`, confirmed on real title calls) and recorded, while wet reverb is **not mixed** (dry-only). This is surfaced explicitly in `FormatStats()`.

@@ -107,7 +107,7 @@ struct SasCoreInstance
     int32_t out_mode = kSasOutputModeInterleaved;
     int32_t sample_rate = kSasDefaultSampleRate;
 
-    int32_t reverb_type = 0;
+    int32_t reverb_type = -1;
     int32_t reverb_left_vol = 0;
     int32_t reverb_right_vol = 0;
     bool reverb_dry = true;
@@ -846,7 +846,8 @@ void HleSasRevType()
         recomp::Return(kSasErrorNotInitialized);
         return;
     }
-    if (type < 0 || type > 9)
+    // PSPSDK defines PSP_SAS_EFFECT_TYPE_OFF = -1; 0..9 are the hardware effect presets.
+    if (type < -1 || type > 9)
     {
         recomp::Return(kSceSasErrorInvalidFxType);
         return;
