@@ -84,8 +84,10 @@ void Scheduler::Reset()
         cv_.notify_all();
         old_threads.swap(threads_);
         ready_queue_.clear();
+        pending_interrupts_.clear();
         active_thread_uid_ = 0;
         intr_enabled_ = true;
+        in_interrupt_ = false;
         fatal_stop_ = false;
         fatal_stop_reason_.clear();
         external_wait_sources_ = 0;
@@ -217,6 +219,15 @@ void Scheduler::ReportFatalStopLocked(const std::string& reason)
 
 void Scheduler::SwitchOutCurrentLocked(std::unique_lock<std::mutex>& lock, const std::shared_ptr<GuestThread>& cur)
 {
+    if (in_interrupt_)
+    {
+        ReportFatalStopLocked("Wait or yield called inside interrupt handler");
+        lock.unlock();
+        platform::RaiseStop("Wait or yield called inside interrupt handler");
+    }
+
+    DeliverPendingInterruptsLocked(lock);
+
     if (ops_ != nullptr && ops_->save != nullptr && !cur->cpu_context.empty())
     {
         ops_->save(cur->cpu_context.data());
@@ -785,6 +796,12 @@ int32_t Scheduler::DelayThread(uint32_t delay_us, bool allow_callbacks)
 int32_t Scheduler::WaitCurrent(WaitType type, KernelUid target_uid, const std::string& detail, const uint32_t* timeout_us, bool allow_callbacks)
 {
     std::unique_lock<std::mutex> lock(mutex_);
+    if (in_interrupt_)
+    {
+        ReportFatalStopLocked("Wait called inside interrupt handler");
+        lock.unlock();
+        platform::RaiseStop("Wait called inside interrupt handler");
+    }
     auto cur = FindThreadLocked(active_thread_uid_);
     if (!cur)
     {
@@ -1003,17 +1020,23 @@ uint32_t Scheduler::SuspendInterrupts()
 void Scheduler::ResumeInterrupts(uint32_t prev_state)
 {
     bool should_yield = false;
+    bool should_deliver = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         intr_enabled_ = (prev_state != 0);
         if (intr_enabled_)
         {
+            should_deliver = !pending_interrupts_.empty() && !in_interrupt_;
             auto cur = FindThreadLocked(active_thread_uid_);
             if (cur && HasHigherPriorityReadyLocked(cur->current_priority))
             {
                 should_yield = true;
             }
         }
+    }
+    if (should_deliver)
+    {
+        DeliverPendingInterrupts();
     }
     if (should_yield)
     {
@@ -1027,10 +1050,123 @@ bool Scheduler::AreInterruptsEnabled() const
     return intr_enabled_;
 }
 
+void Scheduler::QueueInterrupt(uint32_t entry, uint32_t arg0, uint32_t arg1, uint32_t gp_value)
+{
+    if (entry == 0)
+    {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    pending_interrupts_.push_back(PendingInterrupt{entry, arg0, arg1, gp_value});
+    cv_.notify_all();
+}
+
+bool Scheduler::IsInInterrupt() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return in_interrupt_;
+}
+
+uint32_t Scheduler::GetCurrentThreadGp() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto cur = FindThreadLocked(active_thread_uid_);
+    if (cur && cur->gp_value != 0)
+    {
+        return cur->gp_value;
+    }
+    if (ops_ != nullptr && ops_->get_gpr != nullptr)
+    {
+        return ops_->get_gpr(kRegGP);
+    }
+    return 0;
+}
+
+void Scheduler::DeliverPendingInterruptsLocked(std::unique_lock<std::mutex>& lock)
+{
+    if (!intr_enabled_ || in_interrupt_ || pending_interrupts_.empty() || shutdown_ || fatal_stop_)
+    {
+        return;
+    }
+    if (ops_ == nullptr || ops_->call_guest == nullptr)
+    {
+        return;
+    }
+
+    std::vector<uint8_t> saved_ctx;
+    if (ops_->save != nullptr && ops_->context_size > 0)
+    {
+        saved_ctx.resize(ops_->context_size);
+        ops_->save(saved_ctx.data());
+    }
+
+    uint32_t fallback_gp = 0;
+    auto cur = FindThreadLocked(active_thread_uid_);
+    if (cur && cur->gp_value != 0)
+    {
+        fallback_gp = cur->gp_value;
+    }
+    else if (ops_->get_gpr != nullptr)
+    {
+        fallback_gp = ops_->get_gpr(kRegGP);
+    }
+
+    const bool idle_context = (active_thread_uid_ == 0);
+    in_interrupt_ = true;
+
+    while (!pending_interrupts_.empty() && intr_enabled_ && !shutdown_ && !fatal_stop_)
+    {
+        PendingInterrupt intr = pending_interrupts_.front();
+        pending_interrupts_.erase(pending_interrupts_.begin());
+
+        lock.unlock();
+
+        if (ops_->set_gpr != nullptr)
+        {
+            ops_->set_gpr(kRegSP, kInterruptStackTop);
+            ops_->set_gpr(kRegGP, intr.gp_value != 0 ? intr.gp_value : fallback_gp);
+            ops_->set_gpr(kRegA0, intr.arg0);
+            ops_->set_gpr(kRegA1, intr.arg1);
+            ops_->set_gpr(kRegRA, 0);
+        }
+
+        if (idle_context)
+        {
+            auto guard = platform::GuardedRun([&]()
+            {
+                ops_->call_guest(intr.entry);
+            });
+            lock.lock();
+            if (!guard.succeeded && guard.stopped)
+            {
+                ReportFatalStopLocked(guard.stop_reason);
+                break;
+            }
+        }
+        else
+        {
+            ops_->call_guest(intr.entry);
+            lock.lock();
+        }
+    }
+
+    in_interrupt_ = false;
+    if (ops_->restore != nullptr && !saved_ctx.empty())
+    {
+        ops_->restore(saved_ctx.data());
+    }
+}
+
+void Scheduler::DeliverPendingInterrupts()
+{
+    std::unique_lock<std::mutex> lock(mutex_);
+    DeliverPendingInterruptsLocked(lock);
+}
+
 void Scheduler::YieldIfPreempted()
 {
     std::unique_lock<std::mutex> lock(mutex_);
-    if (!intr_enabled_ || active_thread_uid_ == 0)
+    if (!intr_enabled_ || in_interrupt_ || active_thread_uid_ == 0)
     {
         return;
     }
@@ -1047,6 +1183,12 @@ void Scheduler::YieldIfPreempted()
 void Scheduler::YieldCurrent()
 {
     std::unique_lock<std::mutex> lock(mutex_);
+    if (in_interrupt_)
+    {
+        ReportFatalStopLocked("Yield called inside interrupt handler");
+        lock.unlock();
+        platform::RaiseStop("Yield called inside interrupt handler");
+    }
     if (!intr_enabled_ || active_thread_uid_ == 0 || ready_queue_.empty())
     {
         return;
@@ -1077,6 +1219,7 @@ void Scheduler::YieldCurrent()
 
 void Scheduler::Poll()
 {
+    DeliverPendingInterrupts();
     YieldIfPreempted();
 }
 
@@ -1170,6 +1313,12 @@ void Scheduler::Run(KernelUid entry_thread_uid)
                 {
                     return !running_ || fatal_stop_ || active_thread_uid_ == 0;
                 });
+                continue;
+            }
+
+            if (intr_enabled_ && !pending_interrupts_.empty())
+            {
+                DeliverPendingInterruptsLocked(lock);
                 continue;
             }
 
