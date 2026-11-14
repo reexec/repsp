@@ -219,6 +219,66 @@ constexpr RawNidDef kKnownNames[] = {
     { "sceRtc", "sceRtcGetCurrentClockLocalTime" },
     { "sceRtc", "sceRtcGetCurrentTick" },
     { "sceRtc", "sceRtcGetTickResolution" },
+
+    // sceDmac
+    { "sceDmac", "sceDmacMemcpy" },
+
+    // sceAudio (additional)
+    { "sceAudio", "sceAudioGetChannelRestLength" },
+
+    // sceSasCore
+    { "sceSasCore", "__sceSasInit" },
+    { "sceSasCore", "__sceSasCore" },
+    { "sceSasCore", "__sceSasGetEndFlag" },
+    { "sceSasCore", "__sceSasSetVoice" },
+    { "sceSasCore", "__sceSasSetKeyOn" },
+    { "sceSasCore", "__sceSasSetKeyOff" },
+    { "sceSasCore", "__sceSasSetPitch" },
+    { "sceSasCore", "__sceSasSetVolume" },
+    { "sceSasCore", "__sceSasSetADSR" },
+    { "sceSasCore", "__sceSasSetSimpleADSR" },
+    { "sceSasCore", "__sceSasRevType" },
+    { "sceSasCore", "__sceSasRevEVOL" },
+    { "sceSasCore", "__sceSasRevVON" },
+
+    // sceAtrac3plus
+    { "sceAtrac3plus", "sceAtracGetStreamDataInfo" },
+    { "sceAtrac3plus", "sceAtracReleaseAtracID" },
+    { "sceAtrac3plus", "sceAtracResetPlayPosition" },
+    { "sceAtrac3plus", "sceAtracDecodeData" },
+    { "sceAtrac3plus", "sceAtracSetDataAndGetID" },
+    { "sceAtrac3plus", "sceAtracAddStreamData" },
+    { "sceAtrac3plus", "sceAtracSetLoopNum" },
+    { "sceAtrac3plus", "sceAtracGetRemainFrame" },
+    { "sceAtrac3plus", "sceAtracGetSoundSample" },
+    { "sceAtrac3plus", "sceAtracGetBufferInfoForReseting" },
+    { "sceAtrac3plus", "sceAtracGetInternalErrorInfo" },
+
+    // sceMpeg
+    { "sceMpeg", "sceMpegAvcDecode" },
+    { "sceMpeg", "sceMpegRingbufferDestruct" },
+    { "sceMpeg", "sceMpegInitAu" },
+    { "sceMpeg", "sceMpegQueryStreamOffset" },
+    { "sceMpeg", "sceMpegRingbufferConstruct" },
+    { "sceMpeg", "sceMpegRegistStream" },
+    { "sceMpeg", "sceMpegAvcDecodeFlush" },
+    { "sceMpeg", "sceMpegUnRegistStream" },
+    { "sceMpeg", "sceMpegDelete" },
+    { "sceMpeg", "sceMpegQueryStreamSize" },
+    { "sceMpeg", "sceMpegInit" },
+    { "sceMpeg", "sceMpegAvcDecodeStop" },
+    { "sceMpeg", "sceMpegAtracDecode" },
+    { "sceMpeg", "sceMpegFinish" },
+    { "sceMpeg", "sceMpegMallocAvcEsBuf" },
+    { "sceMpeg", "sceMpegRingbufferPut" },
+    { "sceMpeg", "sceMpegRingbufferAvailableSize" },
+    { "sceMpeg", "sceMpegQueryMemSize" },
+    { "sceMpeg", "sceMpegFreeAvcEsBuf" },
+    { "sceMpeg", "sceMpegRingbufferQueryMemSize" },
+    { "sceMpeg", "sceMpegCreate" },
+    { "sceMpeg", "sceMpegGetAtracAu" },
+    { "sceMpeg", "sceMpegQueryAtracEsSize" },
+    { "sceMpeg", "sceMpegGetAvcAu" },
 };
 
 std::unordered_map<uint32_t, NidNameEntry> BuildKnownNidTable()

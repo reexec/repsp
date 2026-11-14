@@ -23,3 +23,13 @@ target_sources(repsp_hle_display PRIVATE
     display/hle_display.cpp
 )
 target_link_libraries(repsp_hle_display PUBLIC repsp_recomp repsp_platform)
+
+target_sources(repsp_hle_ctrl PRIVATE
+    ctrl/hle_ctrl.cpp
+)
+target_link_libraries(repsp_hle_ctrl PUBLIC repsp_recomp repsp_platform)
+
+target_sources(repsp_hle_dmac PRIVATE
+    dmac/hle_dmac.cpp
+)
+target_link_libraries(repsp_hle_dmac PUBLIC repsp_recomp)

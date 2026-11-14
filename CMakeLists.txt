@@ -117,6 +117,24 @@ target_include_directories(repsp_hle_display PUBLIC
 target_link_libraries(repsp_hle_display PUBLIC repsp_runtime repsp_platform)
 repsp_apply_host_flags(repsp_hle_display)
 
+add_library(repsp_hle_ctrl STATIC)
+add_library(repsp::hle_ctrl ALIAS repsp_hle_ctrl)
+target_include_directories(repsp_hle_ctrl PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(repsp_hle_ctrl PUBLIC repsp_runtime repsp_platform)
+repsp_apply_host_flags(repsp_hle_ctrl)
+
+add_library(repsp_hle_dmac STATIC)
+add_library(repsp::hle_dmac ALIAS repsp_hle_dmac)
+target_include_directories(repsp_hle_dmac PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(repsp_hle_dmac PUBLIC repsp_runtime)
+repsp_apply_host_flags(repsp_hle_dmac)
+
 add_subdirectory(src)
 
 if(REPSP_BUILD_PROBES)
