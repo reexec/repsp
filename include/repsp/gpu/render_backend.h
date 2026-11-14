@@ -141,6 +141,7 @@ extern const RenderBackend kNullBackend;
 uint64_t GetRenderedPixelCount();
 void ResetRenderedPixelCount();
 uint64_t GetUnsupportedTexelCount();
+uint64_t GetOutOfBoundsVramWriteCount();
 
 // One pixel in format 0-3 (565, 5551, 4444, 8888) as 0xAABBGGRR.
 uint32_t ColorExpand(uint32_t px, int fmt);

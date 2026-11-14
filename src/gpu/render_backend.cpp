@@ -17,6 +17,18 @@ uint32_t g_fb_stride = 0;
 int g_fb_fmt = 3;
 uint64_t g_pixels = 0;
 uint64_t g_bad_texels = 0;
+uint64_t g_oob_vram_writes = 0;
+
+inline bool IsInVram(uint32_t addr, uint32_t size)
+{
+    if (addr < runtime::GuestMemory::kVramAddress)
+    {
+        return false;
+    }
+    const uint32_t off = addr - runtime::GuestMemory::kVramAddress;
+    return off <= runtime::GuestMemory::kVramSize &&
+           size <= (runtime::GuestMemory::kVramSize - off);
+}
 
 inline uint8_t Read8(uint32_t addr)
 {
@@ -332,15 +344,28 @@ void Fragment(const DrawState& st, int x, int y, uint32_t c, float u, float v, f
 
     const uint32_t bytes = (g_fb_fmt == 3) ? 4u : 2u;
     const uint32_t at = g_fb_addr + static_cast<uint32_t>(y * static_cast<int>(g_fb_stride) + x) * bytes;
+    if (!IsInVram(at, bytes))
+    {
+        ++g_oob_vram_writes;
+        return;
+    }
     const int z = zf < 0.0f ? 0 : (zf > 65535.0f ? 65535 : static_cast<int>(zf + 0.5f));
     const uint32_t zat = st.zaddr + static_cast<uint32_t>(y * st.zbw + x) * 2u;
     const bool have_z = (st.zaddr != 0 && st.zbw > 0);
+    const bool z_in_vram = have_z && IsInVram(zat, 2u);
 
     if (st.clear)
     {
         if (st.clear_depth && have_z)
         {
-            Write16(zat, static_cast<uint16_t>(z));
+            if (z_in_vram)
+            {
+                Write16(zat, static_cast<uint16_t>(z));
+            }
+            else
+            {
+                ++g_oob_vram_writes;
+            }
         }
         if (!st.clear_color && !st.clear_alpha)
         {
@@ -366,6 +391,11 @@ void Fragment(const DrawState& st, int x, int y, uint32_t c, float u, float v, f
         if (st.atest && !AlphaPass(st, c)) return;
         if (st.ztest && have_z)
         {
+            if (!z_in_vram)
+            {
+                ++g_oob_vram_writes;
+                return;
+            }
             if (!DepthPass(st.zfunc, z, Read16(zat))) return;
             if (st.zwrite) Write16(zat, static_cast<uint16_t>(z));
         }
@@ -525,8 +555,9 @@ const RenderBackend* GetRenderBackend()
 }
 
 uint64_t GetRenderedPixelCount() { return g_pixels; }
-void ResetRenderedPixelCount() { g_pixels = 0; g_bad_texels = 0; }
+void ResetRenderedPixelCount() { g_pixels = 0; g_bad_texels = 0; g_oob_vram_writes = 0; }
 uint64_t GetUnsupportedTexelCount() { return g_bad_texels; }
+uint64_t GetOutOfBoundsVramWriteCount() { return g_oob_vram_writes; }
 
 uint32_t ColorExpand(uint32_t px, int fmt)
 {
