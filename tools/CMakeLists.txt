@@ -1,6 +1,7 @@
 function(add_repsp_probe name)
     add_executable(${name} ${name}/main.cpp)
     target_link_libraries(${name} PRIVATE
+        repsp_hle_kernel
         repsp_recomp
         repsp_module
         repsp_runtime
@@ -16,3 +17,6 @@ add_repsp_probe(nid_probe)
 add_repsp_probe(recomp_contract_probe)
 add_repsp_probe(platform_probe)
 add_repsp_probe(prx_probe)
+add_repsp_probe(kernel_sched_probe)
+add_repsp_probe(sysmem_probe)
+add_repsp_probe(iofile_probe)
