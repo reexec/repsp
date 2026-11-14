@@ -41,3 +41,33 @@ add_repsp_probe(sas_probe)
 add_repsp_probe(atrac_probe)
 add_repsp_probe(mpeg_probe)
 add_repsp_probe(utility_probe)
+add_repsp_probe(codec_loader_probe)
+
+add_library(codec_fake_bad_abi_plugin SHARED
+    codec_loader_probe/fake_bad_abi_plugin.cpp
+)
+if(WIN32)
+    set_target_properties(codec_fake_bad_abi_plugin PROPERTIES PREFIX "")
+endif()
+target_include_directories(codec_fake_bad_abi_plugin PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+repsp_apply_host_flags(codec_fake_bad_abi_plugin)
+add_dependencies(codec_loader_probe codec_fake_bad_abi_plugin)
+
+if(REPSP_CODEC_FFMPEG)
+    add_repsp_probe(codec_ffmpeg_probe)
+    add_dependencies(codec_ffmpeg_probe repsp_codec_ffmpeg)
+    add_custom_command(TARGET codec_ffmpeg_probe POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:repsp_codec_ffmpeg>"
+            "$<TARGET_FILE_DIR:codec_ffmpeg_probe>"
+    )
+    foreach(_ff_lib IN LISTS REPSP_FFMPEG_SHARED_LIBS)
+        add_custom_command(TARGET codec_ffmpeg_probe POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_ff_lib}"
+                "$<TARGET_FILE_DIR:codec_ffmpeg_probe>"
+        )
+    endforeach()
+endif()

@@ -70,3 +70,11 @@ Architectural specifications, calling convention models, and hardware behavior r
 * [PSP Developer Wiki](https://www.psdevwiki.com/psp/)
 
 All runtime components, memory managers, SFO parser, and lifter-neutral contracts in repsp were implemented independently to adhere to repsp's layer and typing rules.
+
+---
+
+## 4. FFmpeg (Optional Dynamic Codec Plugin `repsp_codec_ffmpeg`)
+
+* Upstream: https://ffmpeg.org/
+* License: GNU Lesser General Public License (LGPL) version 2.1 or later (only LGPL shared builds are permitted; GPL builds are explicitly rejected by `scripts/fetch_ffmpeg.py`).
+* Integration model: `repsp_codec_ffmpeg` is an **optional** shared-library plugin (`REPSP_CODEC_FFMPEG=OFF` by default) loaded dynamically at runtime via `repsp::codec::LoadCodecPlugin`. Default builds have zero dependency on FFmpeg, and no FFmpeg source or binary is committed to this repository. Only public `libavcodec`/`libavutil` API headers are included by `src/codec_ffmpeg/`.

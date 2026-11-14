@@ -19,6 +19,22 @@ class AvcDecoder
 {
 public:
     virtual ~AvcDecoder() = default;
+
+    // Optional per-stream context lifecycle. Default returns nullptr (stateless).
+    virtual void* CreateStreamContext() { return nullptr; }
+    virtual void DestroyStreamContext(void* /*ctx*/) {}
+    virtual void Flush(void* /*ctx*/) { Flush(); }
+
+    virtual bool DecodeAu(void* /*ctx*/,
+                          std::span<const uint8_t> au_bytes,
+                          uint32_t width,
+                          uint32_t height,
+                          uint32_t pixel_format,
+                          std::span<uint8_t> out)
+    {
+        return DecodeAu(au_bytes, width, height, pixel_format, out);
+    }
+
     virtual bool DecodeAu(std::span<const uint8_t> au_bytes,
                           uint32_t width,
                           uint32_t height,

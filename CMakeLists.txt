@@ -20,6 +20,8 @@ else()
 endif()
 
 option(REPSP_BUILD_PROBES "Build repsp verification probes" ${REPSP_STANDALONE})
+option(REPSP_CODEC_FFMPEG "Build optional dynamically loaded FFmpeg codec plugin" OFF)
+set(FFMPEG_ROOT "" CACHE PATH "Root directory of FFmpeg LGPL shared build")
 
 # Third-party dependencies
 option(REPSP_SDL_SHARED "Build SDL as a shared library instead of static" OFF)

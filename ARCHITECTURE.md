@@ -198,7 +198,8 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 
 ### 2.12. 코덱 및 `sceMpeg` 계약 (`codec/`, `mpeg.h`)
 
-* `repsp_codec`은 HLE 모듈 간 직접 링크 없이 공유하는 디코더 계약(`repsp::codec::AtracDecoder`/`SilentDecoder`, `repsp::codec::AvcDecoder`/`BlankAvcDecoder`)을 제공합니다. `repsp::hle::atrac::` 이름공간은 하위 호환성을 위해 `using` 별칭으로 `AtracDecoder`/`SilentDecoder`를 유지합니다.
+* `repsp_codec`은 HLE 모듈 간 직접 링크 없이 공유하는 디코더 계약(`repsp::codec::AtracDecoder`/`SilentDecoder`, `repsp::codec::AvcDecoder`/`BlankAvcDecoder`), 순수 C 플러그인 ABI(`include/repsp/codec/plugin.h`), 그리고 동적 로더(`include/repsp/codec/loader.h`)를 제공합니다. `repsp::hle::atrac::` 이름공간은 하위 호환성을 위해 `using` 별칭으로 `AtracDecoder`/`SilentDecoder`를 유지합니다.
+* 선택 옵션 `REPSP_CODEC_FFMPEG=ON`을 켜면 별도 공유 라이브러리 `repsp_codec_ffmpeg`가 빌드되며(`OFF`가 기본값), `libavcodec` ≥ 60(LGPL 공유 빌드)에 동적으로 링크하여 ATRAC3/ATRAC3plus와 H.264를 디코딩합니다. `repsp_platform`은 `DynamicLibrary`(`dynlib.h`)와 오디오 WAV 덤프(`REPSP_AUDIO_DUMP`)를 제공합니다.
 * 소비자는 `repsp::hle::mpeg::Register()`로 24개 `sceMpeg` NID를 등록하고 종료 시 `repsp::hle::mpeg::Shutdown()`으로 정리합니다.
 * `repsp::hle::mpeg::SetAvcDecoder(AvcDecoder*)` 및 `SetAtracDecoder(AtracDecoder*)`로 디코더를 교체할 수 있으며, 기본값은 불투명 검은 프레임(`BlankAvcDecoder`)과 무음(`SilentDecoder`)입니다. `FormatStats()`는 `"AVC decode: blank"`와 `"ATRAC decode: silent"` 및 디코딩·분리 통계를 보고합니다.
 
@@ -268,7 +269,7 @@ Consumers register `repsp::hle::audio::Register()`, `repsp::hle::sascore::Regist
 
 ### 2.12. Codec and `sceMpeg` Contract (`codec/`, `mpeg.h`)
 
-`repsp_codec` holds shared decoder contracts (`repsp::codec::AtracDecoder`/`SilentDecoder`, `repsp::codec::AvcDecoder`/`BlankAvcDecoder`) so HLE modules never link each other (`repsp::hle::atrac::` exposes `using` aliases for compatibility). Consumers register the 24 `sceMpeg` NIDs with `repsp::hle::mpeg::Register()` and tear down with `Shutdown()`. `SetAvcDecoder`/`SetAtracDecoder` swap decoders (defaulting to `BlankAvcDecoder` opaque black frames and `SilentDecoder` silence); `FormatStats()` reports `"AVC decode: blank"`, `"ATRAC decode: silent"`, and demux/decode counts.
+`repsp_codec` holds shared decoder contracts (`repsp::codec::AtracDecoder`/`SilentDecoder`, `repsp::codec::AvcDecoder`/`BlankAvcDecoder`), the pure-C plugin ABI (`include/repsp/codec/plugin.h`), and the dynamic loader (`include/repsp/codec/loader.h`) so HLE modules never link each other (`repsp::hle::atrac::` exposes `using` aliases for compatibility). When `REPSP_CODEC_FFMPEG=ON` (default `OFF`), the optional shared library `repsp_codec_ffmpeg` links dynamically against an LGPL `libavcodec` >= 60 build. `repsp_platform` provides `DynamicLibrary` (`dynlib.h`) and optional WAV capture (`REPSP_AUDIO_DUMP`). Consumers register the 24 `sceMpeg` NIDs with `repsp::hle::mpeg::Register()` and tear down with `Shutdown()`. `SetAvcDecoder`/`SetAtracDecoder` swap decoders (defaulting to `BlankAvcDecoder` opaque black frames and `SilentDecoder` silence); `FormatStats()` reports `"AVC decode: blank"`, `"ATRAC decode: silent"`, and demux/decode counts.
 
 ### 2.13. `sceUtility` Savedata and MsgDialog Contract (`utility.h`)
 
