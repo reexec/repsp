@@ -158,8 +158,19 @@ int main()
     TEST_ASSERT(Initialize(plat_config));
     TEST_ASSERT(GetDisplay() != nullptr);
     TEST_ASSERT(GetInput() != nullptr);
+    {
+        ControllerState st{};
+        st.buttons = 0xFFFFFFFFu;
+        st.lx = 0.75f;
+        st.ly = -0.75f;
+        GetInput()->Poll(st);
+        TEST_ASSERT(st.buttons == 0u);
+        TEST_ASSERT(st.lx == 0.0f);
+        TEST_ASSERT(st.ly == 0.0f);
+    }
     TEST_ASSERT(GetAudio() != nullptr);
     Shutdown();
+    TEST_ASSERT(GetInput() == nullptr);
 
     std::printf("platform_probe passed.\n");
     return 0;
