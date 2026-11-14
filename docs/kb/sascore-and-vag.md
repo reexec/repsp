@@ -32,7 +32,7 @@ PS1/PS2/PSP SPU 계열 공용 VAG ADPCM 형식(**추정** — 출처: `psx-spx` 
   * **Byte 0**: 상위 4비트 `predict_filter` (`0..4`), 하위 4비트 `shift_factor` (`0..12`, `>12`는 `9`로 클램프).
   * **Byte 1 (`flags`)**:
     * `0x04`: Loop Start 블록 위치 기록.
-    * `0x01`: Stream End (`loop=0`이고 `0x02` 미설정 시 블록 종료 후 보이스 정지; `0x03` 또는 `loop=1`이면 Loop Start로 점프).
+    * `0x01`: Stream End (`loop=1`이고 `0x02` 미설정 시 블록 종료 후 보이스 정지; `__sceSasSetVoice`의 `loop` 인자가 `0`이 아니고 블록에 `0x02`가 함께 설정된 `0x03`일 때만 Loop Start로 점프 — **확인됨**, PSX-SPX SPU ADPCM 규격 및 `sas_probe` 검증).
     * `0x07`: End + Mute (즉시 무음 정지).
   * **Bytes 2..15**: 28개의 부호 있는 4비트 니블(바이트당 하위 니블 먼저, 상위 니블 나중).
 * **예측 계수 5종 (`K0, K1`, 분모 64)**: `(0, 0)`, `(60, 0)`, `(115, -52)`, `(98, -55)`, `(122, -60)`.
@@ -65,9 +65,11 @@ This document summarizes `sceSasCore` synthesis, Sony VAG 4-bit ADPCM decoding, 
 ## 2. Sony VAG ADPCM Format
 
 * Optional 48-byte `"VAGp"` header followed by 16-byte blocks (**Inferred** — source: `psx-spx` SPU ADPCM spec).
-* Each 16-byte block expands to 28 signed 16-bit samples using 5 filter coefficient pairs `(K0, K1) / 64`, shift `0..12`, and block flags (`0x04` loop start, `0x01` end, `0x03` loop end+repeat, `0x07` end+mute).
+* Each 16-byte block expands to 28 signed 16-bit samples using 5 filter coefficient pairs `(K0, K1) / 64`, shift `0..12`, and block flags (`0x04` loop start, `0x01` one-shot end, `0x03` loop end+repeat, `0x07` end+mute). Looping back occurs only when **both** `__sceSasSetVoice`'s `loop` argument is non-zero **and** block flag `0x02` (`LoopRepeat`) is set (**Confirmed** via PSX-SPX SPU ADPCM spec and `sas_probe`).
 
 ## 3. ADSR Envelope and Reverb Scope
 
 * **`__sceSasSetSimpleADSR`**: Uses the 16-bit SPU `env1`/`env2` register bitfields (**Inferred** from `psx-spx`). Exact firmware lookup tables for `__sceSasSetADSR` rates are **inferred** (modeled deterministically in 30-bit fixed point).
 * **Reverb (`RevType`/`RevEVOL`/`RevVON`)**: Parameters are validated (`-1..9`, where `-1` is PSPSDK `PSP_SAS_EFFECT_TYPE_OFF`, confirmed on real title calls) and recorded, while wet reverb is **not mixed** (dry-only). This is surfaced explicitly in `FormatStats()`.
+
+> 확인 범위 / Scope of confirmation: `0x01`만 있고 `0x02`가 없는 블록에서 음성이 끝난다는 것은 SPU ADPCM 규격과 소비자 실행으로 **확인됨**이다. `loop` 인자가 0일 때 `0x03` 블록에서도 반복하지 않는다는 것은 **추정**이다(이 경우를 쓰는 타이틀을 아직 보지 못했다). That a block with `0x01` and without `0x02` ends the voice is **confirmed** by the SPU ADPCM specification and the consumer run; that a zero `loop` argument also prevents looping at a `0x03` block is **assumed** (no title using that case has been seen yet).
