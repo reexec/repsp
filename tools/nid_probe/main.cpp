@@ -1,3 +1,4 @@
+#include "repsp/runtime/nid_names.h"
 #include "repsp/runtime/nid_registry.h"
 #include "repsp/runtime/sha1.h"
 
@@ -177,6 +178,48 @@ int main()
     {
         TEST_ASSERT(ComputeNid(item.name) == item.nid);
     }
+
+    static const NidExpected kGeAndDisplayNids[] = {
+        { "sceGeEdramGetAddr", 0xE47E40E4u },
+        { "sceGeSetCallback", 0xA4FC06A4u },
+        { "sceGeUnsetCallback", 0x05DB22CEu },
+        { "sceGeListEnQueue", 0xAB49E76Au },
+        { "sceGeListUpdateStallAddr", 0xE0D68148u },
+        { "sceGeListSync", 0x03444EB4u },
+        { "sceGeDrawSync", 0xB287BD61u },
+        { "sceDisplaySetMode", 0x0E20F177u },
+        { "sceDisplaySetFrameBuf", 0x289D82FEu },
+        { "sceDisplayWaitVblankStart", 0x984C27E7u },
+        { "sceDisplayWaitVblankStartCB", 0x46F186C3u },
+        { "sceDisplayGetVcount", 0x9C6EAAD7u },
+        { "sceDisplayGetFramePerSec", 0xDBA6C4C4u },
+    };
+    static_assert(sizeof(kGeAndDisplayNids) / sizeof(kGeAndDisplayNids[0]) == 13,
+                  "Expected 13 GE+Display NIDs");
+    for (const auto& item : kGeAndDisplayNids)
+    {
+        TEST_ASSERT(ComputeNid(item.name) == item.nid);
+        TEST_ASSERT(repsp::runtime::LookupKnownNid(item.nid) != nullptr);
+    }
+
+    const auto& known_table = repsp::runtime::GetKnownNidTable();
+    TEST_ASSERT(!known_table.empty());
+    for (const auto& known_entry : known_table)
+    {
+        const repsp::runtime::NidNameEntry* found = repsp::runtime::LookupKnownNid(known_entry.first);
+        TEST_ASSERT(found != nullptr);
+        TEST_ASSERT(found->nid == known_entry.first);
+        TEST_ASSERT(found->name == known_entry.second.name);
+        TEST_ASSERT(found->library == known_entry.second.library);
+
+        const std::string formatted = repsp::runtime::FormatKnownNid(known_entry.first);
+        TEST_ASSERT(formatted.find(known_entry.second.name) != std::string::npos);
+        TEST_ASSERT(formatted.find(known_entry.second.library) != std::string::npos);
+    }
+
+    // Unknown NID formatting falls back to hex only.
+    TEST_ASSERT(repsp::runtime::LookupKnownNid(0x13572468u) == nullptr);
+    TEST_ASSERT(repsp::runtime::FormatKnownNid(0x13572468u) == "0x13572468");
 
     std::printf("nid_probe passed.\n");
     return 0;

@@ -1,6 +1,7 @@
 #include "repsp/runtime/nid_registry.h"
 #include "repsp/platform/guarded_run.h"
 #include "repsp/runtime/log.h"
+#include "repsp/runtime/nid_names.h"
 #include "repsp/runtime/scheduler.h"
 #include "repsp/runtime/sha1.h"
 
@@ -100,14 +101,16 @@ bool NidRegistry::Invoke(uint32_t nid)
     uint64_t count = ++unimplemented_counts_[nid];
     if (count == 1)
     {
-        Log(LogLevel::kWarn, "[HLE] Unimplemented NID call: 0x%08X", nid);
+        const std::string formatted = FormatKnownNid(nid);
+        Log(LogLevel::kWarn, "[HLE] Unimplemented NID call: %s", formatted.c_str());
     }
 
     if (stop_on_unimplemented_)
     {
-        Log(LogLevel::kError, "[HLE] Stopping on unimplemented NID: 0x%08X", nid);
-        static thread_local char reason[64];
-        std::snprintf(reason, sizeof(reason), "Unimplemented NID 0x%08X", nid);
+        const std::string formatted = FormatKnownNid(nid);
+        Log(LogLevel::kError, "[HLE] Stopping on unimplemented NID: %s", formatted.c_str());
+        static thread_local char reason[192];
+        std::snprintf(reason, sizeof(reason), "Unimplemented NID %s", formatted.c_str());
         platform::RaiseStop(reason);
     }
 
