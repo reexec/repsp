@@ -1,6 +1,8 @@
 function(add_repsp_probe name)
     add_executable(${name} ${name}/main.cpp)
     target_link_libraries(${name} PRIVATE
+        repsp_hle_ctrl
+        repsp_hle_dmac
         repsp_hle_display
         repsp_hle_ge
         repsp_hle_kernel
@@ -25,3 +27,6 @@ add_repsp_probe(sysmem_probe)
 add_repsp_probe(iofile_probe)
 add_repsp_probe(ge_probe)
 add_repsp_probe(display_probe)
+add_repsp_probe(vblank_probe)
+add_repsp_probe(ctrl_probe)
+add_repsp_probe(dmac_probe)

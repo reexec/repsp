@@ -11,7 +11,7 @@
 
 * `sync == 0` (`PSP_DISPLAY_SETBUF_IMMEDIATE`): 활성 프레임버퍼를 즉시 갱신하고 화면에 표시(present/dump)합니다.
 * `sync == 1` (`PSP_DISPLAY_SETBUF_NEXTFRAME`): 대기 버퍼로 기록하고 다음 VBlank 시점에 활성 버퍼로 승격·표시(latch)합니다. `SetFrameBuf`로 새 프레임버퍼가 latch된 때에만 `frames_presented`와 프레임 덤프가 올라가며, `topaddr == 0`이면 검은 화면을 보냅니다.
-* `sceDisplayWaitVblankStart` / `sceDisplayWaitVblankStartCB`: 다음 VBlank 틱까지 현재 스레드를 대기(`WaitType::kCustom`)시키며, 호스트 VBlank 스레드가 주기적으로 대기자를 깨우고 `vblank_count`(`sceDisplayGetVcount`)를 증가시킵니다.
+* `sceDisplayWaitVblankStart` / `sceDisplayWaitVblankStartCB`: 다음 VBlank 틱까지 현재 스레드를 대기(`WaitType::kCustom`)시키며, 공유 `runtime::VblankClock`(약 59.94 Hz)이 매 틱 구독자(display latch·present, ctrl 샘플링 등)를 먼저 호출한 뒤 대기자를 깨우고 `vblank_count`(`sceDisplayGetVcount`)를 증가시킵니다(**확인됨**: `vblank_probe`, `display_probe`).
 
 ## 3. 호스트 백엔드 구조와 한계 (**미확정/현재 한계**)
 
@@ -32,7 +32,7 @@
 
 * `sync == 0` (`PSP_DISPLAY_SETBUF_IMMEDIATE`): Immediately updates and presents the active framebuffer.
 * `sync == 1` (`PSP_DISPLAY_SETBUF_NEXTFRAME`): Stages the framebuffer and promotes/presents it on the next VBlank tick. `frames_presented` and frame dumps advance only when `SetFrameBuf` latches a framebuffer (`topaddr == 0` presents a black screen), independent of `vblank_count`.
-* `sceDisplayWaitVblankStart` / `sceDisplayWaitVblankStartCB` block the calling thread until the next VBlank tick wakes waiters and increments `vblank_count` (`sceDisplayGetVcount`).
+* `sceDisplayWaitVblankStart` / `sceDisplayWaitVblankStartCB` block the calling thread until the next tick on the shared `runtime::VblankClock` (~59.94 Hz), which invokes registered subscribers (display latch/present, ctrl sampling) before waking waiters and incrementing `vblank_count` (`sceDisplayGetVcount`) (**Confirmed**: `vblank_probe`, `display_probe`).
 
 ## 3. Host Backend Threading Limitation (**Unconfirmed / Current Limitation**)
 

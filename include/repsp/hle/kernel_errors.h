@@ -51,6 +51,12 @@ constexpr int32_t kSceKernelErrorErrnoEacces = static_cast<int32_t>(0x8001000Du)
 constexpr int32_t kSceKernelErrorErrnoEexist = static_cast<int32_t>(0x80010011u);      // SCE_ERROR_ERRNO_EEXIST
 constexpr int32_t kSceKernelErrorErrnoEinval = static_cast<int32_t>(0x80010016u);      // SCE_ERROR_ERRNO_EINVAL
 
+// Common / Ctrl / Dmac errors (uOFW include/common/errors.h)
+constexpr int32_t kSceKernelErrorInvalidPointer = static_cast<int32_t>(0x80000103u);  // SCE_ERROR_INVALID_POINTER
+constexpr int32_t kSceKernelErrorInvalidSize = static_cast<int32_t>(0x80000104u);     // SCE_ERROR_INVALID_SIZE
+constexpr int32_t kSceKernelErrorInvalidMode = static_cast<int32_t>(0x80000107u);     // SCE_ERROR_INVALID_MODE
+constexpr int32_t kSceKernelErrorInvalidValue = static_cast<int32_t>(0x800001FEu);    // SCE_ERROR_INVALID_VALUE
+
 } // namespace repsp::hle
 
 #endif // REPSP_HLE_KERNEL_ERRORS_H

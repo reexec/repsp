@@ -1,6 +1,7 @@
 #include "repsp/platform/platform.h"
 
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
@@ -14,6 +15,101 @@ namespace repsp::platform
 
 namespace
 {
+
+struct InputMappingEntry
+{
+    uint32_t psp_bit;
+    SDL_Scancode scancode;
+    SDL_GamepadButton gamepad_button;
+};
+
+// Single unified keyboard/gamepad -> PSP button mapping table.
+constexpr InputMappingEntry kButtonMappings[] = {
+    {kPspCtrlUp, SDL_SCANCODE_UP, SDL_GAMEPAD_BUTTON_DPAD_UP},
+    {kPspCtrlRight, SDL_SCANCODE_RIGHT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
+    {kPspCtrlDown, SDL_SCANCODE_DOWN, SDL_GAMEPAD_BUTTON_DPAD_DOWN},
+    {kPspCtrlLeft, SDL_SCANCODE_LEFT, SDL_GAMEPAD_BUTTON_DPAD_LEFT},
+    {kPspCtrlCross, SDL_SCANCODE_Z, SDL_GAMEPAD_BUTTON_SOUTH},
+    {kPspCtrlCircle, SDL_SCANCODE_X, SDL_GAMEPAD_BUTTON_EAST},
+    {kPspCtrlSquare, SDL_SCANCODE_A, SDL_GAMEPAD_BUTTON_WEST},
+    {kPspCtrlTriangle, SDL_SCANCODE_S, SDL_GAMEPAD_BUTTON_NORTH},
+    {kPspCtrlLTrigger, SDL_SCANCODE_Q, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
+    {kPspCtrlRTrigger, SDL_SCANCODE_W, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+    {kPspCtrlStart, SDL_SCANCODE_RETURN, SDL_GAMEPAD_BUTTON_START},
+    {kPspCtrlSelect, SDL_SCANCODE_BACKSPACE, SDL_GAMEPAD_BUTTON_BACK},
+};
+
+std::mutex g_input_mutex;
+ControllerState g_input_snapshot;
+bool g_input_dummy = true;
+
+float NormalizeSdlAxis(Sint16 raw)
+{
+    return (raw >= 0)
+        ? (static_cast<float>(raw) / 32767.0f)
+        : (static_cast<float>(raw) / 32768.0f);
+}
+
+void ResetInputSnapshot(bool dummy)
+{
+    std::lock_guard<std::mutex> lock(g_input_mutex);
+    g_input_snapshot = ControllerState{};
+    g_input_dummy = dummy;
+}
+
+void UpdateInputSnapshotFromSdl(SDL_Gamepad* gamepad)
+{
+    int num_keys = 0;
+    const bool* keys = SDL_GetKeyboardState(&num_keys);
+
+    ControllerState next;
+    for (const auto& entry : kButtonMappings)
+    {
+        bool pressed = (keys && entry.scancode < num_keys && keys[entry.scancode]);
+        if (!pressed && gamepad && SDL_GetGamepadButton(gamepad, entry.gamepad_button))
+        {
+            pressed = true;
+        }
+        if (pressed)
+        {
+            next.buttons |= entry.psp_bit;
+        }
+    }
+
+    float lx = gamepad ? NormalizeSdlAxis(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX)) : 0.0f;
+    float ly = gamepad ? NormalizeSdlAxis(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY)) : 0.0f;
+    if (keys)
+    {
+        if (SDL_SCANCODE_J < num_keys && keys[SDL_SCANCODE_J]) lx -= 1.0f;
+        if (SDL_SCANCODE_L < num_keys && keys[SDL_SCANCODE_L]) lx += 1.0f;
+        if (SDL_SCANCODE_I < num_keys && keys[SDL_SCANCODE_I]) ly -= 1.0f;
+        if (SDL_SCANCODE_K < num_keys && keys[SDL_SCANCODE_K]) ly += 1.0f;
+    }
+    next.lx = std::clamp(lx, -1.0f, 1.0f);
+    next.ly = std::clamp(ly, -1.0f, 1.0f);
+
+    std::lock_guard<std::mutex> lock(g_input_mutex);
+    if (!g_input_dummy)
+    {
+        g_input_snapshot = next;
+    }
+}
+
+SDL_Gamepad* OpenFirstGamepad()
+{
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    SDL_Gamepad* pad = nullptr;
+    if (ids && count > 0)
+    {
+        pad = SDL_OpenGamepad(ids[0]);
+    }
+    if (ids)
+    {
+        SDL_free(ids);
+    }
+    return pad;
+}
 
 class SdlDisplayBackend final : public DisplayBackend
 {
@@ -162,6 +258,9 @@ private:
         int tex_w = 0;
         int tex_h = 0;
 
+        bool gamepad_init = SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK);
+        SDL_Gamepad* gamepad = gamepad_init ? OpenFirstGamepad() : nullptr;
+
         {
             std::lock_guard<std::mutex> lock(ui_mutex_);
             ui_init_ok_ = true;
@@ -179,7 +278,23 @@ private:
                 {
                     close_requested_.store(true);
                 }
+                else if (event.type == SDL_EVENT_GAMEPAD_ADDED)
+                {
+                    if (gamepad == nullptr)
+                    {
+                        gamepad = SDL_OpenGamepad(event.gdevice.which);
+                    }
+                }
+                else if (event.type == SDL_EVENT_GAMEPAD_REMOVED)
+                {
+                    if (gamepad != nullptr && SDL_GetGamepadID(gamepad) == event.gdevice.which)
+                    {
+                        SDL_CloseGamepad(gamepad);
+                        gamepad = OpenFirstGamepad();
+                    }
+                }
             }
+            UpdateInputSnapshotFromSdl(gamepad);
 
             int w = 0;
             int h = 0;
@@ -226,6 +341,16 @@ private:
             }
         }
 
+        if (gamepad != nullptr)
+        {
+            SDL_CloseGamepad(gamepad);
+        }
+        if (gamepad_init)
+        {
+            SDL_QuitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK);
+        }
+        ResetInputSnapshot(true);
+
         if (tex != nullptr) SDL_DestroyTexture(tex);
         if (ren != nullptr) SDL_DestroyRenderer(ren);
         SDL_DestroyWindow(win);
@@ -253,17 +378,18 @@ class SdlInputBackend final : public InputBackend
 public:
     bool Initialize() override
     {
-        return SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK);
+        // SDL gamepad/event polling runs exclusively on SdlDisplayBackend's UI thread.
+        return true;
     }
 
     void Shutdown() override
     {
-        SDL_QuitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK);
     }
 
-    void Poll(ControllerState& /*state*/) override
+    void Poll(ControllerState& state) override
     {
-        SDL_PumpEvents();
+        std::lock_guard<std::mutex> lock(g_input_mutex);
+        state = g_input_dummy ? ControllerState{} : g_input_snapshot;
     }
 };
 
@@ -358,6 +484,8 @@ bool Initialize(const PlatformConfig& config)
         return false;
     }
 
+    ResetInputSnapshot(config.headless || config.display.dummy);
+
     g_display = std::make_unique<SdlDisplayBackend>();
     if (!g_display->Initialize(config.display))
     {
@@ -405,6 +533,7 @@ void Shutdown()
     }
 
     SDL_Quit();
+    ResetInputSnapshot(true);
     g_initialized = false;
 }
 

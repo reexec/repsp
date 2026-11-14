@@ -39,6 +39,10 @@
 | `SCE_ERROR_ERRNO_EACCES` | `0x8001000D` | PSPSDK `errno.h` | **추정** |
 | `SCE_ERROR_ERRNO_EEXIST` | `0x80010011` | PSPSDK `errno.h` | **추정** |
 | `SCE_ERROR_ERRNO_EINVAL` | `0x80010016` | PSPSDK `errno.h` | **추정** |
+| `SCE_ERROR_INVALID_POINTER` | `0x80000103` | uOFW `include/common/errors.h` | **추정** |
+| `SCE_ERROR_INVALID_SIZE` | `0x80000104` | uOFW `include/common/errors.h` | **추정** |
+| `SCE_ERROR_INVALID_MODE` | `0x80000107` | uOFW `include/common/errors.h` | **추정** |
+| `SCE_ERROR_INVALID_VALUE` | `0x800001FE` | uOFW `include/common/errors.h` | **추정** |
 
 ---
 

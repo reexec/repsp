@@ -10,4 +10,5 @@ target_sources(repsp_runtime PRIVATE
     vfs.cpp
     user_partition.cpp
     scheduler.cpp
+    vblank_clock.cpp
 )
