@@ -110,7 +110,7 @@ int32_t VblankClock::WaitNext(bool allow_callbacks)
         ++waiters_;
         if (waiters_ == 1)
         {
-            sched.SetExternalWaitSources(1);
+            sched.AddExternalWaitSource(1);
         }
     }
 
@@ -129,7 +129,7 @@ int32_t VblankClock::WaitNext(bool allow_callbacks)
             --waiters_;
             if (waiters_ == 0)
             {
-                sched.SetExternalWaitSources(0);
+                sched.RemoveExternalWaitSource(1);
             }
         }
     }
@@ -172,7 +172,7 @@ void VblankClock::ResetForTest()
 
     if (had_waiters)
     {
-        GetScheduler().SetExternalWaitSources(0);
+        GetScheduler().RemoveExternalWaitSource(1);
     }
 }
 
