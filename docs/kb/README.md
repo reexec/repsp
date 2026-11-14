@@ -14,6 +14,9 @@ PSP 일반 지식(컨테이너 형식, Allegrex·VFPU, 펌웨어 모듈과 NID, 
 | [`ge.md`](ge.md) | PSP GE 디스플레이 리스트, stall 주소, 정점·텍스처·CLUT 규약 | **추정** (PSPSDK, psprecomp; `ge_probe` 합성 검증) |
 | [`display.md`](display.md) | PSP 디스플레이 픽셀 형식, `SetFrameBuf` 동기 모드, VBlank 동기화 | **추정** (PSPSDK, uOFW; `display_probe` 합성 검증) |
 | [`ctrl-and-input.md`](ctrl-and-input.md) | PSP 컨트롤러 입력(`sceCtrl`·`SceCtrlData`·링 버퍼·입력 매핑) 및 `sceDmacMemcpy` | **추정** (PSPSDK, uOFW; `vblank_probe`·`ctrl_probe`·`dmac_probe` 합성 검증) |
+| [`audio.md`](audio.md) | PSP 오디오 출력(`sceAudio`), 채널·형식·이중 버퍼 대기, 끌어가기(pull) 믹서·시계 | **추정** (PSPSDK, uOFW; `platform_probe`·`audio_probe` 합성 검증) |
+| [`sascore-and-vag.md`](sascore-and-vag.md) | `sceSasCore` 신시사이저, Sony VAG 4비트 ADPCM 블록·필터, ADSR, Dry-only 리버브 | **추정** (PSDevWiki, `psx-spx`; `sas_probe` 합성 검증) |
+| [`atrac3plus.md`](atrac3plus.md) | RIFF/WAVE ATRAC3·ATRAC3plus 컨테이너, `sceAtrac3plus` 상태 머신, 교체형 `AtracDecoder` | **추정** (PSPSDK `pspatrac3.h`, RIFF 규격; `atrac_probe` 합성 검증) |
 
 ---
 
@@ -33,3 +36,6 @@ General PSP knowledge (container formats, the Allegrex and VFPU, firmware module
 | [`ge.md`](ge.md) | PSP GE display lists, stall address, vertex/texture/CLUT conventions | **Inferred** (PSPSDK, psprecomp; synthetic `ge_probe` verified) |
 | [`display.md`](display.md) | PSP display pixel formats, `SetFrameBuf` sync modes, VBlank sync | **Inferred** (PSPSDK, uOFW; synthetic `display_probe` verified) |
 | [`ctrl-and-input.md`](ctrl-and-input.md) | PSP controller input (`sceCtrl`, `SceCtrlData`, ring buffer, host mapping) and `sceDmacMemcpy` | **Inferred** (PSPSDK, uOFW; synthetic `vblank_probe`, `ctrl_probe`, `dmac_probe` verified) |
+| [`audio.md`](audio.md) | PSP audio output (`sceAudio`), channels/formats/double-buffered waits, pull mixer & host pacing | **Inferred** (PSPSDK, uOFW; synthetic `platform_probe`, `audio_probe` verified) |
+| [`sascore-and-vag.md`](sascore-and-vag.md) | `sceSasCore` synthesizer, Sony VAG 4-bit ADPCM blocks/filters, ADSR, dry-only reverb | **Inferred** (PSDevWiki, `psx-spx`; synthetic `sas_probe` verified) |
+| [`atrac3plus.md`](atrac3plus.md) | RIFF/WAVE ATRAC3/ATRAC3plus container, `sceAtrac3plus` state machine, replaceable `AtracDecoder` | **Inferred** (PSPSDK `pspatrac3.h`, RIFF spec; synthetic `atrac_probe` verified) |

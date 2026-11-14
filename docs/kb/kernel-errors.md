@@ -33,8 +33,37 @@
 | `SCE_KERNEL_ERROR_RELEASE_WAIT` | `0x800201AA` | uOFW | **추정** |
 | `SCE_KERNEL_ERROR_WAIT_DELETE` | `0x800201B5` | uOFW | **추정** |
 | `SCE_KERNEL_ERROR_SEMA_OVF` | `0x800201B8` | uOFW | **추정** |
+| `SCE_KERNEL_ERROR_PRX_TYPE_UNSUPPORTED` (`kSceKernelErrorPrxTypeUnsupported`) | `0x80020148` | uOFW `modulemgr` | **추정** |
 | `SCE_KERNEL_ERROR_BADF` | `0x80020323` | PSPSDK `pspiofilemgr_kernel.h` / uOFW | **추정** |
 | `SCE_KERNEL_ERROR_ASYNC_BUSY` | `0x80020329` | uOFW | **추정** |
+| `SCE_AUDIO_ERROR_NOT_INITIALIZED` | `0x80260001` | PSPSDK `pspaudio.h` / uOFW | **추정** |
+| `SCE_AUDIO_ERROR_OUTPUT_BUSY` | `0x80260002` | PSPSDK `pspaudio.h` / uOFW | **추정** |
+| `SCE_AUDIO_ERROR_INVALID_CH` | `0x80260003` | PSPSDK `pspaudio.h` / uOFW | **추정** |
+| `SCE_AUDIO_ERROR_NOT_FOUND` | `0x80260005` | PSPSDK `pspaudio.h` / uOFW | **추정** |
+| `SCE_AUDIO_ERROR_INVALID_SIZE` | `0x80260006` | PSPSDK `pspaudio.h` / uOFW | **추정** |
+| `SCE_AUDIO_ERROR_INVALID_FORMAT` | `0x80260007` | PSPSDK `pspaudio.h` / uOFW | **추정** |
+| `SCE_AUDIO_ERROR_NOT_RESERVED` | `0x80260008` | PSPSDK `pspaudio.h` / uOFW | **추정** |
+| `SCE_AUDIO_ERROR_INVALID_VOLUME` | `0x8026000B` | PSPSDK `pspaudio.h` / uOFW | **추정** |
+| `SCE_SAS_ERROR_INVALID_GRAIN` | `0x80420001` | 공개 SAS 규격 / PSDevWiki | **추정** |
+| `SCE_SAS_ERROR_INVALID_MAX_VOICES` | `0x80420002` | 공개 SAS 규격 / PSDevWiki | **추정** |
+| `SCE_SAS_ERROR_INVALID_VOICE` | `0x80420010` | 공개 SAS 규격 / PSDevWiki | **추정** |
+| `SCE_SAS_ERROR_INVALID_PARAMETER` | `0x80420014` | 공개 SAS 규격 / PSDevWiki | **추정** |
+| `SCE_SAS_ERROR_INVALID_FX_TYPE` | `0x80420020` | 공개 SAS 규격 / PSDevWiki | **추정** |
+| `SCE_ATRAC_ERROR_PARAM_FAIL` | `0x80630001` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_API_FAIL` | `0x80630002` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_NO_ATRACID` | `0x80630003` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_BAD_CODEC_TYPE` | `0x80630004` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_BAD_ATRACID` | `0x80630005` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_UNKNOWN_FORMAT` | `0x80630006` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_UNMATCH_FORMAT` | `0x80630007` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_BAD_DATA` | `0x80630008` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_ALLDATA_IS_ON_MEMORY` | `0x80630009` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_UNSET_DATA` | `0x80630010` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_READSIZE_IS_TOO_SMALL` | `0x80630011` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_NOT_4BYTE_ALIGNMENT` | `0x80630014` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_BAD_SAMPLE` | `0x80630015` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_ADD_DATA_IS_TOO_BIG` | `0x80630018` | PSPSDK `pspatrac3.h` | **추정** |
+| `SCE_ATRAC_ERROR_ALLDATA_WAS_DECODED` | `0x80630024` | PSPSDK `pspatrac3.h` | **추정** |
 | `SCE_ERROR_ERRNO_ENOENT` | `0x80010002` | PSPSDK `errno.h` | **추정** |
 | `SCE_ERROR_ERRNO_EACCES` | `0x8001000D` | PSPSDK `errno.h` | **추정** |
 | `SCE_ERROR_ERRNO_EEXIST` | `0x80010011` | PSPSDK `errno.h` | **추정** |

@@ -202,6 +202,48 @@ int main()
         TEST_ASSERT(repsp::runtime::LookupKnownNid(item.nid) != nullptr);
     }
 
+    static const NidExpected kAudioNids[] = {
+        // sceAudio (6)
+        { "sceAudioChReserve", 0x5EC81C55u },
+        { "sceAudioChRelease", 0x6FC46853u },
+        { "sceAudioOutputBlocking", 0x136CAF51u },
+        { "sceAudioOutputPannedBlocking", 0x13F592BCu },
+        { "sceAudioGetChannelRestLength", 0xB011922Fu },
+        { "sceAudioSetChannelDataLen", 0xCB2E439Eu },
+        // sceSasCore (13)
+        { "__sceSasInit", 0x42778A9Fu },
+        { "__sceSasCore", 0xA3589D81u },
+        { "__sceSasSetVoice", 0x99944089u },
+        { "__sceSasSetKeyOn", 0x76F01ACAu },
+        { "__sceSasSetKeyOff", 0xA0CF2FA4u },
+        { "__sceSasSetPitch", 0xAD84D37Fu },
+        { "__sceSasSetVolume", 0x440CA7D8u },
+        { "__sceSasSetADSR", 0x019B25EBu },
+        { "__sceSasSetSimpleADSR", 0xCBCD4F79u },
+        { "__sceSasGetEndFlag", 0x68A46B95u },
+        { "__sceSasRevType", 0x33D4AB37u },
+        { "__sceSasRevEVOL", 0xD5A229C9u },
+        { "__sceSasRevVON", 0xF983B186u },
+        // sceAtrac3plus (11)
+        { "sceAtracSetDataAndGetID", 0x7A20E7AFu },
+        { "sceAtracDecodeData", 0x6A8C3CD5u },
+        { "sceAtracGetRemainFrame", 0x9AE849A7u },
+        { "sceAtracGetStreamDataInfo", 0x5D268707u },
+        { "sceAtracAddStreamData", 0x7DB31251u },
+        { "sceAtracSetLoopNum", 0x868120B5u },
+        { "sceAtracReleaseAtracID", 0x61EB33F5u },
+        { "sceAtracGetSoundSample", 0xA2BBA8BEu },
+        { "sceAtracResetPlayPosition", 0x644E5607u },
+        { "sceAtracGetBufferInfoForReseting", 0xCA3CA3D2u },
+        { "sceAtracGetInternalErrorInfo", 0xE88F759Bu },
+    };
+    static_assert(sizeof(kAudioNids) / sizeof(kAudioNids[0]) == 30, "Expected 30 audio NIDs");
+    for (const auto& item : kAudioNids)
+    {
+        TEST_ASSERT(ComputeNid(item.name) == item.nid);
+        TEST_ASSERT(repsp::runtime::LookupKnownNid(item.nid) != nullptr);
+    }
+
     const auto& known_table = repsp::runtime::GetKnownNidTable();
     TEST_ASSERT(!known_table.empty());
     for (const auto& known_entry : known_table)

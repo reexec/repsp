@@ -33,3 +33,18 @@ target_sources(repsp_hle_dmac PRIVATE
     dmac/hle_dmac.cpp
 )
 target_link_libraries(repsp_hle_dmac PUBLIC repsp_recomp)
+
+target_sources(repsp_hle_audio PRIVATE
+    audio/hle_audio.cpp
+)
+target_link_libraries(repsp_hle_audio PUBLIC repsp_recomp)
+
+target_sources(repsp_hle_sascore PRIVATE
+    sascore/hle_sascore.cpp
+)
+target_link_libraries(repsp_hle_sascore PUBLIC repsp_recomp)
+
+target_sources(repsp_hle_atrac PRIVATE
+    atrac/hle_atrac.cpp
+)
+target_link_libraries(repsp_hle_atrac PUBLIC repsp_recomp)
