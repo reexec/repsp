@@ -56,6 +56,9 @@ struct AtracHandle
     uint32_t file_read_offset = 0;
     uint32_t buffered_bytes = 0;
     uint32_t write_cursor = 0;
+
+    void* codec_ctx = nullptr;
+    AtracDecoder* codec_ctx_owner = nullptr;
 };
 
 struct AtracGlobalState
@@ -96,6 +99,29 @@ AtracHandle* FindHandle(int32_t id)
     }
     AtracHandle& h = g_atrac.handles[static_cast<size_t>(id)];
     return h.active ? &h : nullptr;
+}
+
+void DestroyCodecContext(AtracHandle& h)
+{
+    if (h.codec_ctx_owner != nullptr && h.codec_ctx != nullptr)
+    {
+        h.codec_ctx_owner->DestroyStreamContext(h.codec_ctx);
+    }
+    h.codec_ctx = nullptr;
+    h.codec_ctx_owner = nullptr;
+}
+
+void EnsureCodecContext(AtracHandle& h, AtracDecoder* dec)
+{
+    if (h.codec_ctx_owner != dec)
+    {
+        DestroyCodecContext(h);
+        if (dec != nullptr)
+        {
+            h.codec_ctx_owner = dec;
+            h.codec_ctx = dec->CreateStreamContext();
+        }
+    }
 }
 
 int32_t ParseRiffAtrac(const uint8_t* data, uint32_t size, AtracHandle& out)
@@ -150,6 +176,11 @@ int32_t ParseRiffAtrac(const uint8_t* data, uint32_t size, AtracHandle& out)
             out.info.channels = channels;
             out.info.sample_rate = sample_rate;
             out.info.block_align = block_align;
+            out.info.extradata.clear();
+            if (chunk_size > 18)
+            {
+                out.info.extradata.assign(chunk + 18, chunk + chunk_size);
+            }
 
             if (fmt_tag == kAtrac3FormatTag)
             {
@@ -433,7 +464,9 @@ void HleAtracDecodeData()
 
     std::vector<int16_t> pcm_tmp(static_cast<size_t>(samples_this_frame) * h->info.channels, 0);
     AtracDecoder* dec = (g_atrac.decoder != nullptr) ? g_atrac.decoder : &g_atrac.default_decoder;
-    if (!dec->DecodeFrame(h->info,
+    EnsureCodecContext(*h, dec);
+    if (!dec->DecodeFrame(h->codec_ctx,
+                          h->info,
                           encoded_frame.data(),
                           encoded_frame.size(),
                           pcm_tmp.data(),
@@ -471,6 +504,10 @@ void HleAtracDecodeData()
             const uint32_t target = (h->loop_start >= 0) ? static_cast<uint32_t>(h->loop_start) : 0u;
             h->current_sample = target;
             h->frame_index = target / spf;
+            if (h->codec_ctx_owner != nullptr && h->codec_ctx != nullptr)
+            {
+                h->codec_ctx_owner->ResetStreamContext(h->codec_ctx);
+            }
             if (!h->all_in_memory)
             {
                 h->file_read_offset = h->data_offset + h->frame_index * h->info.block_align;
@@ -632,6 +669,7 @@ void HleAtracReleaseId()
         return;
     }
 
+    DestroyCodecContext(*h);
     *h = AtracHandle{};
     g_atrac.released_ids += 1;
     recomp::Return(int32_t{ 0 });
@@ -754,6 +792,10 @@ void HleAtracResetPlayPosition()
     h->current_sample = sample;
     h->frame_index = sample / h->info.samples_per_frame;
     h->decoded_all = false;
+    if (h->codec_ctx_owner != nullptr && h->codec_ctx != nullptr)
+    {
+        h->codec_ctx_owner->ResetStreamContext(h->codec_ctx);
+    }
     if (!h->all_in_memory)
     {
         const uint32_t base_file_off =
@@ -798,6 +840,7 @@ void Register()
     std::lock_guard<std::mutex> lock(g_atrac.mutex);
     for (auto& h : g_atrac.handles)
     {
+        DestroyCodecContext(h);
         h = AtracHandle{};
     }
     g_atrac.created_ids = 0;
@@ -829,6 +872,7 @@ void Shutdown()
     std::lock_guard<std::mutex> lock(g_atrac.mutex);
     for (auto& h : g_atrac.handles)
     {
+        DestroyCodecContext(h);
         h = AtracHandle{};
     }
     g_atrac.decoder = &g_atrac.default_decoder;
@@ -838,6 +882,10 @@ void Shutdown()
 void SetDecoder(AtracDecoder* decoder)
 {
     std::lock_guard<std::mutex> lock(g_atrac.mutex);
+    for (auto& h : g_atrac.handles)
+    {
+        DestroyCodecContext(h);
+    }
     g_atrac.decoder = (decoder != nullptr) ? decoder : &g_atrac.default_decoder;
 }
 

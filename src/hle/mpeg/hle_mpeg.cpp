@@ -148,6 +148,23 @@ struct MpegInstance
     std::unordered_map<uint32_t, AccessUnit> last_avc_aus;
     AccessUnit last_avc_au;
     AccessUnit last_atrac_au;
+
+    void* avc_ctx = nullptr;
+    repsp::codec::AvcDecoder* avc_ctx_owner = nullptr;
+    void* atrac_ctx = nullptr;
+    repsp::codec::AtracDecoder* atrac_ctx_owner = nullptr;
+
+    ~MpegInstance()
+    {
+        if (avc_ctx_owner != nullptr && avc_ctx != nullptr)
+        {
+            avc_ctx_owner->DestroyStreamContext(avc_ctx);
+        }
+        if (atrac_ctx_owner != nullptr && atrac_ctx != nullptr)
+        {
+            atrac_ctx_owner->DestroyStreamContext(atrac_ctx);
+        }
+    }
 };
 
 struct MpegGlobalState
@@ -1645,7 +1662,21 @@ void HleMpegAvcDecode()
     repsp::codec::AvcDecoder* dec = (g_mpeg.avc_decoder != nullptr)
                                          ? g_mpeg.avc_decoder
                                          : &g_mpeg.default_avc_decoder;
-    if (dst_ptr == nullptr || !dec->DecodeAu(au_span, width, height, pixel_format, std::span<uint8_t>(dst_ptr, out_bytes)))
+    void* avc_ctx = nullptr;
+    if (inst != nullptr)
+    {
+        if (inst->avc_ctx_owner != dec)
+        {
+            if (inst->avc_ctx_owner != nullptr && inst->avc_ctx != nullptr)
+            {
+                inst->avc_ctx_owner->DestroyStreamContext(inst->avc_ctx);
+            }
+            inst->avc_ctx_owner = dec;
+            inst->avc_ctx = dec->CreateStreamContext();
+        }
+        avc_ctx = inst->avc_ctx;
+    }
+    if (dst_ptr == nullptr || !dec->DecodeAu(avc_ctx, au_span, width, height, pixel_format, std::span<uint8_t>(dst_ptr, out_bytes)))
     {
         recomp::Return(kSceMpegErrorInvalidValue);
         return;
@@ -1682,15 +1713,26 @@ void HleMpegAvcDecodeFlush()
 {
     const uint32_t mpeg_addr = recomp::Arg<uint32_t>(0);
     std::lock_guard<std::mutex> lock(g_mpeg.mutex);
+    repsp::codec::AvcDecoder* dec = (g_mpeg.avc_decoder != nullptr)
+                                         ? g_mpeg.avc_decoder
+                                         : &g_mpeg.default_avc_decoder;
     if (auto inst = FindInstanceLocked(mpeg_addr))
     {
         inst->avc_queues.clear();
         inst->last_avc_aus.clear();
+        if (inst->avc_ctx_owner == dec && inst->avc_ctx != nullptr)
+        {
+            dec->Flush(inst->avc_ctx);
+        }
+        else
+        {
+            dec->Flush();
+        }
     }
-    repsp::codec::AvcDecoder* dec = (g_mpeg.avc_decoder != nullptr)
-                                         ? g_mpeg.avc_decoder
-                                         : &g_mpeg.default_avc_decoder;
-    dec->Flush();
+    else
+    {
+        dec->Flush();
+    }
     recomp::Return(int32_t{ 0 });
 }
 
@@ -1725,15 +1767,38 @@ void HleMpegAtracDecode()
     }
 
     repsp::codec::AtracFrameInfo frame_info{};
+    frame_info.format_tag = 0xFFFE;
     frame_info.channels = 2;
     frame_info.sample_rate = 44100;
     frame_info.samples_per_frame = 2048;
+
+    // PSMF ATRAC3plus access units begin with an 8-byte header (0F D0 .. .. .. .. .. ..).
+    if (frame_ptr != nullptr && frame_size > 8 && frame_ptr[0] == 0x0Fu && frame_ptr[1] == 0xD0u)
+    {
+        frame_ptr += 8;
+        frame_size -= 8;
+    }
+    frame_info.block_align = static_cast<uint32_t>(frame_size);
 
     auto* out_pcm = reinterpret_cast<int16_t*>(mem.Translate(buf_addr));
     repsp::codec::AtracDecoder* dec = (g_mpeg.atrac_decoder != nullptr)
                                            ? g_mpeg.atrac_decoder
                                            : &g_mpeg.default_atrac_decoder;
-    if (out_pcm == nullptr || !dec->DecodeFrame(frame_info, frame_ptr, frame_size, out_pcm, 2048))
+    void* atrac_ctx = nullptr;
+    if (inst != nullptr)
+    {
+        if (inst->atrac_ctx_owner != dec)
+        {
+            if (inst->atrac_ctx_owner != nullptr && inst->atrac_ctx != nullptr)
+            {
+                inst->atrac_ctx_owner->DestroyStreamContext(inst->atrac_ctx);
+            }
+            inst->atrac_ctx_owner = dec;
+            inst->atrac_ctx = dec->CreateStreamContext();
+        }
+        atrac_ctx = inst->atrac_ctx;
+    }
+    if (out_pcm == nullptr || !dec->DecodeFrame(atrac_ctx, frame_info, frame_ptr, frame_size, out_pcm, 2048))
     {
         recomp::Return(kSceMpegErrorInvalidValue);
         return;
@@ -1856,12 +1921,30 @@ void Shutdown()
 void SetAvcDecoder(repsp::codec::AvcDecoder* decoder)
 {
     std::lock_guard<std::mutex> lock(g_mpeg.mutex);
+    for (auto& inst : g_mpeg.instances)
+    {
+        if (inst && inst->avc_ctx_owner != nullptr && inst->avc_ctx != nullptr)
+        {
+            inst->avc_ctx_owner->DestroyStreamContext(inst->avc_ctx);
+            inst->avc_ctx = nullptr;
+            inst->avc_ctx_owner = nullptr;
+        }
+    }
     g_mpeg.avc_decoder = (decoder != nullptr) ? decoder : &g_mpeg.default_avc_decoder;
 }
 
 void SetAtracDecoder(repsp::codec::AtracDecoder* decoder)
 {
     std::lock_guard<std::mutex> lock(g_mpeg.mutex);
+    for (auto& inst : g_mpeg.instances)
+    {
+        if (inst && inst->atrac_ctx_owner != nullptr && inst->atrac_ctx != nullptr)
+        {
+            inst->atrac_ctx_owner->DestroyStreamContext(inst->atrac_ctx);
+            inst->atrac_ctx = nullptr;
+            inst->atrac_ctx_owner = nullptr;
+        }
+    }
     g_mpeg.atrac_decoder = (decoder != nullptr) ? decoder : &g_mpeg.default_atrac_decoder;
 }
 
