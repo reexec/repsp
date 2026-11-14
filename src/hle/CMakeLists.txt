@@ -47,4 +47,9 @@ target_link_libraries(repsp_hle_sascore PUBLIC repsp_recomp)
 target_sources(repsp_hle_atrac PRIVATE
     atrac/hle_atrac.cpp
 )
-target_link_libraries(repsp_hle_atrac PUBLIC repsp_recomp)
+target_link_libraries(repsp_hle_atrac PUBLIC repsp_recomp repsp_codec)
+
+target_sources(repsp_hle_mpeg PRIVATE
+    mpeg/hle_mpeg.cpp
+)
+target_link_libraries(repsp_hle_mpeg PUBLIC repsp_recomp repsp_codec)
