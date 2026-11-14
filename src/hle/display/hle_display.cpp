@@ -120,11 +120,6 @@ void WriteBmp(const std::filesystem::path& path, const uint8_t* rgba, int width,
 
 void PresentActiveLocked()
 {
-    if (g_active_fb.topaddr == 0 || g_active_fb.bufferwidth == 0)
-    {
-        return;
-    }
-
     g_rgba_scratch.resize(static_cast<size_t>(kScreenWidth) * static_cast<size_t>(kScreenHeight) * 4u);
     ConvertFrameBufferToRgba8(g_active_fb.topaddr, g_active_fb.bufferwidth,
                                g_active_fb.pixelformat, g_rgba_scratch.data());
@@ -173,8 +168,8 @@ void VblankThreadMain()
             {
                 g_active_fb = g_pending_fb;
                 g_has_pending_fb = false;
+                PresentActiveLocked();
             }
-            PresentActiveLocked();
 
             if (g_backend && !g_backend->PollEvents())
             {
@@ -289,7 +284,14 @@ void ConvertFrameBufferToRgba8(uint32_t topaddr, uint32_t bufferwidth, int32_t p
     }
     if (topaddr == 0 || bufferwidth == 0)
     {
-        std::memset(out_rgba, 0, static_cast<size_t>(kScreenWidth) * static_cast<size_t>(kScreenHeight) * 4u);
+        const size_t total = static_cast<size_t>(kScreenWidth) * static_cast<size_t>(kScreenHeight);
+        for (size_t i = 0; i < total; ++i)
+        {
+            out_rgba[i * 4 + 0] = 0;
+            out_rgba[i * 4 + 1] = 0;
+            out_rgba[i * 4 + 2] = 0;
+            out_rgba[i * 4 + 3] = 255;
+        }
         return;
     }
 
