@@ -35,6 +35,7 @@ constexpr int kRegV0 = 2;
 constexpr int kRegA0 = 4;
 constexpr int kRegA1 = 5;
 constexpr int kRegA2 = 6;
+constexpr int kRegA3 = 7;
 constexpr int kRegK0 = 26;
 constexpr int kRegGP = 28;
 constexpr int kRegSP = 29;
@@ -74,6 +75,15 @@ const char* WaitTypeName(WaitType wt)
     case WaitType::kAudio: return "Audio";
     case WaitType::kCustom: return "Custom";
     default: return "Unknown";
+    }
+}
+
+void RaiseStopIfShuttingDownLocked(bool stopping, std::unique_lock<std::mutex>& lock)
+{
+    if (stopping && t_current_thread_uid != 0)
+    {
+        lock.unlock();
+        platform::RaiseStop(kInternalThreadExitStop);
     }
 }
 
@@ -737,6 +747,7 @@ int32_t Scheduler::SleepThread(bool allow_callbacks)
 {
     {
         std::unique_lock<std::mutex> lock(mutex_);
+        RaiseStopIfShuttingDownLocked(shutdown_ || fatal_stop_, lock);
         auto cur = FindThreadLocked(active_thread_uid_);
         if (!cur)
         {
@@ -810,6 +821,7 @@ int32_t Scheduler::DelayThread(uint32_t delay_us, bool allow_callbacks)
 int32_t Scheduler::WaitCurrent(WaitType type, KernelUid target_uid, const std::string& detail, const uint32_t* timeout_us, bool allow_callbacks)
 {
     std::unique_lock<std::mutex> lock(mutex_);
+    RaiseStopIfShuttingDownLocked(shutdown_ || fatal_stop_, lock);
     if (in_interrupt_)
     {
         ReportFatalStopLocked("Wait called inside interrupt handler");
@@ -1015,12 +1027,51 @@ int32_t Scheduler::NotifyCallback(KernelUid cb_uid, int32_t arg)
 int32_t Scheduler::CheckCallbacks()
 {
     std::unique_lock<std::mutex> lock(mutex_);
+    RaiseStopIfShuttingDownLocked(shutdown_ || fatal_stop_, lock);
     auto cur = FindThreadLocked(active_thread_uid_);
     if (!cur)
     {
         return 0;
     }
     return RunPendingCallbacksLocked(lock, cur);
+}
+
+int32_t Scheduler::CallGuestFunction(uint32_t entry, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
+{
+    if (entry == 0 || ops_ == nullptr || ops_->call_guest == nullptr)
+    {
+        return 0;
+    }
+
+    std::vector<uint8_t> saved_ctx;
+    if (ops_->save != nullptr && ops_->context_size > 0)
+    {
+        saved_ctx.resize(ops_->context_size);
+        ops_->save(saved_ctx.data());
+    }
+
+    const uint32_t gp = GetCurrentThreadGp();
+    if (ops_->set_gpr != nullptr)
+    {
+        ops_->set_gpr(kRegA0, a0);
+        ops_->set_gpr(kRegA1, a1);
+        ops_->set_gpr(kRegA2, a2);
+        ops_->set_gpr(kRegA3, a3);
+        if (gp != 0)
+        {
+            ops_->set_gpr(kRegGP, gp);
+        }
+        ops_->set_gpr(kRegRA, 0);
+    }
+
+    ops_->call_guest(entry);
+
+    const int32_t ret = (ops_->get_gpr != nullptr) ? static_cast<int32_t>(ops_->get_gpr(kRegV0)) : 0;
+    if (ops_->restore != nullptr && !saved_ctx.empty())
+    {
+        ops_->restore(saved_ctx.data());
+    }
+    return ret;
 }
 
 uint32_t Scheduler::SuspendInterrupts()
@@ -1180,6 +1231,7 @@ void Scheduler::DeliverPendingInterrupts()
 void Scheduler::YieldIfPreempted()
 {
     std::unique_lock<std::mutex> lock(mutex_);
+    RaiseStopIfShuttingDownLocked(shutdown_ || fatal_stop_, lock);
     if (!intr_enabled_ || in_interrupt_ || active_thread_uid_ == 0 || t_current_thread_uid == 0)
     {
         return;
@@ -1197,6 +1249,7 @@ void Scheduler::YieldIfPreempted()
 void Scheduler::YieldCurrent()
 {
     std::unique_lock<std::mutex> lock(mutex_);
+    RaiseStopIfShuttingDownLocked(shutdown_ || fatal_stop_, lock);
     if (in_interrupt_)
     {
         ReportFatalStopLocked("Yield called inside interrupt handler");
