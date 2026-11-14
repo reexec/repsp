@@ -15,6 +15,7 @@ flowchart BT
     RT["repsp_runtime<br/>GuestMemory, NID registry & names, Scheduler + IRQ stack, VFS, VblankClock"]
     GPU["repsp_gpu<br/>GE display list interpreter & software rasterizer"]
     REC["repsp_recomp<br/>Lifter-neutral CPU contract, MIPS ABI helpers, C memory API"]
+    CODEC["repsp_codec<br/>AtracDecoder / SilentDecoder, AvcDecoder / BlankAvcDecoder"]
     HLEK["repsp_hle_kernel<br/>Kernel/UMD HLE"]
     HLEG["repsp_hle_ge<br/>sceGe_user HLE"]
     HLED["repsp_hle_display<br/>sceDisplay HLE"]
@@ -22,11 +23,13 @@ flowchart BT
     HLEDM["repsp_hle_dmac<br/>sceDmacMemcpy HLE"]
     HAUD["repsp_hle_audio<br/>sceAudio HLE & mixer"]
     HSAS["repsp_hle_sascore<br/>sceSasCore VAG synth"]
-    HATR["repsp_hle_atrac<br/>sceAtrac3plus & AtracDecoder"]
+    HATR["repsp_hle_atrac<br/>sceAtrac3plus & AU queue"]
+    HMPEG["repsp_hle_mpeg<br/>sceMpeg HLE, PSMF & PS demux"]
 
     MOD --> PLAT
     RT --> MOD
     RT --> PLAT
+    CODEC --> RT
     GPU --> RT
     REC --> RT
     HLEK --> REC
@@ -41,13 +44,17 @@ flowchart BT
     HAUD --> PLAT
     HSAS --> REC
     HATR --> REC
+    HATR --> CODEC
+    HMPEG --> REC
+    HMPEG --> CODEC
 ```
 
 | 타깃 | 별칭 | 공개 헤더 경로 | 주요 책임 |
 |---|---|---|---|
 | `repsp_platform` | `repsp::platform` | `include/repsp/platform/` | 가상 메모리 예약/commit/보호, 보호 실행(`GuardedRun`), 호스트 스레드 생성/CPU 시간, 파일 경로, SDL3 창/RGBA8 출력, UI 스레드 키보드·게임패드 스냅샷(`InputBackend`) |
 | `repsp_module` | `repsp::module` | `include/repsp/module/` | `PARAM.SFO` 바이너리 파서, PRX 로더 및 재배치 (`ParsePrx`, `RelocateToBuffer`) |
-| `repsp_runtime` | `repsp::runtime` | `include/repsp/runtime/` | 게스트 물리 메모리, 미러 접기, NID 레지스트리·SHA-1 이름표(`nid_names.h`), 커널 객체 표, `Clock`, `Vfs`, `UserPartition`, 단일 코어 `Scheduler`·인터럽트 큐, 공유 `VblankClock` |
+| `repsp_runtime` | `repsp::runtime` | `include/repsp/runtime/` | 게스트 물리 메모리, 미러 접기, NID 레지스트리·SHA-1 이름표(`nid_names.h`), 커널 객체 표, `Clock`, `Vfs`, `UserPartition`, 단일 코어 `Scheduler`·인터럽트 큐·게스트 함수 호출, 공유 `VblankClock` |
+| `repsp_codec` | `repsp::codec` | `include/repsp/codec/` | 코덱 디코더 계약 (`AtracDecoder`/`SilentDecoder`, `AvcDecoder`/`BlankAvcDecoder`) |
 | `repsp_gpu` | `repsp::gpu` | `include/repsp/gpu/` | GE 디스플레이 리스트 해석기(`GeInterpreter`) 및 소프트웨어 래스터라이저(`RenderBackend`) |
 | `repsp_recomp` | `repsp::recomp` | `include/repsp/recomp/` | lifter 중립 CPU 콜백 계약(`repsp_guest_cpu_ops`), 인자/반환 도우미(GPR/FPR), C 메모리 접근 함수, 안전점 `repsp_recomp_poll` |
 | `repsp_hle_kernel` | `repsp::hle_kernel` | `include/repsp/hle/` | `KernelConfig` 기반 커널/UMD HLE 65개 함수 등록(`repsp::hle::kernel::Register`), 오류 코드 정의(`kernel_errors.h`) |
@@ -57,7 +64,8 @@ flowchart BT
 | `repsp_hle_dmac` | `repsp::hle_dmac` | `include/repsp/hle/dmac.h` | `sceDmac` `sceDmacMemcpy` NID 등록(`repsp::hle::dmac::Register`) |
 | `repsp_hle_audio` | `repsp::hle_audio` | `include/repsp/hle/audio.h` | `sceAudio` 6개 NID 등록, 8채널 이중 버퍼 대기, 끌어가기(pull) 믹서 및 더미 단조 시계 동기 |
 | `repsp_hle_sascore` | `repsp::hle_sascore` | `include/repsp/hle/sascore.h` | `sceSasCore` 13개 NID 등록, Sony VAG ADPCM/ADSR 32-보이스 믹서(드라이 전용 리버브) |
-| `repsp_hle_atrac` | `repsp::hle_atrac` | `include/repsp/hle/atrac.h` | `sceAtrac3plus` 11개 NID 등록, RIFF 파서·스트림 상태 머신, 교체형 `AtracDecoder`/`SilentDecoder` |
+| `repsp_hle_atrac` | `repsp::hle_atrac` | `include/repsp/hle/atrac.h` | `sceAtrac3plus` 11개 NID 등록, RIFF 파서·스트림 상태 머신 (`repsp::codec::AtracDecoder` 사용) |
+| `repsp_hle_mpeg` | `repsp::hle_mpeg` | `include/repsp/hle/mpeg.h` | `sceMpeg` 24개 NID 등록, PSMF 파서, MPEG-2 PS/PES 디먹서, 링 버퍼 게스트 콜백, AVC/ATRAC AU 큐 (`repsp::codec` 디코더 사용) |
 
 ---
 
@@ -159,6 +167,7 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 * 소비자는 `repsp::hle::kernel::Register(const KernelConfig&)`를 통해 장치 마운트(`disc0:`, `umd0:`, `ms0:` 등), 로드된 메인 모듈 이미지 범위(`module_image_base`, `module_image_size`)를 등록하고 65개 커널·UMD HLE 함수를 활성화합니다.
 * `repsp::runtime::GetScheduler()`는 `CreateThread`로 첫 `module_start` 스레드를 만들고 `Run(entry_thread_uid)`로 단일 코어 바톤 스케줄러를 구동합니다. 게스트 워커 스레드 내부의 `RaiseStop`이나 하드웨어 결함은 각 워커의 `GuardedRun`이 포착한 뒤, 모든 워커를 join하고 호출자 스레드의 바깥 `GuardedRun`으로 전파합니다. 교착 시에는 모든 스레드와 대기 대상을 담아 `RaiseStop`으로 멈춥니다.
 * **인터럽트 전달 계약**: `Scheduler::QueueInterrupt`로 적재된 인터럽트(예: GE `SIGNAL`/`FINISH`)는 `repsp_recomp_hle_call` 종료 시점, `repsp_recomp_poll()`, 유휴 루프 등 안전점에서 16 KiB 커널 인터럽트 스택(`0x08010000`)을 사용해 전달됩니다. 인터럽트 핸들러 안에서는 블로킹 대기·명시적 양보(`WaitCurrent`/`YieldCurrent`)가 금지되며 위반 시 즉시 `RaiseStop`으로 정지합니다.
+* **스레드 문맥 게스트 함수 호출**: `Scheduler::CallGuestFunction(entry, a0, a1, a2, a3)`는 현재 실행 중인 게스트 스레드 컨텍스트 위에서 레지스터(특히 호출자 보존 `$s0..$s7`, `$fp`, `$sp`, `$ra`)를 저장·복원한 뒤 게스트 함수(예: `sceMpegRingbufferPut` 읽기 콜백)를 호출하고 `$v0`를 반환합니다. 인터럽트 스택으로 전환하지 않으므로 콜백 내부에서 블로킹 커널 대기(`sceIoRead`, `sceKernelDelayThread` 등)가 정상 동작합니다.
 * 환경 변수 `REPSP_HLE_TRACE=1` 및 `REPSP_HLE_TRACE_LIMIT=<N>`으로 HLE 호출 추적을 제어하고 `PrintKernelSummary()`로 호출 횟수, 스레드, 열린 파일, 할당 블록을 요약할 수 있습니다.
 * **정지·대기 시 스택·잠금 계약**: `NidRegistry::Invoke`는 핸들러 실행 중 스택에 소유 객체(`std::function`, `std::string`)를 두지 않으며, `RaiseStop`/`WaitCurrent`/`YieldIfPreempted` 경로의 바깥 프레임은 뮤텍스 잠금을 유지하지 않습니다(대기 중 강제 종료되는 스레드의 안쪽 대기 핸들러 프레임 지역 객체만 누수 범위에 남습니다).
 
@@ -181,6 +190,12 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 * `repsp::hle::atrac::SetDecoder(AtracDecoder*)`로 코덱 디코더를 교체할 수 있으며, 기본값은 `SilentDecoder`(PCM 0 출력)입니다. `FormatStats()`는 항상 `"ATRAC decode: silent"`(또는 활성 디코더 이름)와 SAS의 `"reverb=dry only (not mixed)"` 상태를 명시합니다.
 * `ModuleMgr` HLE 화이트리스트는 HLE가 제공하는 Sony AV PRX(`sc_sascore.prx`, `audiocodec.prx`, `libatrac3plus.prx`, `videocodec.prx`, `mpegbase.prx`, `mpeg.prx`)만 성공 핸들을 돌려주고 알 수 없는 PRX는 `kSceKernelErrorPrxTypeUnsupported`(`0x80020148`)로 거부합니다.
 
+### 2.12. 코덱 및 `sceMpeg` 계약 (`codec/`, `mpeg.h`)
+
+* `repsp_codec`은 HLE 모듈 간 직접 링크 없이 공유하는 디코더 계약(`repsp::codec::AtracDecoder`/`SilentDecoder`, `repsp::codec::AvcDecoder`/`BlankAvcDecoder`)을 제공합니다. `repsp::hle::atrac::` 이름공간은 하위 호환성을 위해 `using` 별칭으로 `AtracDecoder`/`SilentDecoder`를 유지합니다.
+* 소비자는 `repsp::hle::mpeg::Register()`로 24개 `sceMpeg` NID를 등록하고 종료 시 `repsp::hle::mpeg::Shutdown()`으로 정리합니다.
+* `repsp::hle::mpeg::SetAvcDecoder(AvcDecoder*)` 및 `SetAtracDecoder(AtracDecoder*)`로 디코더를 교체할 수 있으며, 기본값은 불투명 검은 프레임(`BlankAvcDecoder`)과 무음(`SilentDecoder`)입니다. `FormatStats()`는 `"AVC decode: blank"`와 `"ATRAC decode: silent"` 및 디코딩·분리 통계를 보고합니다.
+
 ---
 
 # Architecture and Consumer Contract (English)
@@ -194,7 +209,7 @@ Layers depend strictly downward as shown in the diagram and table above.
 ## 2. Consumer Contract
 
 ### 2.1. CMake Integration
-Consumers add repsp via `add_subdirectory(third_party/repsp)` and link against public alias targets (`repsp::platform`, `repsp::module`, `repsp::runtime`, `repsp::gpu`, `repsp::recomp`, `repsp::hle_kernel`, `repsp::hle_ge`, `repsp::hle_display`, `repsp::hle_ctrl`, `repsp::hle_dmac`, `repsp::hle_audio`, `repsp::hle_sascore`, `repsp::hle_atrac`).
+Consumers add repsp via `add_subdirectory(third_party/repsp)` and link against public alias targets (`repsp::platform`, `repsp::module`, `repsp::runtime`, `repsp::codec`, `repsp::gpu`, `repsp::recomp`, `repsp::hle_kernel`, `repsp::hle_ge`, `repsp::hle_display`, `repsp::hle_ctrl`, `repsp::hle_dmac`, `repsp::hle_audio`, `repsp::hle_sascore`, `repsp::hle_atrac`, `repsp::hle_mpeg`).
 
 ### 2.2. CPU Register Contract (`guest_cpu.h`)
 repsp owns no register file. Consumers register the `repsp_guest_cpu_ops` callback table (including `get_fpr`/`set_fpr` for COP1 float returns) at startup.
@@ -225,6 +240,7 @@ Provides guarded execution for catching hardware faults and explicit stop reques
 Consumers configure VFS mounts and reserve the loaded module image range via `repsp::hle::kernel::Register(const KernelConfig&)`, then create the initial entry thread and run the single-core baton scheduler via `repsp::runtime::GetScheduler().Run(entry_uid)`. Worker-thread `RaiseStop` or hardware faults are caught per-worker, joined cleanly, and re-raised on the caller's outer `GuardedRun`. `REPSP_HLE_TRACE=1` and `REPSP_HLE_TRACE_LIMIT` control call tracing, and `PrintKernelSummary()` prints call counts, threads, open files, and partition blocks.
 * **Stop/wait stack & lock contract**: `NidRegistry::Invoke` keeps no owning objects (`std::function`, `std::string`) on the stack while calling `handler()`, and all outer frames across `RaiseStop`/`WaitCurrent`/`YieldIfPreempted` hold no mutex locks (only local objects inside an inner waiting handler frame may be leaked if a blocked thread is force-terminated).
 * **Interrupt delivery contract**: Queued interrupts (`Scheduler::QueueInterrupt`) are delivered at safe points using the dedicated 16 KiB kernel interrupt stack (`0x08010000`). Blocking waits or explicit yields inside an interrupt handler trigger `RaiseStop`.
+* **Thread-context guest calls**: `Scheduler::CallGuestFunction(entry, a0, a1, a2, a3)` saves/restores registers on the running guest thread, invokes a guest function (such as the `sceMpegRingbufferPut` callback) in normal thread context so blocking waits work normally, and returns `$v0`.
 
 ### 2.9. GE, Display, and Frame Dump Contract (`ge.h`, `display.h`)
 
@@ -237,3 +253,7 @@ Consumers register `repsp::hle::ctrl::Register()` and `repsp::hle::dmac::Registe
 ### 2.11. Audio, SAS Synthesizer, and ATRAC Contract (`audio.h`, `sascore.h`, `atrac.h`)
 
 Consumers register `repsp::hle::audio::Register()`, `repsp::hle::sascore::Register()`, and `repsp::hle::atrac::Register()` for 30 audio NIDs (`sceAudio` 6, `sceSasCore` 13, `sceAtrac3plus` 11) and call `Shutdown()` on exit. `platform::AudioBackend::SetPullCallback` drives synchronous mixing via SDL3 pull stream or a 44.1 kHz steady-clock dummy thread, composing `WaitType::kAudio` with `VblankClock` via `AddExternalWaitSource`/`RemoveExternalWaitSource`. `repsp::hle::atrac::SetDecoder(AtracDecoder*)` swaps the codec decoder (defaulting to `SilentDecoder`), and `FormatStats()` explicitly reports `"ATRAC decode: silent"` and SAS `"reverb=dry only (not mixed)"`. `ModuleMgr` whitelists HLE-backed Sony AV PRXs and rejects unknown PRXs with `kSceKernelErrorPrxTypeUnsupported` (`0x80020148`).
+
+### 2.12. Codec and `sceMpeg` Contract (`codec/`, `mpeg.h`)
+
+`repsp_codec` holds shared decoder contracts (`repsp::codec::AtracDecoder`/`SilentDecoder`, `repsp::codec::AvcDecoder`/`BlankAvcDecoder`) so HLE modules never link each other (`repsp::hle::atrac::` exposes `using` aliases for compatibility). Consumers register the 24 `sceMpeg` NIDs with `repsp::hle::mpeg::Register()` and tear down with `Shutdown()`. `SetAvcDecoder`/`SetAtracDecoder` swap decoders (defaulting to `BlankAvcDecoder` opaque black frames and `SilentDecoder` silence); `FormatStats()` reports `"AVC decode: blank"`, `"ATRAC decode: silent"`, and demux/decode counts.
