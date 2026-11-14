@@ -97,11 +97,17 @@ constexpr uint32_t GeCmd(uint8_t op, uint32_t arg)
 // GE opcodes
 constexpr uint8_t kOpVaddr = 0x01;
 constexpr uint8_t kOpPrim = 0x04;
+constexpr uint8_t kOpBezier = 0x05;
+constexpr uint8_t kOpJump = 0x08;
+constexpr uint8_t kOpCall = 0x0A;
+constexpr uint8_t kOpRet = 0x0B;
 constexpr uint8_t kOpEnd = 0x0C;
 constexpr uint8_t kOpSignal = 0x0E;
 constexpr uint8_t kOpFinish = 0x0F;
 constexpr uint8_t kOpBase = 0x10;
 constexpr uint8_t kOpVtype = 0x12;
+constexpr uint8_t kOpOffsetAddr = 0x13;
+constexpr uint8_t kOpOriginAddr = 0x14;
 constexpr uint8_t kOpTme = 0x1E;
 constexpr uint8_t kOpShade = 0x50;
 constexpr uint8_t kOpFbp = 0x9C;
@@ -408,6 +414,177 @@ int main()
         TEST_ASSERT(g_last_finish_arg1 == 0x22220002u);
 
         TEST_ASSERT(InvokeNid(nids, kNidGeUnsetCallback, static_cast<uint32_t>(cb_id)) == 0);
+    }
+
+    // 6. SIGNAL + END does not terminate the list; drawing after END executes
+    {
+        const VertexColorPos2D sig_verts[2] = {
+            { 0xFF00AAFFu, 120, 120, 0, 0 },
+            { 0xFF00AAFFu, 130, 130, 0, 0 },
+        };
+        std::memcpy(mem.Translate(kVertAddr), sig_verts, sizeof(sig_verts));
+
+        const std::vector<uint32_t> cmds = {
+            GeCmd(kOpSignal, 0x00001111u),
+            GeCmd(kOpEnd, 0),
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2)),
+            GeCmd(kOpBase, (kVertAddr >> 8) & 0x00FF0000u),
+            GeCmd(kOpVaddr, kVertAddr & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u),
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kListAddr, cmds);
+        const int32_t lid = static_cast<int32_t>(
+            InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0));
+        TEST_ASSERT(lid > 0);
+        TEST_ASSERT(InvokeNid(nids, kNidGeListSync, static_cast<uint32_t>(lid), 1) == repsp::gpu::kGeListDone);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 125, 125) == 0xFF00AAFFu);
+    }
+
+    // 7. CALL sub-list -> stall inside sub-list -> resume -> RET -> draw
+    {
+        constexpr uint32_t kSubListAddr = 0x08914000u;
+        const VertexColorPos2D call_verts[2] = {
+            { 0xFF123456u, 140, 140, 0, 0 },
+            { 0xFF123456u, 150, 150, 0, 0 },
+        };
+        std::memcpy(mem.Translate(kVertAddr), call_verts, sizeof(call_verts));
+
+        const std::vector<uint32_t> sub_cmds = {
+            GeCmd(kOpBase, (kVertAddr >> 8) & 0x00FF0000u), // index 0
+            GeCmd(kOpVaddr, kVertAddr & 0x00FFFFFFu),       // index 1 -> stall here (kSubListAddr + 8)
+            GeCmd(kOpRet, 0),                               // index 2
+        };
+        WriteList(kSubListAddr, sub_cmds);
+
+        const std::vector<uint32_t> main_cmds = {
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2)),
+            GeCmd(kOpBase, (kSubListAddr >> 8) & 0x00FF0000u),
+            GeCmd(kOpCall, kSubListAddr & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u),
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kListAddr, main_cmds);
+
+        const uint32_t sub_stall = kSubListAddr + 2u * 4u;
+        const uint32_t main_end = kListAddr + static_cast<uint32_t>(main_cmds.size() * 4u);
+        const int32_t lid = static_cast<int32_t>(
+            InvokeNid(nids, kNidGeListEnQueue, kListAddr, sub_stall, static_cast<uint32_t>(-1), 0));
+        TEST_ASSERT(lid > 0);
+        TEST_ASSERT(InvokeNid(nids, kNidGeListSync, static_cast<uint32_t>(lid), 1) == repsp::gpu::kGeListStalled);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 145, 145) != 0xFF123456u);
+
+        TEST_ASSERT(InvokeNid(nids, kNidGeListUpdateStallAddr, static_cast<uint32_t>(lid), main_end) == 0);
+        TEST_ASSERT(InvokeNid(nids, kNidGeListSync, static_cast<uint32_t>(lid), 1) == repsp::gpu::kGeListDone);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 145, 145) == 0xFF123456u);
+    }
+
+    // 8. ORIGIN_ADDR + relative JUMP & OFFSET_ADDR + VADDR
+    {
+        const VertexColorPos2D rel_verts[2] = {
+            { 0xFF776655u, 160, 160, 0, 0 },
+            { 0xFF776655u, 170, 170, 0, 0 },
+        };
+        std::memcpy(mem.Translate(kVertAddr), rel_verts, sizeof(rel_verts));
+
+        // Base 0 + ORIGIN_ADDR (at kListAddr + 4) -> JUMP +12 skips index 2 (NOP/BAD) to index 4
+        const std::vector<uint32_t> cmds = {
+            GeCmd(kOpBase, 0),                              // index 0
+            GeCmd(kOpOriginAddr, 0),                        // index 1: offset = kListAddr + 4
+            GeCmd(kOpJump, 12u),                            // index 2: target = (kListAddr + 4) + 12 = index 4
+            GeCmd(kOpFinish, 0),                            // index 3: skipped
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2)), // index 4
+            GeCmd(kOpOffsetAddr, (kVertAddr >> 8) & 0x00FFFFFFu), // index 5: offset = kVertAddr
+            GeCmd(kOpVaddr, 0),                             // index 6: vaddr = kVertAddr
+            GeCmd(kOpPrim, (6u << 16) | 2u),                // index 7
+            GeCmd(kOpFinish, 0),                            // index 8
+            GeCmd(kOpEnd, 0),                               // index 9
+        };
+        WriteList(kListAddr, cmds);
+        const int32_t lid = static_cast<int32_t>(
+            InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0));
+        TEST_ASSERT(lid > 0);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 165, 165) == 0xFF776655u);
+    }
+
+    // 9. Queue order: second list stays Queued while first list is stalled
+    {
+        constexpr uint32_t kList2Addr = 0x08918000u;
+        const VertexColorPos2D q_verts[4] = {
+            { 0xFFAAAAAAu, 180, 180, 0, 0 },
+            { 0xFFAAAAAAu, 190, 190, 0, 0 },
+            { 0xFFBBBBBBu, 180, 180, 0, 0 },
+            { 0xFFBBBBBBu, 190, 190, 0, 0 },
+        };
+        std::memcpy(mem.Translate(kVertAddr), q_verts, sizeof(q_verts));
+
+        const std::vector<uint32_t> cmds1 = {
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2)),
+            GeCmd(kOpBase, (kVertAddr >> 8) & 0x00FF0000u),
+            GeCmd(kOpVaddr, kVertAddr & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u),
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kListAddr, cmds1);
+
+        const std::vector<uint32_t> cmds2 = {
+            GeCmd(kOpPrim, (6u << 16) | 2u),
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kList2Addr, cmds2);
+
+        const int32_t lid1 = static_cast<int32_t>(
+            InvokeNid(nids, kNidGeListEnQueue, kListAddr, kListAddr + 3u * 4u, static_cast<uint32_t>(-1), 0));
+        TEST_ASSERT(InvokeNid(nids, kNidGeListSync, static_cast<uint32_t>(lid1), 1) == repsp::gpu::kGeListStalled);
+
+        const int32_t lid2 = static_cast<int32_t>(
+            InvokeNid(nids, kNidGeListEnQueue, kList2Addr, 0, static_cast<uint32_t>(-1), 0));
+        TEST_ASSERT(InvokeNid(nids, kNidGeListSync, static_cast<uint32_t>(lid2), 1) == repsp::gpu::kGeListQueued);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 185, 185) != 0xFFBBBBBBu);
+
+        // Resume lid1 -> both lid1 and lid2 finish in order; lid2 overwrites (185,185) with 0xFFBBBBBB
+        TEST_ASSERT(InvokeNid(nids, kNidGeListUpdateStallAddr, static_cast<uint32_t>(lid1),
+                              kListAddr + static_cast<uint32_t>(cmds1.size() * 4u)) == 0);
+        TEST_ASSERT(InvokeNid(nids, kNidGeListSync, static_cast<uint32_t>(lid1), 1) == repsp::gpu::kGeListDone);
+        TEST_ASSERT(InvokeNid(nids, kNidGeListSync, static_cast<uint32_t>(lid2), 1) == repsp::gpu::kGeListDone);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 185, 185) == 0xFFBBBBBBu);
+    }
+
+    // 10. Unsupported primitives & out-of-bounds VRAM write counting + sceGeBreak unregistered
+    {
+        const std::vector<uint32_t> cmds = {
+            GeCmd(kOpPrim, (0u << 16) | 1u), // points (unsupported)
+            GeCmd(kOpBezier, 0),             // bezier (unsupported)
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kListAddr, cmds);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+        const auto& st = repsp::hle::ge::GetStats();
+        TEST_ASSERT(st.unsupported_prims[0] == 1);
+        TEST_ASSERT(st.unsupported_bezier == 1);
+
+        // Out-of-bounds VRAM write: FBP near end of 2 MiB VRAM with stride 512
+        const uint32_t oob_fb = 0x041FF000u;
+        const std::vector<uint32_t> oob_cmds = {
+            GeCmd(kOpFbp, oob_fb & 0x00FFFFFFu),
+            GeCmd(kOpFbw, ((oob_fb >> 8) & 0x00FF0000u) | kFbw),
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2)),
+            GeCmd(kOpBase, (kVertAddr >> 8) & 0x00FF0000u),
+            GeCmd(kOpVaddr, kVertAddr & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u), // sprite at (180,180)..(190,190) -> way past 2 MiB VRAM
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kListAddr, oob_cmds);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+        TEST_ASSERT(repsp::gpu::GetOutOfBoundsVramWriteCount() > 0);
+        TEST_ASSERT(nids.Find(0xB448EC0Du) == nullptr); // sceGeBreak unregistered
+        TEST_ASSERT(nids.Find(0x4C06E472u) == nullptr); // sceGeContinue unregistered
     }
 
     std::printf("ge_probe passed.\n");

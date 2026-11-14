@@ -80,11 +80,12 @@ repsp_guest_cpu_ops MakeMockOps()
     return ops;
 }
 
-uint32_t InvokeNid(uint32_t nid, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t a2 = 0)
+uint32_t InvokeNid(uint32_t nid, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t a2 = 0, uint32_t a3 = 0)
 {
     g_cpu.gpr[4] = a0;
     g_cpu.gpr[5] = a1;
     g_cpu.gpr[6] = a2;
+    g_cpu.gpr[7] = a3;
     TEST_ASSERT(g_nids->Invoke(nid));
     return g_cpu.gpr[2];
 }
@@ -159,7 +160,19 @@ int main()
     TEST_ASSERT(stats.active_topaddr == 0x04088000u);
     TEST_ASSERT(stats.active_bufferwidth == 512u);
     TEST_ASSERT(stats.active_pixelformat == 3);
-    TEST_ASSERT(stats.frames_presented >= 2);
+    TEST_ASSERT(stats.frames_presented == 2);
+
+    // Wait more vblanks without calling SetFrameBuf: vblank_count advances, frames_presented stays 2
+    std::this_thread::sleep_for(std::chrono::milliseconds(35));
+    const auto stats_idle = repsp::hle::display::GetStats();
+    TEST_ASSERT(stats_idle.vblank_count > stats.vblank_count);
+    TEST_ASSERT(stats_idle.frames_presented == 2);
+
+    // topaddr == 0 presents a black frame when latched
+    TEST_ASSERT(InvokeNid(kNidDisplaySetFrameBuf, 0u, 512u, 3u) == 0);
+    const auto stats_black = repsp::hle::display::GetStats();
+    TEST_ASSERT(stats_black.active_topaddr == 0u);
+    TEST_ASSERT(stats_black.frames_presented == 3);
 
     // 3. sceDisplayGetFramePerSec -> 59.94005966f in $f0
     InvokeNid(kNidDisplayGetFramePerSec);
