@@ -30,12 +30,16 @@ enum class GeInterruptEvent
 };
 
 using GeInterruptCallback = std::function<void(GeInterruptEvent event, int32_t cb_id, uint32_t arg)>;
+using GeListDoneCallback = std::function<void(uint32_t list_id)>;
 
 struct GeStats
 {
     uint64_t lists = 0;
     uint64_t commands = 0;
     uint64_t prims[8] = {0};
+    uint64_t unsupported_prims[8] = {0};
+    uint64_t unsupported_bezier = 0;
+    uint64_t unsupported_spline = 0;
     uint64_t vertices = 0;
     uint64_t signals = 0;
     uint64_t finishes = 0;
@@ -50,6 +54,49 @@ struct GeStats
     uint32_t vtype = 0;
 };
 
+struct LightingState
+{
+    int enable = 0;
+    int on[4] = {0};
+    int type[4] = {0};
+    int comp[4] = {0};
+    int cmat = 0;
+    int rnorm = 0;
+    uint32_t emissive = 0;
+    uint32_t diffuse = 0;
+    uint32_t specular = 0;
+    uint32_t ambient = 0;
+    float spow = 0.0f;
+    float pos[4][3] = {{0}};
+    float dir[4][3] = {{0}};
+    float att[4][3] = {{0}};
+    float spot_exp[4] = {0};
+    float spot_cut[4] = {0};
+    uint32_t col[4][3] = {{0}};
+};
+
+struct TransformState
+{
+    float world[12] = {0};
+    float view[12] = {0};
+    float proj[16] = {0};
+    int wi = 0;
+    int vi = 0;
+    int pi = 0;
+    float xscale = 0.0f;
+    float yscale = 0.0f;
+    float xpos = 0.0f;
+    float ypos = 0.0f;
+    float offx = 0.0f;
+    float offy = 0.0f;
+    float uscale = 1.0f;
+    float vscale = 1.0f;
+    float uoff = 0.0f;
+    float voff = 0.0f;
+    float zscale = 0.0f;
+    float zpos = 0.0f;
+};
+
 class GeInterpreter
 {
 public:
@@ -57,6 +104,7 @@ public:
 
     void Reset();
     void SetInterruptCallback(GeInterruptCallback cb);
+    void SetListDoneCallback(GeListDoneCallback cb);
 
     // Enqueue a display list and run synchronously until END/FINISH or stall.
     // Returns positive list UID on success, or negative kernel error code.
@@ -88,10 +136,14 @@ private:
         uint32_t list = 0;
         uint32_t stall = 0;
         uint32_t base = 0;
-        uint32_t origin = 0;
+        uint32_t offset = 0;
         int32_t cb_id = -1;
         uint32_t arg = 0;
+        uint32_t call_stack[kGeCallStackSize] = {0};
+        int call_sp = 0;
+        bool expect_signal_end = false;
         bool used = false;
+        bool started = false;
         bool done = false;
         bool stalled = false;
         bool paused = false;
@@ -99,14 +151,35 @@ private:
 
     QueueSlot* FindQueue(int32_t list_id);
     const QueueSlot* FindQueue(int32_t list_id) const;
+    void DrainQueue();
+    void FinishSlot(QueueSlot* q);
     void RunList(QueueSlot* q);
     void DrawPrim(uint32_t type, uint32_t count);
     bool HandleLightCmd(uint32_t cmd, uint32_t arg);
+    bool TransformPoint(const float p[3], float* sx, float* sy, float* sz) const;
+    uint32_t LightVertex(const float p[3], const float n[3], uint32_t vcol) const;
+    bool ReadVertex(uint32_t addr, uint32_t vtype, int tex_off, int col_off, int nrm_off, int pos_off, Vertex* out);
 
     QueueSlot queues_[kMaxQueues];
+    int order_[kMaxQueues] = {0};
+    int order_count_ = 0;
     uint32_t next_id_ = kListIdBase;
     GeStats stats_;
     GeInterruptCallback interrupt_cb_;
+    GeListDoneCallback list_done_cb_;
+
+    DrawState ds_;
+    LightingState lt_;
+    TransformState xf_;
+    uint32_t tbp_ = 0;
+    uint32_t tbw_ = 0;
+    uint32_t cbp_ = 0;
+    uint32_t zbp_ = 0;
+    uint32_t zbw_ = 0;
+    uint32_t vaddr_ = 0;
+    uint32_t iaddr_ = 0;
+    uint8_t clut_[1024] = {0};
+    uint32_t material_ = 0xFFFFFFFFu;
 };
 
 GeInterpreter& GetGeInterpreter();
