@@ -112,6 +112,23 @@ constexpr int32_t kSceMpegErrorInvalidValue = static_cast<int32_t>(0x806101FEu);
 constexpr int32_t kSceMpegErrorNoData = static_cast<int32_t>(0x80618001u);                 // SCE_MPEG_ERROR_NO_DATA
 constexpr int32_t kSceMpegErrorAlreadyInit = static_cast<int32_t>(0x80618005u);            // SCE_MPEG_ERROR_ALREADY_INIT
 
+// sceUtility errors (PSPSDK psputility_savedata.h / psputility_msgdialog.h, facility 0x8011)
+constexpr int32_t kSceUtilityErrorInvalidStatus = static_cast<int32_t>(0x80110001u);       // SCE_UTILITY_ERROR_INVALID_STATUS
+constexpr int32_t kSceUtilityErrorInvalidParam = static_cast<int32_t>(0x80110004u);        // SCE_UTILITY_ERROR_INVALID_PARAM
+constexpr int32_t kSceUtilityErrorInvalidParamSize = static_cast<int32_t>(0x80110005u);    // SCE_UTILITY_ERROR_INVALID_PARAM_SIZE
+constexpr int32_t kSceUtilitySavedataErrorLoadNoMs = static_cast<int32_t>(0x80110301u);    // SCE_UTILITY_SAVEDATA_ERROR_LOAD_NO_MS
+constexpr int32_t kSceUtilitySavedataErrorLoadEio = static_cast<int32_t>(0x80110302u);     // SCE_UTILITY_SAVEDATA_ERROR_LOAD_EIO
+constexpr int32_t kSceUtilitySavedataErrorLoadDataBroken = static_cast<int32_t>(0x80110306u); // SCE_UTILITY_SAVEDATA_ERROR_LOAD_DATA_BROKEN
+constexpr int32_t kSceUtilitySavedataErrorLoadNoData = static_cast<int32_t>(0x80110307u);  // SCE_UTILITY_SAVEDATA_ERROR_LOAD_NO_DATA
+constexpr int32_t kSceUtilitySavedataErrorLoadParam = static_cast<int32_t>(0x80110308u);   // SCE_UTILITY_SAVEDATA_ERROR_LOAD_PARAM
+constexpr int32_t kSceUtilitySavedataErrorLoadNoFile = static_cast<int32_t>(0x80110309u);  // SCE_UTILITY_SAVEDATA_ERROR_LOAD_NO_FILE
+constexpr int32_t kSceUtilitySavedataErrorDeleteNoData = static_cast<int32_t>(0x80110347u);// SCE_UTILITY_SAVEDATA_ERROR_DELETE_NO_DATA
+constexpr int32_t kSceUtilitySavedataErrorSaveNoMs = static_cast<int32_t>(0x80110381u);    // SCE_UTILITY_SAVEDATA_ERROR_SAVE_NO_MS
+constexpr int32_t kSceUtilitySavedataErrorSaveNoSpace = static_cast<int32_t>(0x80110383u); // SCE_UTILITY_SAVEDATA_ERROR_SAVE_NO_SPACE
+constexpr int32_t kSceUtilitySavedataErrorSaveAccessError = static_cast<int32_t>(0x80110385u); // SCE_UTILITY_SAVEDATA_ERROR_SAVE_ACCESS_ERROR
+constexpr int32_t kSceUtilitySavedataErrorSaveParam = static_cast<int32_t>(0x80110388u);   // SCE_UTILITY_SAVEDATA_ERROR_SAVE_PARAM
+constexpr int32_t kSceUtilitySavedataErrorSizesNoData = static_cast<int32_t>(0x801103C7u); // SCE_UTILITY_SAVEDATA_ERROR_SIZES_NO_DATA
+
 } // namespace repsp::hle
 
 #endif // REPSP_HLE_KERNEL_ERRORS_H
