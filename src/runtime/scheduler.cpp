@@ -1236,6 +1236,12 @@ void Scheduler::NotifyExternalEvent()
     cv_.notify_all();
 }
 
+void Scheduler::RequestStop(const std::string& reason)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    ReportFatalStopLocked(reason);
+}
+
 std::string Scheduler::FormatDeadlockReportLocked() const
 {
     std::ostringstream oss;

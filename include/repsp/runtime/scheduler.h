@@ -136,6 +136,7 @@ public:
     // External event notification (e.g. vblank or host event)
     void SetExternalWaitSources(uint32_t count);
     void NotifyExternalEvent();
+    void RequestStop(const std::string& reason);
 
     // Run scheduler loop starting with entry_thread_uid (blocks until all threads finish or RaiseStop).
     void Run(KernelUid entry_thread_uid);
