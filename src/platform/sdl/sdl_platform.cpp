@@ -5,7 +5,9 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -422,6 +424,8 @@ public:
             config_.buffer_frames = 256;
         }
 
+        OpenAudioDumpIfRequested();
+
         if (config_.dummy)
         {
             dummy_stop_ = false;
@@ -486,6 +490,7 @@ public:
             SDL_QuitSubSystem(SDL_INIT_AUDIO);
             audio_subsys_init_ = false;
         }
+        CloseAudioDump();
         initialized_ = false;
     }
 
@@ -501,6 +506,7 @@ public:
 
     bool QueueAudio(const int16_t* samples, size_t frame_count) override
     {
+        WriteAudioDump(samples, frame_count);
         if (stream_ == nullptr)
         {
             return config_.dummy;
@@ -543,6 +549,7 @@ private:
 
         self->sdl_scratch_.assign(frames_needed * channels, 0);
         cb(self->sdl_scratch_.data(), frames_needed);
+        self->WriteAudioDump(self->sdl_scratch_.data(), frames_needed);
         SDL_PutAudioStreamData(
             stream,
             self->sdl_scratch_.data(),
@@ -641,10 +648,94 @@ private:
                 }
                 std::fill(scratch.begin(), scratch.end(), int16_t{0});
                 cb(scratch.data(), period_frames);
+                WriteAudioDump(scratch.data(), period_frames);
                 pulled_frames += period_frames;
                 frames_due -= period_frames;
             }
         }
+    }
+
+    static void WriteLe32(uint8_t* dst, uint32_t v)
+    {
+        dst[0] = static_cast<uint8_t>(v & 0xFFu);
+        dst[1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
+        dst[2] = static_cast<uint8_t>((v >> 16) & 0xFFu);
+        dst[3] = static_cast<uint8_t>((v >> 24) & 0xFFu);
+    }
+
+    static void WriteLe16(uint8_t* dst, uint16_t v)
+    {
+        dst[0] = static_cast<uint8_t>(v & 0xFFu);
+        dst[1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
+    }
+
+    void OpenAudioDumpIfRequested()
+    {
+        const char* path = std::getenv("REPSP_AUDIO_DUMP");
+        if (path == nullptr || *path == '\0')
+        {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(dump_mutex_);
+        dump_file_.open(path, std::ios::binary | std::ios::trunc);
+        if (!dump_file_.is_open())
+        {
+            return;
+        }
+        uint8_t header[44]{};
+        std::memcpy(header + 0, "RIFF", 4);
+        WriteLe32(header + 4, 36);
+        std::memcpy(header + 8, "WAVE", 4);
+        std::memcpy(header + 12, "fmt ", 4);
+        WriteLe32(header + 16, 16);
+        WriteLe16(header + 20, 1); // PCM
+        const uint16_t channels = static_cast<uint16_t>(config_.channels);
+        const uint32_t sample_rate = static_cast<uint32_t>(config_.sample_rate);
+        WriteLe16(header + 22, channels);
+        WriteLe32(header + 24, sample_rate);
+        WriteLe32(header + 28, sample_rate * channels * 2u);
+        WriteLe16(header + 32, static_cast<uint16_t>(channels * 2u));
+        WriteLe16(header + 34, 16);
+        std::memcpy(header + 36, "data", 4);
+        WriteLe32(header + 40, 0);
+        dump_file_.write(reinterpret_cast<const char*>(header), sizeof(header));
+        dump_bytes_written_ = 0;
+        dump_enabled_ = true;
+    }
+
+    void WriteAudioDump(const int16_t* samples, size_t frame_count)
+    {
+        if (!dump_enabled_ || samples == nullptr || frame_count == 0)
+        {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(dump_mutex_);
+        if (!dump_file_.is_open())
+        {
+            return;
+        }
+        const size_t bytes = frame_count * static_cast<size_t>(config_.channels) * sizeof(int16_t);
+        dump_file_.write(reinterpret_cast<const char*>(samples), static_cast<std::streamsize>(bytes));
+        dump_bytes_written_ += static_cast<uint32_t>(bytes);
+    }
+
+    void CloseAudioDump()
+    {
+        std::lock_guard<std::mutex> lock(dump_mutex_);
+        dump_enabled_ = false;
+        if (!dump_file_.is_open())
+        {
+            return;
+        }
+        uint8_t riff_size[4];
+        uint8_t data_size[4];
+        WriteLe32(riff_size, 36u + dump_bytes_written_);
+        WriteLe32(data_size, dump_bytes_written_);
+        dump_file_.seekp(4, std::ios::beg);
+        dump_file_.write(reinterpret_cast<const char*>(riff_size), 4);
+        dump_file_.seekp(40, std::ios::beg);
+        dump_file_.write(reinterpret_cast<const char*>(data_size), 4);
+        dump_file_.close();
     }
 
     AudioConfig config_;
@@ -658,6 +749,10 @@ private:
     bool dummy_reset_clock_ = true;
     std::thread dummy_thread_;
     std::vector<int16_t> sdl_scratch_;
+    std::atomic<bool> dump_enabled_{false};
+    std::mutex dump_mutex_;
+    std::ofstream dump_file_;
+    uint32_t dump_bytes_written_ = 0;
 };
 
 std::unique_ptr<SdlDisplayBackend> g_display;
