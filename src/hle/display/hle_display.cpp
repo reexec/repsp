@@ -6,19 +6,15 @@
 #include "repsp/runtime/log.h"
 #include "repsp/runtime/nid_registry.h"
 #include "repsp/runtime/scheduler.h"
+#include "repsp/runtime/vblank_clock.h"
 
-#include <atomic>
-#include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <memory>
 #include <mutex>
 #include <sstream>
-#include <thread>
 #include <vector>
 
 namespace repsp::hle::display
@@ -30,8 +26,6 @@ namespace
 constexpr int kScreenWidth = 480;
 constexpr int kScreenHeight = 272;
 constexpr float kPspFps = 59.94005966f;
-constexpr auto kVblankPeriod = std::chrono::microseconds(16683);
-constexpr runtime::KernelUid kVblankWaitUid = 0x56424C4Bu; // 'VBLK'
 
 struct FrameBufferConfig
 {
@@ -41,10 +35,8 @@ struct FrameBufferConfig
 };
 
 std::mutex g_disp_mutex;
-std::condition_variable g_vblank_cv;
-std::thread g_vblank_thread;
-std::atomic<bool> g_vblank_stop{false};
 bool g_initialized = false;
+uint32_t g_vblank_sub_id = 0;
 
 DisplayHleConfig g_config;
 platform::DisplayBackend* g_backend = nullptr;
@@ -55,10 +47,8 @@ int32_t g_height = kScreenHeight;
 FrameBufferConfig g_active_fb;
 FrameBufferConfig g_pending_fb;
 bool g_has_pending_fb = false;
-uint32_t g_vblank_count = 0;
 uint64_t g_frames_presented = 0;
 uint64_t g_frames_dumped = 0;
-uint32_t g_vblank_waiters = 0;
 std::vector<uint8_t> g_rgba_scratch;
 
 inline uint8_t Expand5(uint32_t v)
@@ -144,41 +134,30 @@ void PresentActiveLocked()
     }
 }
 
-void VblankThreadMain()
+void OnVblankTick()
 {
-    auto next_tick = std::chrono::steady_clock::now() + kVblankPeriod;
-    while (!g_vblank_stop.load())
+    bool close_requested = false;
     {
+        std::lock_guard<std::mutex> lock(g_disp_mutex);
+        if (!g_initialized)
         {
-            std::unique_lock<std::mutex> lock(g_disp_mutex);
-            g_vblank_cv.wait_until(lock, next_tick, []() { return g_vblank_stop.load(); });
-            if (g_vblank_stop.load())
-            {
-                break;
-            }
-            next_tick += kVblankPeriod;
-            const auto now = std::chrono::steady_clock::now();
-            if (next_tick < now)
-            {
-                next_tick = now + kVblankPeriod;
-            }
-
-            ++g_vblank_count;
-            if (g_has_pending_fb)
-            {
-                g_active_fb = g_pending_fb;
-                g_has_pending_fb = false;
-                PresentActiveLocked();
-            }
-
-            if (g_backend && !g_backend->PollEvents())
-            {
-                runtime::GetScheduler().RequestStop("window closed");
-                break;
-            }
+            return;
         }
+        if (g_has_pending_fb)
+        {
+            g_active_fb = g_pending_fb;
+            g_has_pending_fb = false;
+            PresentActiveLocked();
+        }
+        if (g_backend && !g_backend->PollEvents())
+        {
+            close_requested = true;
+        }
+    }
 
-        runtime::GetScheduler().WakeAllWaiters(runtime::WaitType::kCustom, kVblankWaitUid, 0);
+    if (close_requested)
+    {
+        runtime::GetScheduler().RequestStop("window closed");
     }
 }
 
@@ -221,36 +200,7 @@ void HleSetFrameBuf()
 
 void WaitVblankImpl(bool allow_callbacks)
 {
-    auto& sched = runtime::GetScheduler();
-    {
-        std::lock_guard<std::mutex> lock(g_disp_mutex);
-        ++g_vblank_waiters;
-        if (g_vblank_waiters == 1)
-        {
-            sched.SetExternalWaitSources(1);
-        }
-    }
-
-    const int32_t res = sched.WaitCurrent(
-        runtime::WaitType::kCustom,
-        kVblankWaitUid,
-        "WaitVblankStart",
-        nullptr,
-        allow_callbacks);
-
-    {
-        std::lock_guard<std::mutex> lock(g_disp_mutex);
-        if (g_vblank_waiters > 0)
-        {
-            --g_vblank_waiters;
-            if (g_vblank_waiters == 0)
-            {
-                sched.SetExternalWaitSources(0);
-            }
-        }
-    }
-
-    recomp::Return(res);
+    recomp::Return(runtime::GetVblankClock().WaitNext(allow_callbacks));
 }
 
 void HleWaitVblankStart()
@@ -265,8 +215,7 @@ void HleWaitVblankStartCB()
 
 void HleGetVcount()
 {
-    std::lock_guard<std::mutex> lock(g_disp_mutex);
-    recomp::Return(g_vblank_count);
+    recomp::Return(runtime::GetVblankClock().Count());
 }
 
 void HleGetFramePerSec()
@@ -386,10 +335,8 @@ void Register(const DisplayHleConfig& config)
         g_active_fb = FrameBufferConfig{};
         g_pending_fb = FrameBufferConfig{};
         g_has_pending_fb = false;
-        g_vblank_count = 0;
         g_frames_presented = 0;
         g_frames_dumped = 0;
-        g_vblank_waiters = 0;
 
         g_backend = platform::GetDisplay();
         g_owns_platform = false;
@@ -413,10 +360,11 @@ void Register(const DisplayHleConfig& config)
             g_owns_platform = true;
         }
 
-        g_vblank_stop.store(false);
-        g_vblank_thread = std::thread(VblankThreadMain);
         g_initialized = true;
+        g_vblank_sub_id = runtime::GetVblankClock().Subscribe([]() { OnVblankTick(); });
     }
+
+    runtime::GetVblankClock().Start();
 
     auto& reg = runtime::GetNidRegistry();
     reg.Register("sceDisplay", 0x0E20F177u, "sceDisplaySetMode", HleSetMode);
@@ -429,34 +377,33 @@ void Register(const DisplayHleConfig& config)
 
 void Shutdown()
 {
+    uint32_t sub_id = 0;
+    bool owns_platform = false;
+    bool was_initialized = false;
     {
         std::lock_guard<std::mutex> lock(g_disp_mutex);
         if (!g_initialized)
         {
             return;
         }
-        g_vblank_stop.store(true);
-        g_vblank_cv.notify_all();
+        was_initialized = true;
+        g_initialized = false;
+        sub_id = g_vblank_sub_id;
+        g_vblank_sub_id = 0;
+        owns_platform = g_owns_platform;
+        g_owns_platform = false;
+        g_backend = nullptr;
     }
 
-    if (g_vblank_thread.joinable())
+    if (was_initialized)
     {
-        g_vblank_thread.join();
+        runtime::GetVblankClock().Unsubscribe(sub_id);
+        runtime::GetVblankClock().Stop();
     }
-
-    std::lock_guard<std::mutex> lock(g_disp_mutex);
-    if (g_owns_platform)
+    if (owns_platform)
     {
         platform::Shutdown();
-        g_owns_platform = false;
     }
-    g_backend = nullptr;
-    if (g_vblank_waiters > 0)
-    {
-        g_vblank_waiters = 0;
-        runtime::GetScheduler().SetExternalWaitSources(0);
-    }
-    g_initialized = false;
 }
 
 DisplayStats GetStats()
@@ -469,7 +416,7 @@ DisplayStats GetStats()
     s.active_topaddr = g_active_fb.topaddr;
     s.active_bufferwidth = g_active_fb.bufferwidth;
     s.active_pixelformat = g_active_fb.pixelformat;
-    s.vblank_count = g_vblank_count;
+    s.vblank_count = runtime::GetVblankClock().Count();
     s.frames_presented = g_frames_presented;
     s.frames_dumped = g_frames_dumped;
     return s;
