@@ -58,7 +58,7 @@ flowchart BT
 | `repsp_module` | `repsp::module` | `include/repsp/module/` | `PARAM.SFO` 바이너리 파서, PRX 로더 및 재배치 (`ParsePrx`, `RelocateToBuffer`) |
 | `repsp_runtime` | `repsp::runtime` | `include/repsp/runtime/` | 게스트 물리 메모리, 미러 접기, NID 레지스트리·SHA-1 이름표(`nid_names.h`), 커널 객체 표, `Clock`, `Vfs`, `UserPartition`, 단일 코어 `Scheduler`·인터럽트 큐·게스트 함수 호출, 공유 `VblankClock` |
 | `repsp_codec` | `repsp::codec` | `include/repsp/codec/` | 코덱 디코더 계약 (`AtracDecoder`/`SilentDecoder`, `AvcDecoder`/`BlankAvcDecoder`) |
-| `repsp_gpu` | `repsp::gpu` | `include/repsp/gpu/` | GE 디스플레이 리스트 해석기(`GeInterpreter`) 및 소프트웨어 래스터라이저(`RenderBackend`) |
+| `repsp_gpu` | `repsp::gpu` | `include/repsp/gpu/` | GE 디스플레이 리스트 해석기(`GeInterpreter`), 소프트웨어 래스터라이저(기본) 및 OpenGL 3.3 Core 백엔드(`RenderBackend`, 공용 `texture_decode`) |
 | `repsp_recomp` | `repsp::recomp` | `include/repsp/recomp/` | lifter 중립 CPU 콜백 계약(`repsp_guest_cpu_ops`), 인자/반환 도우미(GPR/FPR), C 메모리 접근 함수, 안전점 `repsp_recomp_poll` |
 | `repsp_hle_kernel` | `repsp::hle_kernel` | `include/repsp/hle/` | `KernelConfig` 기반 커널/UMD HLE 65개 함수 등록(`repsp::hle::kernel::Register`), 오류 코드 정의(`kernel_errors.h`) |
 | `repsp_hle_ge` | `repsp::hle_ge` | `include/repsp/hle/ge.h` | `sceGe_user` 7개 NID 등록(`repsp::hle::ge::Register`), `SIGNAL`/`FINISH` 인터럽트 콜백 전달 |
@@ -178,8 +178,9 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 ### 2.9. GE·디스플레이 및 프레임 덤프 계약 (`ge.h`, `display.h`)
 
 * 소비자는 `repsp::hle::ge::Register()`와 `repsp::hle::display::Register(const DisplayHleConfig&)`로 `sceGe_user`와 `sceDisplay` HLE를 등록하고, 종료 시 `repsp::hle::display::Shutdown()`으로 VBlank·SDL 스레드를 정리합니다.
-* `DisplayHleConfig::headless`가 `true`이면 SDL 더미 비디오 드라이버로 창 없이 실행하며, `frame_dump_dir`·`frame_dump_limit`(또는 소비자 환경 변수 `REPSP_FRAME_DUMP`·`REPSP_FRAME_DUMP_LIMIT`)로 `frame_NNNN.bmp`를 기록할 수 있습니다.
-* `repsp::hle::ge::FormatStats()`와 `repsp::hle::display::FormatStats()`로 디스플레이 리스트·명령·프리미티브·FBP/FBW/PSM·VBlank 통계를 조회합니다.
+* `DisplayHleConfig::headless`가 `true`이면 SDL 더미 비디오 드라이버로 창 없이 실행합니다(`use_opengl = true`와 함께 쓰면 숨김 창으로 GL 3.3 Core 문맥을 생성). `frame_dump_dir`·`frame_dump_limit`(또는 소비자 환경 변수 `REPSP_FRAME_DUMP`·`REPSP_FRAME_DUMP_LIMIT`)로 `frame_NNNN.bmp`를 기록할 수 있습니다(OpenGL 활성 시 배율 1로 readback).
+* `DisplayHleConfig::use_opengl`·`internal_scale`·`vsync`와 `repsp::gpu::SelectRenderBackend("opengl")`로 OpenGL 3.3 Core 백엔드를 선택할 수 있으며, GL 문맥이 없으면 실패(`-1`)하고 소프트웨어 백엔드를 유지합니다. 모든 GL 호출은 `SdlDisplayBackend`의 UI 스레드에서만 실행됩니다.
+* `repsp::hle::ge::FormatStats()`, `repsp::hle::display::FormatStats()`, `repsp::gpu::GetOpenGlStats()`로 디스플레이 리스트·명령·프리미티브·FBP/FBW/PSM·VBlank·GL 통계를 조회합니다.
 * 소프트웨어 래스터화기(`SwTri`)는 `kPrimTriangles`를 픽셀 중심 `(x + 0.5, y + 0.5)` 표본과 와인딩 정규화(음수 면적 시 정점 스왑) 기반 top-left fill rule로 평가해 아래쪽/오른쪽 배타 경계 1픽셀 넘침을 방지하며, `ge_probe`가 이를 검증합니다.
 * `GeInterpreter`와 `Fragment`는 Color Test(`CTE` `0x27`, `CTEST` `0xD8`, `CREF` `0xD9`, `CMSK` `0xDA`)를 지원해 컬러키 마스킹(`NEVER`/`ALWAYS`/`EQUAL`/`NOTEQUAL`)을 처리합니다.
 
@@ -257,7 +258,7 @@ Consumers configure VFS mounts and reserve the loaded module image range via `re
 
 ### 2.9. GE, Display, and Frame Dump Contract (`ge.h`, `display.h`)
 
-Consumers register `repsp::hle::ge::Register()` and `repsp::hle::display::Register(const DisplayHleConfig&)` and call `repsp::hle::display::Shutdown()` on exit (`display` subscribes to the shared runtime `VblankClock`). `headless = true` runs with the SDL dummy video driver; `frame_dump_dir` / `frame_dump_limit` write `frame_NNNN.bmp` dumps; `FormatStats()` exposes GE and Display counters. The `kPrimTriangles` software rasterizer (`SwTri`) samples pixel centers `(x + 0.5, y + 0.5)` with winding-normalized top-left fill rule evaluation to prevent 1-pixel spills past exclusive bottom/right quad edges, and `GeInterpreter`/`Fragment` evaluate Color Test (`CTE` `0x27`, `CTEST` `0xD8`, `CREF` `0xD9`, `CMSK` `0xDA`), both verified by `ge_probe`.
+Consumers register `repsp::hle::ge::Register()` and `repsp::hle::display::Register(const DisplayHleConfig&)` and call `repsp::hle::display::Shutdown()` on exit (`display` subscribes to the shared runtime `VblankClock`). `headless = true` runs with the SDL dummy video driver (or a hidden GL 3.3 Core window when `use_opengl = true`); `frame_dump_dir` / `frame_dump_limit` write `frame_NNNN.bmp` dumps (reading back at scale 1 on OpenGL targets); `FormatStats()` and `GetOpenGlStats()` expose GE, Display, and OpenGL counters. `SelectRenderBackend("opengl")` activates the OpenGL 3.3 Core backend when a GL context is present on the UI thread (returning `-1` and keeping `software` otherwise), and all GL calls execute strictly on `SdlDisplayBackend`'s UI thread. Both backends share `src/gpu/texture_decode.cpp`. The `kPrimTriangles` software rasterizer (`SwTri`) samples pixel centers `(x + 0.5, y + 0.5)` with winding-normalized top-left fill rule evaluation to prevent 1-pixel spills past exclusive bottom/right quad edges, and `GeInterpreter`/`Fragment` evaluate Color Test (`CTE` `0x27`, `CTEST` `0xD8`, `CREF` `0xD9`, `CMSK` `0xDA`), verified by `ge_probe` and `gl_probe`.
 
 ### 2.10. Controller Input and DMAC Contract (`ctrl.h`, `dmac.h`)
 
