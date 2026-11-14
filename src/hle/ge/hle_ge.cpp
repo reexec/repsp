@@ -19,6 +19,8 @@ namespace
 constexpr int32_t kErrInvalidId = static_cast<int32_t>(0x800200CBu);
 constexpr int32_t kErrNoMemory = static_cast<int32_t>(0x800200D9u);
 constexpr int kMaxCallbacks = 16;
+constexpr runtime::KernelUid kGeSyncWaitBase = 0x47450000u;
+constexpr runtime::KernelUid kGeDrawSyncUid = 0x47454453u; // 'GEDS'
 
 struct GeCallbackSlot
 {
@@ -62,6 +64,16 @@ void OnGeInterrupt(gpu::GeInterruptEvent event, int32_t cb_id, uint32_t arg)
     if (func != 0)
     {
         runtime::GetScheduler().QueueInterrupt(func, arg, user_arg, gp_val);
+    }
+}
+
+void OnGeListDone(uint32_t list_id)
+{
+    auto& sched = runtime::GetScheduler();
+    sched.WakeAllWaiters(runtime::WaitType::kCustom, kGeSyncWaitBase + list_id, 0);
+    if (!gpu::GetGeInterpreter().HasPendingLists())
+    {
+        sched.WakeAllWaiters(runtime::WaitType::kCustom, kGeDrawSyncUid, 0);
     }
 }
 
@@ -151,37 +163,61 @@ void HleListSync()
 {
     const int32_t list_id = static_cast<int32_t>(recomp::Arg<uint32_t>(0));
     const int32_t mode = static_cast<int32_t>(recomp::Arg<uint32_t>(1));
+    auto& interp = gpu::GetGeInterpreter();
     if (mode == 1)
     {
-        recomp::Return(gpu::GetGeInterpreter().GetListState(list_id));
+        recomp::Return(interp.GetListState(list_id));
         return;
     }
-    // Immediate execution: list is already complete unless stalled.
+    const int32_t state = interp.GetListState(list_id);
+    if (state < 0)
+    {
+        recomp::Return(state);
+        return;
+    }
+    if (state != gpu::kGeListDone)
+    {
+        const int32_t res = runtime::GetScheduler().WaitCurrent(
+            runtime::WaitType::kCustom,
+            kGeSyncWaitBase + static_cast<uint32_t>(list_id),
+            "sceGeListSync",
+            nullptr,
+            false);
+        if (res < 0)
+        {
+            recomp::Return(res);
+            return;
+        }
+    }
     recomp::Return(0);
 }
 
 void HleDrawSync()
 {
     const int32_t mode = static_cast<int32_t>(recomp::Arg<uint32_t>(0));
+    auto& interp = gpu::GetGeInterpreter();
     if (mode == 1)
     {
-        recomp::Return(gpu::GetGeInterpreter().HasPendingLists()
+        recomp::Return(interp.HasPendingLists()
             ? static_cast<int32_t>(gpu::kGeListStalled)
             : static_cast<int32_t>(gpu::kGeListDone));
         return;
     }
+    if (interp.HasPendingLists())
+    {
+        const int32_t res = runtime::GetScheduler().WaitCurrent(
+            runtime::WaitType::kCustom,
+            kGeDrawSyncUid,
+            "sceGeDrawSync",
+            nullptr,
+            false);
+        if (res < 0)
+        {
+            recomp::Return(res);
+            return;
+        }
+    }
     recomp::Return(0);
-}
-
-void HleBreak()
-{
-    const int32_t mode = static_cast<int32_t>(recomp::Arg<uint32_t>(0));
-    recomp::Return(gpu::GetGeInterpreter().Break(mode));
-}
-
-void HleContinue()
-{
-    recomp::Return(gpu::GetGeInterpreter().Continue());
 }
 
 } // namespace
@@ -197,6 +233,7 @@ void Reset()
     }
     gpu::GetGeInterpreter().Reset();
     gpu::GetGeInterpreter().SetInterruptCallback(OnGeInterrupt);
+    gpu::GetGeInterpreter().SetListDoneCallback(OnGeListDone);
     if (gpu::GetRenderBackend()->init)
     {
         gpu::GetRenderBackend()->init(480, 272);
@@ -217,8 +254,6 @@ void Register()
     reg.Register("sceGe_user", 0xE0D68148u, "sceGeListUpdateStallAddr", HleListUpdateStallAddr);
     reg.Register("sceGe_user", 0x03444EB4u, "sceGeListSync", HleListSync);
     reg.Register("sceGe_user", 0xB287BD61u, "sceGeDrawSync", HleDrawSync);
-    reg.Register("sceGe_user", 0xB448EC0Du, "sceGeBreak", HleBreak);
-    reg.Register("sceGe_user", 0x4C06E472u, "sceGeContinue", HleContinue);
 }
 
 const gpu::GeStats& GetStats()
