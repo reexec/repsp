@@ -15,7 +15,24 @@ PSP GE는 32비트 명령어 워드(`[31:24]` opcode, `[23:0]` 24비트 인자)�
 * 정점 형식(`VTYPE`): `TEX`(2b), `COL`(3b), `NRM`(2b), `POS`(2b), `WEIGHT`(2b), `INDEX`(2b), `THROUGH`(1b, 비트 23). `THROUGH=1`이면 정점 좌표가 이미 화면 좌표로 간주되어 변환·조명 단계를 건너뜁니다.
 * 프레임버퍼(`FBP`, `FBW`, `PSM`): EDRAM(`0x04000000`, 2 MiB) 내 오프셋과 스트라이드(픽셀 단위, 보통 512), 픽셀 형식(`0=565, 1=5551, 2=4444, 3=8888`).
 * 텍스처(`TBP0`, `TBW0`, `TSIZE0`, `TMODE`, `TPSM`, `TFUNC`): 선형(`TMODE=0`)과 PSP 16바이트×8행 스위즐(`TMODE=1`)을 지원하며, 인덱스 텍스처(`T4`/`T8`)는 `CBP`/`CBPH`/`CLOAD`/`CMODE`로 로드한 CLUT를 참조합니다.
-* `SIGNAL` / `FINISH` 인터럽트: `sceGeSetCallback`으로 등록한 콜백을 GE 명령 실행 시 커널 인터럽트 큐(`Scheduler::QueueInterrupt`)에 적재하고 안전점에서 16 KiB 인터럽트 스택으로 전달합니다.
+* `SIGNAL` / `FINISH` 인터럽트: `sceGeSetCallback`으로 등록한 콜백을 GE 명령 실행 시 커널 인터럽트 큐(`Scheduler::QueueInterrupt`)에 적재하고 안전점에서 16 KiB 인터럽트 스택으로 전달합니다. `SIGNAL`과 `FINISH`는 각각 바로 뒤의 `END` 명령과 한 쌍을 이루며, `SIGNAL`+`END`는 리스트를 끝내지 않습니다.
+
+## 3. 주소 계산 (`BASE`, `OFFSET_ADDR`, `ORIGIN_ADDR`) (**추정**: [PSPSDK `pspgu`](https://github.com/pspdev/pspsdk), [psdevwiki GE](https://www.psdevwiki.com/psp/GE); **확인됨**: `ge_probe`)
+
+GE 명령의 포인터 인자는 24비트이므로 32비트 주소를 구성하기 위해 `base`와 `offset` 레지스터를 함께 씁니다.
+
+* `BASE` (`0x10`): 인자의 상위 비트(`[23:16]`)를 8비트 왼쪽 시프트해 `base` 레지스터(`(arg & 0xFF0000) << 8`, bits 24–31)를 설정합니다.
+* `OFFSET_ADDR` (`0x13`): 24비트 인자를 8비트 왼쪽 시프트(`arg << 8`)해 `offset` 레지스터를 설정합니다.
+* `ORIGIN_ADDR` (`0x14`): 현재 `ORIGIN_ADDR` 명령어 자신의 주소를 `offset` 레지스터에 저장합니다.
+* `JUMP` (`0x08`), `CALL` (`0x0A`), `VADDR` (`0x01`), `IADDR` (`0x02`): 공통 주소 식은 `(base | (arg & 0x00FFFFFF)) + offset`이며, `JUMP`/`CALL`은 4바이트 정렬(`& ~3`)합니다. `CALL` 스택은 리스트 슬롯에 저장되며 넘침·빈 스택 `RET`는 정지 보고합니다.
+
+## 4. 미확정 및 미구현 사항
+
+* **즉시 실행과 `SIGNAL` 핸들러 실행 시점 (미확정/현재 한계)**: 현재 GE 해석기는 `sceGeListEnQueue` 시점에 동기·즉시 실행되므로, `SIGNAL` 인터럽트 핸들러는 리스트 전체가 끝난 뒤 스케줄러 안전점에서 실행됩니다(behavior `1` 등의 일시정지 후 재개 의미와 다름).
+* **480×272 고정 클립 (미구현)**: 소프트웨어 래스터라이저는 `0..479 × 0..271`로 고정 클립되어 화면 밖(off-screen) 렌더 타깃이나 480×272 초과 크기의 타깃을 그리지 않습니다.
+* **미지원 primitive 및 그래픽 기능 (미구현)**:
+  * primitive: `points`, `lines`, `line-strip`, `bezier`, `spline`은 그리지 않고 `unsupported` 통계로만 셉니다.
+  * 파이프라인 기능: culling, stencil test/op, color mask, fog, 텍스처 필터링(bilinear) 및 mipmap, vertex skinning 및 morphing은 아직 구현되지 않았습니다.
 
 ---
 
@@ -27,13 +44,26 @@ PSP GE는 32비트 명령어 워드(`[31:24]` opcode, `[23:0]` 24비트 인자)�
 
 The PSP GE executes 32-bit command words (`[31:24]` opcode, `[23:0]` 24-bit argument).
 
-* `sceGeListEnQueue(list, stall, cbid, arg)`: Enqueues a display list. When `stall != 0`, execution stops upon reaching `stall` (`kGeListStalled = 3`).
+* `sceGeListEnQueue(list, stall, cbid, arg)`: Enqueues a display list. When `stall != 0`, execution stops upon reaching `stall` (`kGeListStalled = 3`). If an earlier list is stalled or paused, subsequent lists remain `kGeListQueued` until earlier lists finish.
 * `sceGeListUpdateStallAddr(qid, stall)`: Advances the stall address and resumes execution.
-* `sceGeListSync(qid, syncType)` / `sceGeDrawSync(syncType)`: Mode `1` peeks list/draw status (`0=Done .. 4=Paused`); mode `0` waits for completion.
+* `sceGeListSync(qid, syncType)` / `sceGeDrawSync(syncType)`: Mode `1` peeks list/draw status (`0=Done .. 4=Paused`); mode `0` blocks via the scheduler until the list (or all lists) completes.
 
 ## 2. Vertex, Texture, CLUT, and Framebuffer Conventions (**Inferred**: PSPSDK, psprecomp `5ca18fa`)
 
 * `VTYPE` encodes texture, color, normal, position, weight, index, and `THROUGH` (bit 23, skipping transform/lighting).
-* `FBP`/`FBW`/`PSM` configure the EDRAM (`0x04000000`) render target and pixel format (`0=565, 1=5551, 2=4444, 3=8888`).
+* `FBP`/`FBW`/`PSM` configure the EDRAM (`0x04000000`, 2 MiB) render target and pixel format (`0=565, 1=5551, 2=4444, 3=8888`); writes outside the 2 MiB VRAM bounds are dropped and counted.
 * `TMODE` selects linear (`0`) vs PSP 16-byte × 8-row swizzled (`1`) layout; `T4`/`T8` textures resolve through `CLOAD`/`CMODE` CLUT entries.
-* `SIGNAL`/`FINISH` queue guest callbacks via `Scheduler::QueueInterrupt` and deliver them on the 16 KiB kernel interrupt stack at safe points.
+* `SIGNAL`/`FINISH` queue guest callbacks via `Scheduler::QueueInterrupt` and deliver them on the 16 KiB kernel interrupt stack at safe points. `SIGNAL` and `FINISH` each pair with the `END` command that follows; `SIGNAL`+`END` does not terminate the list.
+
+## 3. Address Arithmetic (`BASE`, `OFFSET_ADDR`, `ORIGIN_ADDR`) (**Inferred**: [PSPSDK `pspgu`](https://github.com/pspdev/pspsdk), [psdevwiki GE](https://www.psdevwiki.com/psp/GE); **Confirmed**: `ge_probe`)
+
+* `BASE` (`0x10`): sets bits 24–31 of the base register (`(arg & 0xFF0000) << 8`).
+* `OFFSET_ADDR` (`0x13`): sets the offset register (`arg << 8`).
+* `ORIGIN_ADDR` (`0x14`): sets the offset register to the address of the `ORIGIN_ADDR` command itself.
+* `JUMP` (`0x08`), `CALL` (`0x0A`), `VADDR` (`0x01`), `IADDR` (`0x02`): compute `(base | (arg & 0x00FFFFFF)) + offset` (`& ~3` for `JUMP`/`CALL`). The `CALL` stack lives in `QueueSlot`, and overflow or `RET` on an empty stack triggers a stop report.
+
+## 4. Unconfirmed and Unimplemented Areas
+
+* **Immediate execution vs `SIGNAL` handlers (unconfirmed / current limitation)**: Because the interpreter executes synchronously at enqueue time, `SIGNAL` handlers run at safe points after the list returns rather than pausing mid-list (unlike hardware behavior `1` pause/resume semantics).
+* **Fixed 480×272 clip (unimplemented)**: The software rasterizer clips to `0..479 × 0..271` and does not support off-screen render targets outside those bounds.
+* **Unimplemented primitives and features (unimplemented)**: `points`, `lines`, `line-strip`, `bezier`, and `spline` are counted as `unsupported` without drawing; culling, stencil, colour mask, fog, texture filtering/mipmaps, and skinning/morphing are not yet implemented.

@@ -9,9 +9,13 @@
 
 ## 2. `sceDisplaySetFrameBuf` 동기 모드 및 VBlank (**추정**: PSPSDK, uOFW; **확인됨**: `display_probe`)
 
-* `sync == 0` (`PSP_DISPLAY_SETBUF_IMMEDIATE`): 활성 프레임버퍼를 즉시 갱신하고 화면에 표시합니다.
-* `sync == 1` (`PSP_DISPLAY_SETBUF_NEXTFRAME`): 대기 버퍼로 기록하고 다음 VBlank 시점에 활성 버퍼로 승격합니다.
+* `sync == 0` (`PSP_DISPLAY_SETBUF_IMMEDIATE`): 활성 프레임버퍼를 즉시 갱신하고 화면에 표시(present/dump)합니다.
+* `sync == 1` (`PSP_DISPLAY_SETBUF_NEXTFRAME`): 대기 버퍼로 기록하고 다음 VBlank 시점에 활성 버퍼로 승격·표시(latch)합니다. `SetFrameBuf`로 새 프레임버퍼가 latch된 때에만 `frames_presented`와 프레임 덤프가 올라가며, `topaddr == 0`이면 검은 화면을 보냅니다.
 * `sceDisplayWaitVblankStart` / `sceDisplayWaitVblankStartCB`: 다음 VBlank 틱까지 현재 스레드를 대기(`WaitType::kCustom`)시키며, 호스트 VBlank 스레드가 주기적으로 대기자를 깨우고 `vblank_count`(`sceDisplayGetVcount`)를 증가시킵니다.
+
+## 3. 호스트 백엔드 구조와 한계 (**미확정/현재 한계**)
+
+* **단일 SDL UI 스레드 구조**: SDL 윈도우 생성·표시·이벤트 폴링은 한 스레드(`PollEvents`/present 경로)에 묶여 있습니다. Win32/Linux X11에서는 동작하지만, macOS(AppKit/Cocoa)처럼 메인 스레드에서만 UI/이벤트 루프를 허용하는 플랫폼에서는 별도 메인 스레드 펌프가 필요합니다.
 
 ---
 
@@ -27,5 +31,9 @@
 ## 2. `sceDisplaySetFrameBuf` Sync Modes and VBlank (**Inferred**: PSPSDK, uOFW; **Confirmed**: `display_probe`)
 
 * `sync == 0` (`PSP_DISPLAY_SETBUF_IMMEDIATE`): Immediately updates and presents the active framebuffer.
-* `sync == 1` (`PSP_DISPLAY_SETBUF_NEXTFRAME`): Stages the framebuffer and promotes it on the next VBlank tick.
+* `sync == 1` (`PSP_DISPLAY_SETBUF_NEXTFRAME`): Stages the framebuffer and promotes/presents it on the next VBlank tick. `frames_presented` and frame dumps advance only when `SetFrameBuf` latches a framebuffer (`topaddr == 0` presents a black screen), independent of `vblank_count`.
 * `sceDisplayWaitVblankStart` / `sceDisplayWaitVblankStartCB` block the calling thread until the next VBlank tick wakes waiters and increments `vblank_count` (`sceDisplayGetVcount`).
+
+## 3. Host Backend Threading Limitation (**Unconfirmed / Current Limitation**)
+
+* **Single SDL UI thread model**: SDL windowing, presentation, and event polling are confined to one thread. This works on Win32 and Linux, but platforms such as macOS (where Cocoa requires UI events on thread 0) will need main-thread event pumping.
