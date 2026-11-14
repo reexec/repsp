@@ -99,6 +99,24 @@ target_include_directories(repsp_hle_kernel PUBLIC
 target_link_libraries(repsp_hle_kernel PUBLIC repsp_runtime)
 repsp_apply_host_flags(repsp_hle_kernel)
 
+add_library(repsp_hle_ge STATIC)
+add_library(repsp::hle_ge ALIAS repsp_hle_ge)
+target_include_directories(repsp_hle_ge PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(repsp_hle_ge PUBLIC repsp_runtime repsp_gpu)
+repsp_apply_host_flags(repsp_hle_ge)
+
+add_library(repsp_hle_display STATIC)
+add_library(repsp::hle_display ALIAS repsp_hle_display)
+target_include_directories(repsp_hle_display PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(repsp_hle_display PUBLIC repsp_runtime repsp_platform)
+repsp_apply_host_flags(repsp_hle_display)
+
 add_subdirectory(src)
 
 if(REPSP_BUILD_PROBES)
