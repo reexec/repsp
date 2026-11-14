@@ -1,4 +1,5 @@
 #include "repsp/hle/display.h"
+#include "repsp/gpu/render_backend.h"
 #include "repsp/platform/display.h"
 #include "repsp/platform/platform.h"
 #include "repsp/recomp/recomp_helpers.h"
@@ -110,6 +111,36 @@ void WriteBmp(const std::filesystem::path& path, const uint8_t* rgba, int width,
 
 void PresentActiveLocked()
 {
+    const bool need_dump = !g_config.frame_dump_dir.empty() &&
+                           (g_config.frame_dump_limit == 0 || g_frames_dumped < g_config.frame_dump_limit);
+    const bool is_gl = (gpu::GetRenderBackend() == &gpu::kOpenGlBackend) &&
+                       gpu::HasGlTargetForAddress(g_active_fb.topaddr);
+    if (is_gl)
+    {
+        gpu::PresentGlTarget(g_active_fb.topaddr);
+        ++g_frames_presented;
+
+        if (need_dump)
+        {
+            std::vector<uint8_t> rgba;
+            int w = 0;
+            int h = 0;
+            if (gpu::ReadGlTargetRgba8(g_active_fb.topaddr, 1, rgba, w, h) &&
+                w == kScreenWidth && h == kScreenHeight)
+            {
+                std::error_code ec;
+                std::filesystem::create_directories(g_config.frame_dump_dir, ec);
+                char name[32];
+                std::snprintf(name, sizeof(name), "frame_%04llu.bmp",
+                              static_cast<unsigned long long>(g_frames_dumped));
+                WriteBmp(std::filesystem::path(g_config.frame_dump_dir) / name,
+                         rgba.data(), kScreenWidth, kScreenHeight);
+                ++g_frames_dumped;
+            }
+        }
+        return;
+    }
+
     g_rgba_scratch.resize(static_cast<size_t>(kScreenWidth) * static_cast<size_t>(kScreenHeight) * 4u);
     ConvertFrameBufferToRgba8(g_active_fb.topaddr, g_active_fb.bufferwidth,
                                g_active_fb.pixelformat, g_rgba_scratch.data());
@@ -120,8 +151,7 @@ void PresentActiveLocked()
     }
     ++g_frames_presented;
 
-    if (!g_config.frame_dump_dir.empty() &&
-        (g_config.frame_dump_limit == 0 || g_frames_dumped < g_config.frame_dump_limit))
+    if (need_dump)
     {
         std::error_code ec;
         std::filesystem::create_directories(g_config.frame_dump_dir, ec);
@@ -343,21 +373,35 @@ void Register(const DisplayHleConfig& config)
         if (g_backend == nullptr)
         {
             platform::PlatformConfig pc;
-            pc.headless = g_config.headless;
+            pc.headless = g_config.headless && !g_config.use_opengl;
             pc.display.width = kScreenWidth * g_config.scale;
             pc.display.height = kScreenHeight * g_config.scale;
             pc.display.title = g_config.window_title;
-            pc.display.dummy = g_config.headless;
+            pc.display.dummy = g_config.headless && !g_config.use_opengl;
+            pc.display.use_opengl = g_config.use_opengl;
+            pc.display.hidden = g_config.headless && g_config.use_opengl;
+            pc.display.vsync = g_config.vsync;
             pc.audio.dummy = true;
-            if (!platform::Initialize(pc) && !g_config.headless)
+            if (!platform::Initialize(pc) && (!g_config.headless || g_config.use_opengl))
             {
                 runtime::Log(runtime::LogLevel::kWarn, "[DISPLAY] Failed to initialize display backend, falling back to headless");
                 pc.headless = true;
                 pc.display.dummy = true;
+                pc.display.use_opengl = false;
+                pc.display.hidden = false;
                 platform::Initialize(pc);
             }
             g_backend = platform::GetDisplay();
             g_owns_platform = true;
+        }
+
+        if (g_config.use_opengl)
+        {
+            gpu::SetInternalScale(g_config.internal_scale > 0 ? g_config.internal_scale : 1);
+            if (g_backend && g_backend->HasGlContext())
+            {
+                gpu::SelectRenderBackend("opengl");
+            }
         }
 
         g_initialized = true;

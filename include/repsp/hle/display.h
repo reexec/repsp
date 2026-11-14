@@ -11,6 +11,9 @@ struct DisplayHleConfig
 {
     bool headless = false;
     int scale = 2;
+    bool use_opengl = false;
+    bool vsync = false;
+    int internal_scale = 1;
     std::string window_title = "repsp";
     std::string frame_dump_dir;
     uint32_t frame_dump_limit = 0;
