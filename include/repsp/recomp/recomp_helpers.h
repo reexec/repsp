@@ -5,6 +5,7 @@
 #include "repsp/runtime/guest_memory.h"
 
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
 
 namespace repsp::recomp
@@ -24,6 +25,21 @@ inline void SetGpr(int index, uint32_t value)
     if (ops != nullptr && ops->set_gpr != nullptr)
     {
         ops->set_gpr(index, value);
+    }
+}
+
+inline uint32_t GetFpr(int index)
+{
+    const auto* ops = repsp_recomp_get_cpu_ops();
+    return (ops != nullptr && ops->get_fpr != nullptr) ? ops->get_fpr(index) : 0;
+}
+
+inline void SetFpr(int index, uint32_t value)
+{
+    const auto* ops = repsp_recomp_get_cpu_ops();
+    if (ops != nullptr && ops->set_fpr != nullptr)
+    {
+        ops->set_fpr(index, value);
     }
 }
 
@@ -90,6 +106,13 @@ inline void Return(uint64_t value)
 inline void Return(int64_t value)
 {
     Return(static_cast<uint64_t>(value));
+}
+
+inline void Return(float value)
+{
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    SetFpr(0, bits); // $f0
 }
 
 inline void Return()

@@ -11,6 +11,8 @@ PSP 일반 지식(컨테이너 형식, Allegrex·VFPU, 펌웨어 모듈과 NID, 
 | [`scheduler.md`](scheduler.md) | PSP 단일 코어 고정 우선순위 스케줄러, 스택 인자 전달 및 콜백 규약 | **추정** (uOFW; `kernel_sched_probe` 합성 검증) |
 | [`kernel-errors.md`](kernel-errors.md) | 커널 및 파일 입출력 오류 코드 표와 출처 | **추정** (uOFW, PSPSDK) |
 | [`vfs-io.md`](vfs-io.md) | 장치 경로 정규화, 대소문자 무시 탐색, `PSP_O_*` 플래그 및 `sceIoLseek` 규약 | **추정** (PSPSDK; `iofile_probe` 합성 검증) |
+| [`ge.md`](ge.md) | PSP GE 디스플레이 리스트, stall 주소, 정점·텍스처·CLUT 규약 | **추정** (PSPSDK, psprecomp; `ge_probe` 합성 검증) |
+| [`display.md`](display.md) | PSP 디스플레이 픽셀 형식, `SetFrameBuf` 동기 모드, VBlank 동기화 | **추정** (PSPSDK, uOFW; `display_probe` 합성 검증) |
 
 ---
 
@@ -27,3 +29,5 @@ General PSP knowledge (container formats, the Allegrex and VFPU, firmware module
 | [`scheduler.md`](scheduler.md) | PSP single-core fixed-priority scheduler, stack argument layout, and callbacks | **Inferred** (uOFW; synthetic `kernel_sched_probe` verified) |
 | [`kernel-errors.md`](kernel-errors.md) | Kernel and I/O error code table with sources | **Inferred** (uOFW, PSPSDK) |
 | [`vfs-io.md`](vfs-io.md) | Device path normalization, case-insensitive lookup, `PSP_O_*` flags, `sceIoLseek` ABI | **Inferred** (PSPSDK; synthetic `iofile_probe` verified) |
+| [`ge.md`](ge.md) | PSP GE display lists, stall address, vertex/texture/CLUT conventions | **Inferred** (PSPSDK, psprecomp; synthetic `ge_probe` verified) |
+| [`display.md`](display.md) | PSP display pixel formats, `SetFrameBuf` sync modes, VBlank sync | **Inferred** (PSPSDK, uOFW; synthetic `display_probe` verified) |

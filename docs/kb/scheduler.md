@@ -35,9 +35,15 @@
   * 스레드에 연결된 콜백이 `notify_count > 0`이면 해당 스레드의 컨텍스트에서 호출된다.
   * 콜백이 `0`이 아닌 값을 반환하면 콜백 객체가 삭제된다.
 
-## 4. repsp 구현 상태
+## 4. 인터럽트 전달 규칙 (**추정**: uOFW; **확인됨**: `kernel_sched_probe`)
 
-* `repsp::runtime::Scheduler`의 우선순위 선점, 동일 우선순위 FIFO, sema/event flag/delay/sleep/WaitThreadEnd, 콜백 실행, 교착(`RaiseStop`) 보고는 `kernel_sched_probe`의 가짜 어댑터로 **확인됨**.
+* **전달 시점**: `Scheduler::QueueInterrupt`로 적재된 인터럽트 핸들러는 인터럽트가 활성화(`CpuResumeIntr` 상태)된 다음 안전점(`Poll` / `YieldCurrent`)에서 전달됩니다.
+* **전용 인터럽트 스택**: 핸들러는 현재 스레드의 사용자 스택이 아니라 스케줄러가 커널/사용자 영역에서 확보한 전용 16 KiB 인터럽트 스택 위에서 실행되며, 완료 후 원래 컨텍스트로 복귀합니다.
+* **핸들러 안 대기 금지**: 인터럽트 핸들러 실행 중(`InInterruptContext()`)에는 `WaitCurrent` 등 스레드를 대기 상태로 전환하는 커널 호출을 할 수 없으며, 호출 시 정지 보고(`RaiseStop`)합니다.
+
+## 5. repsp 구현 상태
+
+* `repsp::runtime::Scheduler`의 우선순위 선점, 동일 우선순위 FIFO, sema/event flag/delay/sleep/WaitThreadEnd, 콜백 실행, 인터럽트 스택 전달 및 핸들러 내 대기 금지, 교착(`RaiseStop`) 보고는 `kernel_sched_probe`의 가짜 어댑터로 **확인됨**.
 
 ---
 
@@ -49,4 +55,5 @@ This document summarizes single-core thread scheduling, wait states, and callbac
 * **Sync Object Handoff & Queue Attributes**: `sceKernelSignalSema` and `sceKernelSetEventFlag` hand off resources directly at signal/set time in wait-queue order (attribute `0x100` selects priority order instead of FIFO; attribute `0x200` `PSP_EVENT_WAITMULTIPLE` is required for multiple concurrent event-flag waiters) (**inferred**, PSPSDK `pspthreadman.h`, uOFW).
 * **Stack & Arguments**: Thread stacks are allocated high in user partition 2 (256-byte aligned). `$gp` is inherited at creation time. `StartThread(arglen, argp)` copies `arglen` bytes to the top of the stack and sets `$a0 = arglen`, `$a1 = copied_addr` (**inferred**, uOFW).
 * **Wait Codes & Callbacks**: Wait results (`0`, timeout `0x800201A8`, cancel `0x800201A9`, release `0x800201AA`, delete `0x800201B5`) and callback deletion on non-zero return are **inferred** from uOFW.
+* **Interrupt Delivery Rules** (**inferred**, uOFW; **confirmed**, `kernel_sched_probe`): Queued interrupts are delivered at the next safe point (`Poll`/`YieldCurrent`) while interrupts are enabled, run on a dedicated 16 KiB interrupt stack rather than the interrupted thread's stack, and may not block (`WaitCurrent` inside an interrupt handler triggers `RaiseStop`).
 * **Verification**: Verified with synthetic tests in `kernel_sched_probe` (**confirmed** for synthetic probe behavior).

@@ -16,6 +16,8 @@ typedef struct repsp_guest_cpu_ops
     uint32_t (*get_gpr)(int index);               /* MIPS GPR 0..31 */
     void (*set_gpr)(int index, uint32_t value);
     void (*call_guest)(uint32_t address);         /* run a guest function until it returns */
+    uint32_t (*get_fpr)(int index);               /* MIPS COP1 FPR 0..31 bit pattern */
+    void (*set_fpr)(int index, uint32_t value);
 } repsp_guest_cpu_ops;
 
 void repsp_recomp_register_cpu(const repsp_guest_cpu_ops* ops);

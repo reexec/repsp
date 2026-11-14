@@ -40,7 +40,7 @@ void FakeSetGpr(int idx, uint32_t v) { if (idx > 0 && idx < 32) g_cpu.gpr[idx] =
 void FakeCallGuest(uint32_t) {}
 
 const repsp_guest_cpu_ops g_fake_ops = {
-    sizeof(FakeCpuState), FakeSave, FakeRestore, FakeGetGpr, FakeSetGpr, FakeCallGuest
+    sizeof(FakeCpuState), FakeSave, FakeRestore, FakeGetGpr, FakeSetGpr, FakeCallGuest, nullptr, nullptr
 };
 
 void WriteGuestStr(uint32_t addr, const std::string& s)

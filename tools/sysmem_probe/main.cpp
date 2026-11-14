@@ -38,7 +38,7 @@ void FakeSetGpr(int idx, uint32_t v) { if (idx > 0 && idx < 32) g_cpu.gpr[idx] =
 void FakeCallGuest(uint32_t) {}
 
 const repsp_guest_cpu_ops g_fake_ops = {
-    sizeof(FakeCpuState), FakeSave, FakeRestore, FakeGetGpr, FakeSetGpr, FakeCallGuest
+    sizeof(FakeCpuState), FakeSave, FakeRestore, FakeGetGpr, FakeSetGpr, FakeCallGuest, nullptr, nullptr
 };
 
 int32_t CallAlloc(int32_t part, uint32_t name_addr, uint32_t type, uint32_t size, uint32_t addr)

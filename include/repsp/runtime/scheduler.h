@@ -76,6 +76,17 @@ public:
     static constexpr int32_t kWaitCancelled = static_cast<int32_t>(0x800201A9u); // SCE_KERNEL_ERROR_WAIT_CANCEL (uOFW)
     static constexpr int32_t kWaitReleased = static_cast<int32_t>(0x800201AAu);  // SCE_KERNEL_ERROR_RELEASE_WAIT (uOFW)
     static constexpr int32_t kWaitDeleted = static_cast<int32_t>(0x800201B5u);   // SCE_KERNEL_ERROR_WAIT_DELETE (uOFW)
+    static constexpr uint32_t kInterruptStackBase = 0x08010000u;
+    static constexpr uint32_t kInterruptStackSize = 16u * 1024u;
+    static constexpr uint32_t kInterruptStackTop = kInterruptStackBase + kInterruptStackSize - 16u;
+
+    struct PendingInterrupt
+    {
+        uint32_t entry = 0;
+        uint32_t arg0 = 0;
+        uint32_t arg1 = 0;
+        uint32_t gp_value = 0;
+    };
 
     void Reset();
 
@@ -108,10 +119,14 @@ public:
     int32_t NotifyCallback(KernelUid cb_uid, int32_t arg);
     int32_t CheckCallbacks();
 
-    // Interrupt state (CpuSuspendIntr / CpuResumeIntr)
+    // Interrupt state (CpuSuspendIntr / CpuResumeIntr) and interrupt queue
     uint32_t SuspendInterrupts();
     void ResumeInterrupts(uint32_t prev_state);
     bool AreInterruptsEnabled() const;
+    void QueueInterrupt(uint32_t entry, uint32_t arg0, uint32_t arg1, uint32_t gp_value = 0);
+    void DeliverPendingInterrupts();
+    bool IsInInterrupt() const;
+    uint32_t GetCurrentThreadGp() const;
 
     // Switch points
     void YieldIfPreempted();
@@ -121,6 +136,7 @@ public:
     // External event notification (e.g. vblank or host event)
     void SetExternalWaitSources(uint32_t count);
     void NotifyExternalEvent();
+    void RequestStop(const std::string& reason);
 
     // Run scheduler loop starting with entry_thread_uid (blocks until all threads finish or RaiseStop).
     void Run(KernelUid entry_thread_uid);
@@ -165,6 +181,7 @@ private:
     std::shared_ptr<GuestThread> PickNextReadyLocked();
     bool HasHigherPriorityReadyLocked(int32_t priority) const;
     void SwitchOutCurrentLocked(std::unique_lock<std::mutex>& lock, const std::shared_ptr<GuestThread>& cur);
+    void DeliverPendingInterruptsLocked(std::unique_lock<std::mutex>& lock);
     void WakeWaitersLocked(WaitType type, KernelUid target_uid, int32_t result, bool wake_all);
     int32_t RunPendingCallbacksLocked(std::unique_lock<std::mutex>& lock, const std::shared_ptr<GuestThread>& cur);
     void ThreadEntry(std::shared_ptr<GuestThread> self);
@@ -178,9 +195,11 @@ private:
 
     std::vector<std::shared_ptr<GuestThread>> threads_;
     std::vector<KernelUid> ready_queue_;
+    std::vector<PendingInterrupt> pending_interrupts_;
     KernelUid active_thread_uid_ = 0;
 
     bool intr_enabled_ = true;
+    bool in_interrupt_ = false;
     bool running_ = false;
     bool shutdown_ = false;
     bool fatal_stop_ = false;

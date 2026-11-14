@@ -84,6 +84,11 @@ constexpr uint32_t kAddrEvfW2     = 0x0880A020u;
 constexpr uint32_t kAddrPreemptA  = 0x0880B000u;
 constexpr uint32_t kAddrPreemptB  = 0x0880B010u;
 constexpr uint32_t kAddrPreemptH  = 0x0880B020u;
+constexpr uint32_t kAddrIntrMain  = 0x0880C000u;
+constexpr uint32_t kAddrIntrIsr   = 0x0880C010u;
+constexpr uint32_t kAddrIntrNest  = 0x0880C020u;
+constexpr uint32_t kAddrIntrWaitMain = 0x0880C030u;
+constexpr uint32_t kAddrIntrWaitIsr  = 0x0880C040u;
 
 int32_t g_steal_hi_tid = 0;
 
@@ -358,13 +363,59 @@ void FakeCallGuest(uint32_t addr)
         g_cpu.gpr[2] = 0;
         break;
     }
+    case kAddrIntrMain:
+    {
+        g_cpu.gpr[16] = 0xCAFE1234u; // $s0 preserved across interrupt
+        const uint32_t orig_sp = g_cpu.gpr[29];
+        GetScheduler().QueueInterrupt(kAddrIntrIsr, 0x11u, 0x22u, 0x089256F0u);
+        repsp_recomp_poll(); // safe point delivers interrupt
+        TEST_ASSERT(g_cpu.gpr[16] == 0xCAFE1234u);
+        TEST_ASSERT(g_cpu.gpr[29] == orig_sp);
+        g_log.push_back("intr_main:done");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrIntrIsr:
+    {
+        TEST_ASSERT(GetScheduler().IsInInterrupt());
+        TEST_ASSERT(g_cpu.gpr[29] == Scheduler::kInterruptStackTop);
+        TEST_ASSERT(g_cpu.gpr[28] == 0x089256F0u);
+        TEST_ASSERT(g_cpu.gpr[4] == 0x11u);
+        TEST_ASSERT(g_cpu.gpr[5] == 0x22u);
+        g_cpu.gpr[16] = 0xDEAD0000u; // clobber $s0 to verify save/restore
+        // Nested interrupt queued inside handler must wait until outer handler finishes.
+        GetScheduler().QueueInterrupt(kAddrIntrNest, 0x33u, 0x44u, 0x08920000u);
+        repsp_recomp_poll(); // must NOT deliver kAddrIntrNest while in_interrupt_
+        g_log.push_back("isr:outer");
+        break;
+    }
+    case kAddrIntrNest:
+    {
+        TEST_ASSERT(GetScheduler().IsInInterrupt());
+        TEST_ASSERT(g_cpu.gpr[28] == 0x08920000u);
+        TEST_ASSERT(g_cpu.gpr[4] == 0x33u);
+        g_log.push_back("isr:nested");
+        break;
+    }
+    case kAddrIntrWaitMain:
+    {
+        GetScheduler().QueueInterrupt(kAddrIntrWaitIsr, 0, 0, 0);
+        repsp_recomp_poll();
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrIntrWaitIsr:
+    {
+        HleCall("sceKernelSleepThread"); // forbidden inside interrupt handler
+        break;
+    }
     default:
         TEST_ASSERT(false);
     }
 }
 
 const repsp_guest_cpu_ops g_fake_ops = {
-    sizeof(FakeCpuState), FakeSave, FakeRestore, FakeGetGpr, FakeSetGpr, FakeCallGuest
+    sizeof(FakeCpuState), FakeSave, FakeRestore, FakeGetGpr, FakeSetGpr, FakeCallGuest, nullptr, nullptr
 };
 
 } // namespace
@@ -477,6 +528,24 @@ int main()
     int32_t t_pa = GetScheduler().CreateThread("pa", kAddrPreemptA, 0x20, 0x4000, 0, 0);
     GetScheduler().Run(t_pa);
     TEST_ASSERT((g_log == std::vector<std::string>{ "h:run", "a:resumed", "b:run" }));
+
+    // 11. Interrupt delivery: dedicated stack, $gp/$a0/$a1, register save/restore, no nested delivery
+    kernel::Register(kernel::KernelConfig{});
+    g_log.clear();
+    int32_t t_intr = GetScheduler().CreateThread("intr_main", kAddrIntrMain, 0x20, 0x4000, 0, 0);
+    GetScheduler().Run(t_intr);
+    TEST_ASSERT((g_log == std::vector<std::string>{ "isr:outer", "isr:nested", "intr_main:done" }));
+
+    // 12. Waiting inside an interrupt handler triggers RaiseStop
+    kernel::Register(kernel::KernelConfig{});
+    int32_t t_iwait = GetScheduler().CreateThread("intr_wait", kAddrIntrWaitMain, 0x20, 0x4000, 0, 0);
+    auto intr_guard = repsp::platform::GuardedRun([&]()
+    {
+        GetScheduler().Run(t_iwait);
+    });
+    TEST_ASSERT(!intr_guard.succeeded);
+    TEST_ASSERT(intr_guard.stopped);
+    TEST_ASSERT(intr_guard.stop_reason.find("interrupt") != std::string::npos);
 
     GetScheduler().Reset();
     std::printf("kernel_sched_probe passed.\n");

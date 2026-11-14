@@ -31,7 +31,38 @@ freely, subject to the following restrictions:
 
 ---
 
-## 2. Note on Reference Projects
+## 2. psprecomp (GE Interpreter and Software Rasterizer)
+
+* Upstream: https://github.com/sp00nznet/psprecomp
+* Commit: `5ca18fa`
+* Files adapted: `src/hle/ge.c`, `src/render.c`, `include/psprecomp/render.h`
+* License: MIT License
+
+```
+Copyright (c) 2026 sp00nznet
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## 3. Note on Reference Projects
 
 Architectural specifications, calling convention models, and hardware behavior references were studied from:
 * [psprecomp](https://github.com/sp00nznet/psprecomp) (MIT License)

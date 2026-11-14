@@ -31,6 +31,7 @@ void repsp_recomp_hle_call(uint32_t nid)
             g_cpu_ops->set_gpr(2, repsp::runtime::kSceKernelErrorNotImplemented);
         }
     }
+    repsp::runtime::GetScheduler().DeliverPendingInterrupts();
 }
 
 void repsp_recomp_syscall(uint32_t code)
