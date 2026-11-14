@@ -104,6 +104,14 @@ constexpr int32_t kSceAtracErrorNoNeedSecondBuffer = static_cast<int32_t>(0x8063
 constexpr int32_t kSceAtracErrorNoDataInBuffer = static_cast<int32_t>(0x80630023u);      // PSP_ATRAC_ERROR_NODATA_IN_BUFFER
 constexpr int32_t kSceAtracErrorAllDataWasDecoded = static_cast<int32_t>(0x80630024u);   // PSP_ATRAC_ERROR_ALLDATA_WAS_DECODED
 
+// sceMpeg errors (Sony/PSP SDK facility 0x8061; NO_DATA 0x80618001 verified in guest binary)
+constexpr int32_t kSceMpegErrorBadVersion = static_cast<int32_t>(0x80610002u);             // SCE_MPEG_ERROR_BAD_VERSION
+constexpr int32_t kSceMpegErrorNoMemory = static_cast<int32_t>(0x80610022u);               // SCE_MPEG_ERROR_NO_MEM
+constexpr int32_t kSceMpegErrorInvalidAddr = static_cast<int32_t>(0x80610103u);            // SCE_MPEG_ERROR_INVALID_ADDR
+constexpr int32_t kSceMpegErrorInvalidValue = static_cast<int32_t>(0x806101FEu);           // SCE_MPEG_ERROR_INVALID_VALUE
+constexpr int32_t kSceMpegErrorNoData = static_cast<int32_t>(0x80618001u);                 // SCE_MPEG_ERROR_NO_DATA
+constexpr int32_t kSceMpegErrorAlreadyInit = static_cast<int32_t>(0x80618005u);            // SCE_MPEG_ERROR_ALREADY_INIT
+
 } // namespace repsp::hle
 
 #endif // REPSP_HLE_KERNEL_ERRORS_H

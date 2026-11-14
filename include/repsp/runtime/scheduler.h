@@ -119,6 +119,7 @@ public:
     int32_t CreateCallback(const std::string& name, uint32_t entry, uint32_t common_arg);
     int32_t NotifyCallback(KernelUid cb_uid, int32_t arg);
     int32_t CheckCallbacks();
+    int32_t CallGuestFunction(uint32_t entry, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t a2 = 0, uint32_t a3 = 0);
 
     // Interrupt state (CpuSuspendIntr / CpuResumeIntr) and interrupt queue
     uint32_t SuspendInterrupts();

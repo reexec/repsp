@@ -17,6 +17,7 @@ PSP 일반 지식(컨테이너 형식, Allegrex·VFPU, 펌웨어 모듈과 NID, 
 | [`audio.md`](audio.md) | PSP 오디오 출력(`sceAudio`), 채널·형식·이중 버퍼 대기, 끌어가기(pull) 믹서·시계 | **추정** (PSPSDK, uOFW; `platform_probe`·`audio_probe` 합성 검증) |
 | [`sascore-and-vag.md`](sascore-and-vag.md) | `sceSasCore` 신시사이저, Sony VAG 4비트 ADPCM 블록·필터, ADSR, Dry-only 리버브 | **추정** (PSDevWiki, `psx-spx`; `sas_probe` 합성 검증) |
 | [`atrac3plus.md`](atrac3plus.md) | RIFF/WAVE ATRAC3·ATRAC3plus 컨테이너, `sceAtrac3plus` 상태 머신, 교체형 `AtracDecoder` | **추정** (PSPSDK `pspatrac3.h`, RIFF 규격; `atrac_probe` 합성 검증) |
+| [`psmf-mpeg.md`](psmf-mpeg.md) | PSMF 헤더, MPEG-2 PS/PES 분리, 링 버퍼 콜백, `SceMpegAu`, `sceMpeg` 오류 코드 | **추정** (PSPSDK `pspmpeg.h`, ISO 13818-1, PSDevWiki; `mpeg_probe` 합성 검증) |
 
 ---
 
@@ -39,3 +40,4 @@ General PSP knowledge (container formats, the Allegrex and VFPU, firmware module
 | [`audio.md`](audio.md) | PSP audio output (`sceAudio`), channels/formats/double-buffered waits, pull mixer & host pacing | **Inferred** (PSPSDK, uOFW; synthetic `platform_probe`, `audio_probe` verified) |
 | [`sascore-and-vag.md`](sascore-and-vag.md) | `sceSasCore` synthesizer, Sony VAG 4-bit ADPCM blocks/filters, ADSR, dry-only reverb | **Inferred** (PSDevWiki, `psx-spx`; synthetic `sas_probe` verified) |
 | [`atrac3plus.md`](atrac3plus.md) | RIFF/WAVE ATRAC3/ATRAC3plus container, `sceAtrac3plus` state machine, replaceable `AtracDecoder` | **Inferred** (PSPSDK `pspatrac3.h`, RIFF spec; synthetic `atrac_probe` verified) |
+| [`psmf-mpeg.md`](psmf-mpeg.md) | PSMF header, MPEG-2 PS/PES demuxing, ring buffer callback, `SceMpegAu`, `sceMpeg` error codes | **Inferred** (PSPSDK `pspmpeg.h`, ISO 13818-1, PSDevWiki; synthetic `mpeg_probe` verified) |

@@ -89,6 +89,16 @@ target_include_directories(repsp_gpu PUBLIC
 target_link_libraries(repsp_gpu PUBLIC repsp_runtime)
 repsp_apply_host_flags(repsp_gpu)
 
+# Layer: codec
+add_library(repsp_codec STATIC)
+add_library(repsp::codec ALIAS repsp_codec)
+target_include_directories(repsp_codec PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(repsp_codec PUBLIC repsp_runtime)
+repsp_apply_host_flags(repsp_codec)
+
 # Layer: hle
 add_library(repsp_hle_kernel STATIC)
 add_library(repsp::hle_kernel ALIAS repsp_hle_kernel)
@@ -159,8 +169,17 @@ target_include_directories(repsp_hle_atrac PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(repsp_hle_atrac PUBLIC repsp_runtime)
+target_link_libraries(repsp_hle_atrac PUBLIC repsp_runtime repsp_codec)
 repsp_apply_host_flags(repsp_hle_atrac)
+
+add_library(repsp_hle_mpeg STATIC)
+add_library(repsp::hle_mpeg ALIAS repsp_hle_mpeg)
+target_include_directories(repsp_hle_mpeg PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(repsp_hle_mpeg PUBLIC repsp_runtime repsp_codec)
+repsp_apply_host_flags(repsp_hle_mpeg)
 
 add_subdirectory(src)
 

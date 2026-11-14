@@ -793,23 +793,6 @@ void HleAtracGetInternalErrorInfo()
 
 } // namespace
 
-bool SilentDecoder::DecodeFrame(const AtracFrameInfo& info,
-                                const uint8_t* frame_bytes,
-                                size_t frame_size,
-                                int16_t* pcm_out,
-                                size_t out_samples)
-{
-    (void)frame_bytes;
-    (void)frame_size;
-    if (pcm_out == nullptr)
-    {
-        return false;
-    }
-    const size_t elem_count = out_samples * info.channels;
-    std::fill(pcm_out, pcm_out + elem_count, int16_t{ 0 });
-    return true;
-}
-
 void Register()
 {
     std::lock_guard<std::mutex> lock(g_atrac.mutex);
