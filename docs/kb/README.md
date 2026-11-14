@@ -13,6 +13,7 @@ PSP 일반 지식(컨테이너 형식, Allegrex·VFPU, 펌웨어 모듈과 NID, 
 | [`vfs-io.md`](vfs-io.md) | 장치 경로 정규화, 대소문자 무시 탐색, `PSP_O_*` 플래그 및 `sceIoLseek` 규약 | **추정** (PSPSDK; `iofile_probe` 합성 검증) |
 | [`ge.md`](ge.md) | PSP GE 디스플레이 리스트, stall 주소, 정점·텍스처·CLUT 규약 | **추정** (PSPSDK, psprecomp; `ge_probe` 합성 검증) |
 | [`display.md`](display.md) | PSP 디스플레이 픽셀 형식, `SetFrameBuf` 동기 모드, VBlank 동기화 | **추정** (PSPSDK, uOFW; `display_probe` 합성 검증) |
+| [`ctrl-and-input.md`](ctrl-and-input.md) | PSP 컨트롤러 입력(`sceCtrl`·`SceCtrlData`·링 버퍼·입력 매핑) 및 `sceDmacMemcpy` | **추정** (PSPSDK, uOFW; `vblank_probe`·`ctrl_probe`·`dmac_probe` 합성 검증) |
 
 ---
 
@@ -31,3 +32,4 @@ General PSP knowledge (container formats, the Allegrex and VFPU, firmware module
 | [`vfs-io.md`](vfs-io.md) | Device path normalization, case-insensitive lookup, `PSP_O_*` flags, `sceIoLseek` ABI | **Inferred** (PSPSDK; synthetic `iofile_probe` verified) |
 | [`ge.md`](ge.md) | PSP GE display lists, stall address, vertex/texture/CLUT conventions | **Inferred** (PSPSDK, psprecomp; synthetic `ge_probe` verified) |
 | [`display.md`](display.md) | PSP display pixel formats, `SetFrameBuf` sync modes, VBlank sync | **Inferred** (PSPSDK, uOFW; synthetic `display_probe` verified) |
+| [`ctrl-and-input.md`](ctrl-and-input.md) | PSP controller input (`sceCtrl`, `SceCtrlData`, ring buffer, host mapping) and `sceDmacMemcpy` | **Inferred** (PSPSDK, uOFW; synthetic `vblank_probe`, `ctrl_probe`, `dmac_probe` verified) |

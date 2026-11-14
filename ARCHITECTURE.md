@@ -10,14 +10,16 @@ repsp는 여러 PSP 타이틀 정적 재컴파일 프로젝트가 공유하는 �
 
 ```mermaid
 flowchart BT
-    PLAT["repsp_platform<br/>Virtual memory, Guarded run (SEH/signals), Host threads, SDL3"]
+    PLAT["repsp_platform<br/>Virtual memory, Guarded run (SEH/signals), Host threads, SDL3 display/input"]
     MOD["repsp_module<br/>PARAM.SFO parser, PRX loader"]
-    RT["repsp_runtime<br/>GuestMemory, NID registry & names, Scheduler + IRQ stack, VFS"]
+    RT["repsp_runtime<br/>GuestMemory, NID registry & names, Scheduler + IRQ stack, VFS, VblankClock"]
     GPU["repsp_gpu<br/>GE display list interpreter & software rasterizer"]
     REC["repsp_recomp<br/>Lifter-neutral CPU contract, MIPS ABI helpers, C memory API"]
     HLEK["repsp_hle_kernel<br/>Kernel/UMD HLE"]
     HLEG["repsp_hle_ge<br/>sceGe_user HLE"]
-    HLED["repsp_hle_display<br/>sceDisplay HLE & VBlank"]
+    HLED["repsp_hle_display<br/>sceDisplay HLE"]
+    HLEC["repsp_hle_ctrl<br/>sceCtrl HLE & ring buffer"]
+    HLEDM["repsp_hle_dmac<br/>sceDmacMemcpy HLE"]
 
     MOD --> PLAT
     RT --> MOD
@@ -29,18 +31,23 @@ flowchart BT
     HLEG --> GPU
     HLED --> REC
     HLED --> PLAT
+    HLEC --> REC
+    HLEC --> PLAT
+    HLEDM --> REC
 ```
 
 | 타깃 | 별칭 | 공개 헤더 경로 | 주요 책임 |
 |---|---|---|---|
-| `repsp_platform` | `repsp::platform` | `include/repsp/platform/` | 가상 메모리 예약/commit/보호, 보호 실행(`GuardedRun`), 호스트 스레드 생성/CPU 시간, 파일 경로, SDL3 창/RGBA8 출력 |
+| `repsp_platform` | `repsp::platform` | `include/repsp/platform/` | 가상 메모리 예약/commit/보호, 보호 실행(`GuardedRun`), 호스트 스레드 생성/CPU 시간, 파일 경로, SDL3 창/RGBA8 출력, UI 스레드 키보드·게임패드 스냅샷(`InputBackend`) |
 | `repsp_module` | `repsp::module` | `include/repsp/module/` | `PARAM.SFO` 바이너리 파서, PRX 로더 및 재배치 (`ParsePrx`, `RelocateToBuffer`) |
-| `repsp_runtime` | `repsp::runtime` | `include/repsp/runtime/` | 게스트 물리 메모리, 미러 접기, NID 레지스트리·SHA-1 이름표(`nid_names.h`), 커널 객체 표, `Clock`, `Vfs`, `UserPartition`, 단일 코어 `Scheduler`·인터럽트 큐 |
+| `repsp_runtime` | `repsp::runtime` | `include/repsp/runtime/` | 게스트 물리 메모리, 미러 접기, NID 레지스트리·SHA-1 이름표(`nid_names.h`), 커널 객체 표, `Clock`, `Vfs`, `UserPartition`, 단일 코어 `Scheduler`·인터럽트 큐, 공유 `VblankClock` |
 | `repsp_gpu` | `repsp::gpu` | `include/repsp/gpu/` | GE 디스플레이 리스트 해석기(`GeInterpreter`) 및 소프트웨어 래스터라이저(`RenderBackend`) |
 | `repsp_recomp` | `repsp::recomp` | `include/repsp/recomp/` | lifter 중립 CPU 콜백 계약(`repsp_guest_cpu_ops`), 인자/반환 도우미(GPR/FPR), C 메모리 접근 함수, 안전점 `repsp_recomp_poll` |
 | `repsp_hle_kernel` | `repsp::hle_kernel` | `include/repsp/hle/` | `KernelConfig` 기반 커널/UMD HLE 65개 함수 등록(`repsp::hle::kernel::Register`), 오류 코드 정의(`kernel_errors.h`) |
 | `repsp_hle_ge` | `repsp::hle_ge` | `include/repsp/hle/ge.h` | `sceGe_user` 7개 NID 등록(`repsp::hle::ge::Register`), `SIGNAL`/`FINISH` 인터럽트 콜백 전달 |
-| `repsp_hle_display` | `repsp::hle_display` | `include/repsp/hle/display.h` | `sceDisplay` 6개 NID 등록(`repsp::hle::display::Register`), 59.94 Hz VBlank 스레드, RGBA8 변환 및 BMP 프레임 덤프 |
+| `repsp_hle_display` | `repsp::hle_display` | `include/repsp/hle/display.h` | `sceDisplay` 6개 NID 등록(`repsp::hle::display::Register`), `VblankClock` 구독, RGBA8 변환 및 BMP 프레임 덤프 |
+| `repsp_hle_ctrl` | `repsp::hle_ctrl` | `include/repsp/hle/ctrl.h` | `sceCtrl` 3개 NID 등록(`repsp::hle::ctrl::Register`), `VblankClock` 기반 64항목 입력 링 버퍼, 테스트/스크립트용 `SetInputSource` 주입 |
+| `repsp_hle_dmac` | `repsp::hle_dmac` | `include/repsp/hle/dmac.h` | `sceDmac` `sceDmacMemcpy` NID 등록(`repsp::hle::dmac::Register`) |
 
 ---
 
@@ -151,6 +158,12 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 * `DisplayHleConfig::headless`가 `true`이면 SDL 더미 비디오 드라이버로 창 없이 실행하며, `frame_dump_dir`·`frame_dump_limit`(또는 소비자 환경 변수 `REPSP_FRAME_DUMP`·`REPSP_FRAME_DUMP_LIMIT`)로 `frame_NNNN.bmp`를 기록할 수 있습니다.
 * `repsp::hle::ge::FormatStats()`와 `repsp::hle::display::FormatStats()`로 디스플레이 리스트·명령·프리미티브·FBP/FBW/PSM·VBlank 통계를 조회합니다.
 
+### 2.10. 컨트롤러 입력 및 DMAC 계약 (`ctrl.h`, `dmac.h`)
+
+* 소비자는 `repsp::hle::ctrl::Register()`와 `repsp::hle::dmac::Register()`로 `sceCtrl`(3개 NID)과 `sceDmac`(1개 NID) HLE를 등록하고, 종료 시 `Shutdown()`으로 정리합니다.
+* `repsp::hle::ctrl::SetInputSource(fn)`을 호출하면 기본 `platform::InputBackend` 폴링 대신 합성/스크립트 입력 공급자 `fn(vcount) -> ControllerState`를 사용할 수 있으며, `nullptr`로 복원할 수 있습니다.
+* `repsp::hle::ctrl::GetStats()` / `FormatStats()`로 샘플링 주기·모드·생성/읽기 통계를 조회할 수 있습니다.
+
 ---
 
 # Architecture and Consumer Contract (English)
@@ -164,7 +177,7 @@ Layers depend strictly downward as shown in the diagram and table above.
 ## 2. Consumer Contract
 
 ### 2.1. CMake Integration
-Consumers add repsp via `add_subdirectory(third_party/repsp)` and link against public alias targets (`repsp::platform`, `repsp::module`, `repsp::runtime`, `repsp::gpu`, `repsp::recomp`, `repsp::hle_kernel`, `repsp::hle_ge`, `repsp::hle_display`).
+Consumers add repsp via `add_subdirectory(third_party/repsp)` and link against public alias targets (`repsp::platform`, `repsp::module`, `repsp::runtime`, `repsp::gpu`, `repsp::recomp`, `repsp::hle_kernel`, `repsp::hle_ge`, `repsp::hle_display`, `repsp::hle_ctrl`, `repsp::hle_dmac`).
 
 ### 2.2. CPU Register Contract (`guest_cpu.h`)
 repsp owns no register file. Consumers register the `repsp_guest_cpu_ops` callback table (including `get_fpr`/`set_fpr` for COP1 float returns) at startup.
@@ -198,4 +211,8 @@ Consumers configure VFS mounts and reserve the loaded module image range via `re
 
 ### 2.9. GE, Display, and Frame Dump Contract (`ge.h`, `display.h`)
 
-Consumers register `repsp::hle::ge::Register()` and `repsp::hle::display::Register(const DisplayHleConfig&)` and call `repsp::hle::display::Shutdown()` on exit. `headless = true` runs with the SDL dummy video driver; `frame_dump_dir` / `frame_dump_limit` write `frame_NNNN.bmp` dumps; `FormatStats()` exposes GE and Display counters.
+Consumers register `repsp::hle::ge::Register()` and `repsp::hle::display::Register(const DisplayHleConfig&)` and call `repsp::hle::display::Shutdown()` on exit (`display` subscribes to the shared runtime `VblankClock`). `headless = true` runs with the SDL dummy video driver; `frame_dump_dir` / `frame_dump_limit` write `frame_NNNN.bmp` dumps; `FormatStats()` exposes GE and Display counters.
+
+### 2.10. Controller Input and DMAC Contract (`ctrl.h`, `dmac.h`)
+
+Consumers register `repsp::hle::ctrl::Register()` and `repsp::hle::dmac::Register()` for `sceCtrl` (3 NIDs) and `sceDmac` (`sceDmacMemcpy`), and call `Shutdown()` on exit. `repsp::hle::ctrl::SetInputSource(fn)` injects a custom `fn(vcount) -> ControllerState` source instead of polling `platform::InputBackend` (pass `nullptr` to restore). `repsp::hle::ctrl::GetStats()` / `FormatStats()` expose sampling cycle/mode and sample counters.
