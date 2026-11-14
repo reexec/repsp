@@ -11,10 +11,13 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <mutex>
 #include <sstream>
+#include <string>
 #include <vector>
 
 namespace repsp::hle::audio
@@ -29,6 +32,13 @@ struct StereoFrame
     int16_t right = 0;
 };
 
+struct WavDumpStream
+{
+    std::ofstream file;
+    uint32_t bytes_written = 0;
+    bool open_attempted = false;
+};
+
 struct AudioChannelState
 {
     bool reserved = false;
@@ -40,6 +50,7 @@ struct AudioChannelState
     bool flushing_null = false;
     uint64_t output_calls = 0;
     uint64_t frames_written = 0;
+    WavDumpStream dump;
 };
 
 std::mutex g_audio_mutex;
@@ -50,6 +61,94 @@ uint64_t g_total_output_calls = 0;
 uint64_t g_total_frames_written = 0;
 uint64_t g_total_frames_pulled = 0;
 uint64_t g_underruns = 0;
+bool g_dump_enabled = false;
+std::string g_dump_base_path;
+
+void WriteLe16Buf(uint8_t* dst, uint16_t v)
+{
+    dst[0] = static_cast<uint8_t>(v & 0xFFu);
+    dst[1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
+}
+
+void WriteLe32Buf(uint8_t* dst, uint32_t v)
+{
+    dst[0] = static_cast<uint8_t>(v & 0xFFu);
+    dst[1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
+    dst[2] = static_cast<uint8_t>((v >> 16) & 0xFFu);
+    dst[3] = static_cast<uint8_t>((v >> 24) & 0xFFu);
+}
+
+std::string MakeChannelDumpPath(const std::string& base, int32_t channel)
+{
+    const std::string suffix = ".ch" + std::to_string(channel) + ".wav";
+    if (base.size() >= 4)
+    {
+        const std::string ext = base.substr(base.size() - 4);
+        if (ext == ".wav" || ext == ".WAV")
+        {
+            return base.substr(0, base.size() - 4) + suffix;
+        }
+    }
+    return base + suffix;
+}
+
+void WriteChannelDumpLocked(AudioChannelState& ch, int32_t channel, const std::vector<int16_t>& stereo_pcm)
+{
+    if (!g_dump_enabled || stereo_pcm.empty())
+    {
+        return;
+    }
+    if (!ch.dump.open_attempted)
+    {
+        ch.dump.open_attempted = true;
+        const std::string path = MakeChannelDumpPath(g_dump_base_path, channel);
+        ch.dump.file.open(path, std::ios::binary | std::ios::trunc);
+        if (ch.dump.file.is_open())
+        {
+            uint8_t header[44]{};
+            std::memcpy(header + 0, "RIFF", 4);
+            WriteLe32Buf(header + 4, 36);
+            std::memcpy(header + 8, "WAVE", 4);
+            std::memcpy(header + 12, "fmt ", 4);
+            WriteLe32Buf(header + 16, 16);
+            WriteLe16Buf(header + 20, 1);
+            WriteLe16Buf(header + 22, 2);
+            WriteLe32Buf(header + 24, static_cast<uint32_t>(kAudioSampleRate));
+            WriteLe32Buf(header + 28, static_cast<uint32_t>(kAudioSampleRate) * 4u);
+            WriteLe16Buf(header + 32, 4);
+            WriteLe16Buf(header + 34, 16);
+            std::memcpy(header + 36, "data", 4);
+            WriteLe32Buf(header + 40, 0);
+            ch.dump.file.write(reinterpret_cast<const char*>(header), sizeof(header));
+            ch.dump.bytes_written = 0;
+        }
+    }
+    if (!ch.dump.file.is_open())
+    {
+        return;
+    }
+    const size_t bytes = stereo_pcm.size() * sizeof(int16_t);
+    ch.dump.file.write(reinterpret_cast<const char*>(stereo_pcm.data()), static_cast<std::streamsize>(bytes));
+    ch.dump.bytes_written += static_cast<uint32_t>(bytes);
+}
+
+void CloseChannelDumpLocked(AudioChannelState& ch)
+{
+    if (ch.dump.file.is_open())
+    {
+        uint8_t riff_size[4];
+        uint8_t data_size[4];
+        WriteLe32Buf(riff_size, 36u + ch.dump.bytes_written);
+        WriteLe32Buf(data_size, ch.dump.bytes_written);
+        ch.dump.file.seekp(4, std::ios::beg);
+        ch.dump.file.write(reinterpret_cast<const char*>(riff_size), 4);
+        ch.dump.file.seekp(40, std::ios::beg);
+        ch.dump.file.write(reinterpret_cast<const char*>(data_size), 4);
+        ch.dump.file.close();
+    }
+    ch.dump.bytes_written = 0;
+    ch.dump.open_attempted = false;
+}
 
 bool IsValidSampleCount(int32_t sample_count)
 {
@@ -177,6 +276,12 @@ int32_t OutputChannelCommon(int32_t channel, int32_t left_vol, int32_t right_vol
             return kSceKernelErrorInvalidPointer;
         }
 
+        std::vector<int16_t> dump_pcm;
+        if (g_dump_enabled)
+        {
+            dump_pcm.reserve(static_cast<size_t>(sample_count) * 2u);
+        }
+
         for (int32_t i = 0; i < sample_count; ++i)
         {
             const uint8_t* frame_ptr = guest_pcm + static_cast<size_t>(i) * stride_bytes;
@@ -186,6 +291,16 @@ int32_t OutputChannelCommon(int32_t channel, int32_t left_vol, int32_t right_vol
             f.left = ScaleSample(src_l, left_vol);
             f.right = ScaleSample(src_r, right_vol);
             ch.queue.push_back(f);
+            if (g_dump_enabled)
+            {
+                dump_pcm.push_back(f.left);
+                dump_pcm.push_back(f.right);
+            }
+        }
+
+        if (g_dump_enabled)
+        {
+            WriteChannelDumpLocked(ch, channel, dump_pcm);
         }
 
         ch.flushing_null = false;
@@ -456,14 +571,21 @@ void Register(const AudioHleConfig& config)
     Shutdown();
 
     platform::AudioBackend* backend = config.auto_attach_platform ? platform::GetAudio() : nullptr;
+    const char* dump_env = std::getenv("REPSP_AUDIO_DUMP");
     {
         std::lock_guard<std::mutex> lock(g_audio_mutex);
-        g_channels.fill(AudioChannelState{});
+        for (auto& ch : g_channels)
+        {
+            CloseChannelDumpLocked(ch);
+            ch = AudioChannelState{};
+        }
         g_total_output_calls = 0;
         g_total_frames_written = 0;
         g_total_frames_pulled = 0;
         g_underruns = 0;
         g_backend = backend;
+        g_dump_enabled = (dump_env != nullptr && *dump_env != '\0');
+        g_dump_base_path = g_dump_enabled ? dump_env : "";
         g_initialized = true;
     }
 
@@ -488,7 +610,13 @@ void Shutdown()
         old_backend = g_backend;
         g_backend = nullptr;
         g_initialized = false;
-        g_channels.fill(AudioChannelState{});
+        g_dump_enabled = false;
+        g_dump_base_path.clear();
+        for (auto& ch : g_channels)
+        {
+            CloseChannelDumpLocked(ch);
+            ch = AudioChannelState{};
+        }
     }
 
     if (old_backend != nullptr)
