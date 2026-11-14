@@ -264,6 +264,19 @@ bool AlphaPass(const DrawState& st, uint32_t c)
     }
 }
 
+bool ColorPass(const DrawState& st, uint32_t c)
+{
+    const uint32_t masked_c = (c & 0x00FFFFFFu) & st.ctest_mask;
+    const uint32_t masked_ref = st.ctest_ref & st.ctest_mask;
+    switch (st.ctest_func & 3)
+    {
+    case 0: return false;
+    case 1: return true;
+    case 2: return masked_c == masked_ref;
+    default: return masked_c != masked_ref;
+    }
+}
+
 int BlendFactor(int code, bool is_src, int ch, uint32_t s, uint32_t d, uint32_t fix)
 {
     const int other = is_src ? static_cast<int>((d >> (ch * 8)) & 0xFFu)
@@ -388,6 +401,7 @@ void Fragment(const DrawState& st, int x, int y, uint32_t c, float u, float v, f
             if (v < 0.0f && static_cast<float>(ty) != v) --ty;
             c = TexCombine(st, TexelFetch(st, tx, ty), c);
         }
+        if (st.ctest && !ColorPass(st, c)) return;
         if (st.atest && !AlphaPass(st, c)) return;
         if (st.ztest && have_z)
         {
