@@ -24,6 +24,7 @@ namespace
 struct FakeCpuState
 {
     uint32_t gprs[32] = {0};
+    uint32_t fprs[32] = {0};
     uint32_t last_called_guest = 0;
 };
 
@@ -32,18 +33,21 @@ FakeCpuState g_fake_cpu;
 struct FakeSavedContext
 {
     uint32_t gprs[32];
+    uint32_t fprs[32];
 };
 
 void FakeSave(void* context)
 {
     auto* ctx = static_cast<FakeSavedContext*>(context);
     std::memcpy(ctx->gprs, g_fake_cpu.gprs, sizeof(g_fake_cpu.gprs));
+    std::memcpy(ctx->fprs, g_fake_cpu.fprs, sizeof(g_fake_cpu.fprs));
 }
 
 void FakeRestore(const void* context)
 {
     const auto* ctx = static_cast<const FakeSavedContext*>(context);
     std::memcpy(g_fake_cpu.gprs, ctx->gprs, sizeof(g_fake_cpu.gprs));
+    std::memcpy(g_fake_cpu.fprs, ctx->fprs, sizeof(g_fake_cpu.fprs));
 }
 
 uint32_t FakeGetGpr(int index)
@@ -68,13 +72,32 @@ void FakeCallGuest(uint32_t address)
     g_fake_cpu.last_called_guest = address;
 }
 
+uint32_t FakeGetFpr(int index)
+{
+    if (index >= 0 && index < 32)
+    {
+        return g_fake_cpu.fprs[index];
+    }
+    return 0;
+}
+
+void FakeSetFpr(int index, uint32_t value)
+{
+    if (index >= 0 && index < 32)
+    {
+        g_fake_cpu.fprs[index] = value;
+    }
+}
+
 repsp_guest_cpu_ops g_fake_ops = {
     sizeof(FakeSavedContext),
     FakeSave,
     FakeRestore,
     FakeGetGpr,
     FakeSetGpr,
-    FakeCallGuest
+    FakeCallGuest,
+    FakeGetFpr,
+    FakeSetFpr
 };
 
 } // namespace
@@ -182,6 +205,17 @@ int main()
 
     repsp_guest_write32(0x08800000, 0xAABBCCDD);
     TEST_ASSERT(repsp_guest_read32(0x08800000) == 0xAABBCCDD);
+
+    // 7. Test get_fpr / set_fpr and float Return($f0)
+    SetFpr(12, 0x3F800000u); // 1.0f
+    TEST_ASSERT(GetFpr(12) == 0x3F800000u);
+    TEST_ASSERT(GetFpr(32) == 0u);
+    Return(59.94005966f);
+    uint32_t expected_fps_bits = 0;
+    const float expected_fps = 59.94005966f;
+    std::memcpy(&expected_fps_bits, &expected_fps, sizeof(expected_fps_bits));
+    TEST_ASSERT(GetFpr(0) == expected_fps_bits);
+    TEST_ASSERT(g_fake_cpu.fprs[0] == expected_fps_bits);
 
     GetGuestMemory().Shutdown();
     std::printf("recomp_contract_probe passed.\n");
