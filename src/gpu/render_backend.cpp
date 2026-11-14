@@ -421,9 +421,27 @@ int Edge(const Vertex& p, const Vertex& q, int x, int y)
     return (q.x - p.x) * (y - p.y) - (q.y - p.y) * (x - p.x);
 }
 
-void SwTri(const Vertex& a, const Vertex& b, const Vertex& c, const DrawState& st)
+bool IsTopLeftEdge(const Vertex& p, const Vertex& q)
 {
-    if (a.behind || b.behind || c.behind) return;
+    return (q.y < p.y) || (q.y == p.y && q.x > p.x);
+}
+
+void SwTri(const Vertex& a_in, const Vertex& b_in, const Vertex& c_in, const DrawState& st)
+{
+    if (a_in.behind || b_in.behind || c_in.behind) return;
+
+    Vertex a = a_in;
+    Vertex b = b_in;
+    Vertex c = c_in;
+    int area = Edge(a, b, c.x, c.y);
+    if (area == 0) return;
+    if (area < 0)
+    {
+        const Vertex tmp = b;
+        b = c;
+        c = tmp;
+        area = -area;
+    }
 
     int minx = a.x < b.x ? (a.x < c.x ? a.x : c.x) : (b.x < c.x ? b.x : c.x);
     int maxx = a.x > b.x ? (a.x > c.x ? a.x : c.x) : (b.x > c.x ? b.x : c.x);
@@ -435,27 +453,31 @@ void SwTri(const Vertex& a, const Vertex& b, const Vertex& c, const DrawState& s
     if (maxx > 479) maxx = 479;
     if (maxy > 271) maxy = 271;
 
-    const int area = Edge(a, b, c.x, c.y);
-    if (area == 0) return;
-    const float inv = 1.0f / static_cast<float>(area);
-    const float h0 = 0.5f * static_cast<float>((b.x - a.x) - (b.y - a.y));
-    const float h1 = 0.5f * static_cast<float>((c.x - b.x) - (c.y - b.y));
-    const float h2 = 0.5f * static_cast<float>((a.x - c.x) - (a.y - c.y));
+    // Evaluate edge functions at pixel centers (x + 0.5, y + 0.5) scaled by 2
+    // with top-left fill rule tie-breaking so shared edges are drawn once and
+    // bottom/right quad boundaries do not over-sample padding texels.
+    const float inv2 = 1.0f / static_cast<float>(2 * area);
+    const int bias0 = IsTopLeftEdge(a, b) ? 0 : -1;
+    const int bias1 = IsTopLeftEdge(b, c) ? 0 : -1;
+    const int bias2 = IsTopLeftEdge(c, a) ? 0 : -1;
+    const int c0 = (b.x - a.x) - (b.y - a.y);
+    const int c1 = (c.x - b.x) - (c.y - b.y);
+    const int c2 = (a.x - c.x) - (a.y - c.y);
 
     for (int y = miny; y <= maxy; ++y)
     {
         for (int x = minx; x <= maxx; ++x)
         {
-            const int w0 = Edge(a, b, x, y);
-            const int w1 = Edge(b, c, x, y);
-            const int w2 = Edge(c, a, x, y);
-            if (!((w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0)))
+            const int e0 = 2 * Edge(a, b, x, y) + c0;
+            const int e1 = 2 * Edge(b, c, x, y) + c1;
+            const int e2 = 2 * Edge(c, a, x, y) + c2;
+            if (e0 + bias0 < 0 || e1 + bias1 < 0 || e2 + bias2 < 0)
             {
                 continue;
             }
-            const float la = (static_cast<float>(w1) + h1) * inv;
-            const float lb = (static_cast<float>(w2) + h2) * inv;
-            const float lc = (static_cast<float>(w0) + h0) * inv;
+            const float la = static_cast<float>(e1) * inv2;
+            const float lb = static_cast<float>(e2) * inv2;
+            const float lc = static_cast<float>(e0) * inv2;
             uint32_t col = c.rgba;
             if (st.gouraud)
             {
