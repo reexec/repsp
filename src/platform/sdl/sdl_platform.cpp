@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -115,6 +116,280 @@ SDL_Gamepad* OpenFirstGamepad()
     return pad;
 }
 
+#if defined(_WIN32) && !defined(_WIN64)
+#define REPSP_SDL_GL_APIENTRY __stdcall
+#else
+#define REPSP_SDL_GL_APIENTRY
+#endif
+
+struct GlPresentHelper
+{
+    using GLenum = unsigned int;
+    using GLuint = unsigned int;
+    using GLint = int;
+    using GLsizei = int;
+    using GLboolean = unsigned char;
+    using GLbitfield = unsigned int;
+    using GLchar = char;
+
+    static constexpr GLenum kGlTexture2d = 0x0DE1;
+    static constexpr GLenum kGlTexture0 = 0x84C0;
+    static constexpr GLenum kGlRgba = 0x1908;
+    static constexpr GLenum kGlRgba8 = 0x8058;
+    static constexpr GLenum kGlUnsignedByte = 0x1401;
+    static constexpr GLenum kGlNearest = 0x2600;
+    static constexpr GLenum kGlClampToEdge = 0x812F;
+    static constexpr GLenum kGlTextureMinFilter = 0x2801;
+    static constexpr GLenum kGlTextureMagFilter = 0x2800;
+    static constexpr GLenum kGlTextureWrapS = 0x2802;
+    static constexpr GLenum kGlTextureWrapT = 0x2803;
+    static constexpr GLenum kGlDepthTest = 0x0B71;
+    static constexpr GLenum kGlScissorTest = 0x0C11;
+    static constexpr GLenum kGlBlend = 0x0BE2;
+    static constexpr GLenum kGlStencilTest = 0x0B90;
+    static constexpr GLenum kGlCullFace = 0x0B44;
+    static constexpr GLbitfield kGlColorBufferBit = 0x00004000;
+    static constexpr GLenum kGlTriangleStrip = 0x0005;
+    static constexpr GLenum kGlVertexShader = 0x8B31;
+    static constexpr GLenum kGlFragmentShader = 0x8B30;
+    static constexpr GLenum kGlCompileStatus = 0x8B81;
+    static constexpr GLenum kGlLinkStatus = 0x8B82;
+    static constexpr GLenum kGlDrawFramebuffer = 0x8CA9;
+    static constexpr GLenum kGlUnpackAlignment = 0x0CF5;
+
+    void (REPSP_SDL_GL_APIENTRY *glViewport)(GLint, GLint, GLsizei, GLsizei) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glDisable)(GLenum) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glClearColor)(float, float, float, float) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glClear)(GLbitfield) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glBindFramebuffer)(GLenum, GLuint) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glUseProgram)(GLuint) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glBindVertexArray)(GLuint) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glActiveTexture)(GLenum) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glBindTexture)(GLenum, GLuint) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glTexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glTexSubImage2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void*) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glTexParameteri)(GLenum, GLenum, GLint) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glGenTextures)(GLsizei, GLuint*) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glDeleteTextures)(GLsizei, const GLuint*) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glDrawArrays)(GLenum, GLint, GLsizei) = nullptr;
+    GLuint (REPSP_SDL_GL_APIENTRY *glCreateShader)(GLenum) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glShaderSource)(GLuint, GLsizei, const GLchar* const*, const GLint*) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glCompileShader)(GLuint) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glGetShaderiv)(GLuint, GLenum, GLint*) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glDeleteShader)(GLuint) = nullptr;
+    GLuint (REPSP_SDL_GL_APIENTRY *glCreateProgram)() = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glAttachShader)(GLuint, GLuint) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glLinkProgram)(GLuint) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glGetProgramiv)(GLuint, GLenum, GLint*) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glDeleteProgram)(GLuint) = nullptr;
+    GLint (REPSP_SDL_GL_APIENTRY *glGetUniformLocation)(GLuint, const GLchar*) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glUniform1i)(GLint, GLint) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glGenVertexArrays)(GLsizei, GLuint*) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glDeleteVertexArrays)(GLsizei, const GLuint*) = nullptr;
+    void (REPSP_SDL_GL_APIENTRY *glPixelStorei)(GLenum, GLint) = nullptr;
+
+    GLuint program = 0;
+    GLuint vao = 0;
+    GLuint cpu_tex = 0;
+    int cpu_tex_w = 0;
+    int cpu_tex_h = 0;
+    GLint u_tex = -1;
+    GLint u_flip_y = -1;
+
+    template <typename Fn>
+    static bool LoadProc(Fn& fn, const char* name)
+    {
+        SDL_FunctionPointer sym = SDL_GL_GetProcAddress(name);
+        if (sym == nullptr)
+        {
+            return false;
+        }
+        static_assert(sizeof(fn) == sizeof(sym));
+        std::memcpy(&fn, &sym, sizeof(fn));
+        return true;
+    }
+
+    GLuint CompileShader(GLenum type, const char* src) const
+    {
+        GLuint shader = glCreateShader(type);
+        if (shader == 0)
+        {
+            return 0;
+        }
+        glShaderSource(shader, 1, &src, nullptr);
+        glCompileShader(shader);
+        GLint ok = 0;
+        glGetShaderiv(shader, kGlCompileStatus, &ok);
+        if (!ok)
+        {
+            glDeleteShader(shader);
+            return 0;
+        }
+        return shader;
+    }
+
+    bool Init()
+    {
+        if (!LoadProc(glViewport, "glViewport") ||
+            !LoadProc(glDisable, "glDisable") ||
+            !LoadProc(glClearColor, "glClearColor") ||
+            !LoadProc(glClear, "glClear") ||
+            !LoadProc(glBindFramebuffer, "glBindFramebuffer") ||
+            !LoadProc(glUseProgram, "glUseProgram") ||
+            !LoadProc(glBindVertexArray, "glBindVertexArray") ||
+            !LoadProc(glActiveTexture, "glActiveTexture") ||
+            !LoadProc(glBindTexture, "glBindTexture") ||
+            !LoadProc(glTexImage2D, "glTexImage2D") ||
+            !LoadProc(glTexSubImage2D, "glTexSubImage2D") ||
+            !LoadProc(glTexParameteri, "glTexParameteri") ||
+            !LoadProc(glGenTextures, "glGenTextures") ||
+            !LoadProc(glDeleteTextures, "glDeleteTextures") ||
+            !LoadProc(glDrawArrays, "glDrawArrays") ||
+            !LoadProc(glCreateShader, "glCreateShader") ||
+            !LoadProc(glShaderSource, "glShaderSource") ||
+            !LoadProc(glCompileShader, "glCompileShader") ||
+            !LoadProc(glGetShaderiv, "glGetShaderiv") ||
+            !LoadProc(glDeleteShader, "glDeleteShader") ||
+            !LoadProc(glCreateProgram, "glCreateProgram") ||
+            !LoadProc(glAttachShader, "glAttachShader") ||
+            !LoadProc(glLinkProgram, "glLinkProgram") ||
+            !LoadProc(glGetProgramiv, "glGetProgramiv") ||
+            !LoadProc(glDeleteProgram, "glDeleteProgram") ||
+            !LoadProc(glGetUniformLocation, "glGetUniformLocation") ||
+            !LoadProc(glUniform1i, "glUniform1i") ||
+            !LoadProc(glGenVertexArrays, "glGenVertexArrays") ||
+            !LoadProc(glDeleteVertexArrays, "glDeleteVertexArrays") ||
+            !LoadProc(glPixelStorei, "glPixelStorei"))
+        {
+            return false;
+        }
+
+        const char* vs_src =
+            "#version 330 core\n"
+            "uniform int uFlipY;\n"
+            "out vec2 vUv;\n"
+            "void main() {\n"
+            "    vec2 pos = vec2((gl_VertexID & 1) * 2 - 1, (gl_VertexID >> 1) * 2 - 1);\n"
+            "    vUv = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));\n"
+            "    if (uFlipY != 0) vUv.y = 1.0 - vUv.y;\n"
+            "    gl_Position = vec4(pos, 0.0, 1.0);\n"
+            "}\n";
+
+        const char* fs_src =
+            "#version 330 core\n"
+            "uniform sampler2D uTex;\n"
+            "in vec2 vUv;\n"
+            "out vec4 FragColor;\n"
+            "void main() {\n"
+            "    vec3 c = texture(uTex, vUv).rgb;\n"
+            "    FragColor = vec4(c, 1.0);\n"
+            "}\n";
+
+        GLuint vs = CompileShader(kGlVertexShader, vs_src);
+        GLuint fs = CompileShader(kGlFragmentShader, fs_src);
+        if (vs == 0 || fs == 0)
+        {
+            if (vs != 0) glDeleteShader(vs);
+            if (fs != 0) glDeleteShader(fs);
+            return false;
+        }
+
+        program = glCreateProgram();
+        glAttachShader(program, vs);
+        glAttachShader(program, fs);
+        glLinkProgram(program);
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+
+        GLint linked = 0;
+        glGetProgramiv(program, kGlLinkStatus, &linked);
+        if (!linked)
+        {
+            glDeleteProgram(program);
+            program = 0;
+            return false;
+        }
+
+        u_tex = glGetUniformLocation(program, "uTex");
+        u_flip_y = glGetUniformLocation(program, "uFlipY");
+        glGenVertexArrays(1, &vao);
+        return vao != 0;
+    }
+
+    void Shutdown()
+    {
+        if (cpu_tex != 0 && glDeleteTextures != nullptr)
+        {
+            glDeleteTextures(1, &cpu_tex);
+            cpu_tex = 0;
+        }
+        if (vao != 0 && glDeleteVertexArrays != nullptr)
+        {
+            glDeleteVertexArrays(1, &vao);
+            vao = 0;
+        }
+        if (program != 0 && glDeleteProgram != nullptr)
+        {
+            glDeleteProgram(program);
+            program = 0;
+        }
+    }
+
+    void DrawTexture(GLuint tex, int win_w, int win_h, bool flip_y) const
+    {
+        glBindFramebuffer(kGlDrawFramebuffer, 0);
+        glViewport(0, 0, win_w, win_h);
+        glDisable(kGlDepthTest);
+        glDisable(kGlScissorTest);
+        glDisable(kGlBlend);
+        glDisable(kGlStencilTest);
+        glDisable(kGlCullFace);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(kGlColorBufferBit);
+
+        glUseProgram(program);
+        glUniform1i(u_tex, 0);
+        glUniform1i(u_flip_y, flip_y ? 1 : 0);
+        glActiveTexture(kGlTexture0);
+        glBindTexture(kGlTexture2d, tex);
+        glTexParameteri(kGlTexture2d, kGlTextureMinFilter, kGlNearest);
+        glTexParameteri(kGlTexture2d, kGlTextureMagFilter, kGlNearest);
+        glTexParameteri(kGlTexture2d, kGlTextureWrapS, kGlClampToEdge);
+        glTexParameteri(kGlTexture2d, kGlTextureWrapT, kGlClampToEdge);
+        glBindVertexArray(vao);
+        glDrawArrays(kGlTriangleStrip, 0, 4);
+        glBindVertexArray(0);
+        glBindTexture(kGlTexture2d, 0);
+        glUseProgram(0);
+    }
+
+    void DrawCpuRgba8(const uint8_t* pixels, int w, int h, int win_w, int win_h)
+    {
+        if (cpu_tex == 0 || cpu_tex_w != w || cpu_tex_h != h)
+        {
+            if (cpu_tex == 0)
+            {
+                glGenTextures(1, &cpu_tex);
+            }
+            glActiveTexture(kGlTexture0);
+            glBindTexture(kGlTexture2d, cpu_tex);
+            glPixelStorei(kGlUnpackAlignment, 4);
+            glTexImage2D(kGlTexture2d, 0, static_cast<GLint>(kGlRgba8), w, h, 0,
+                         kGlRgba, kGlUnsignedByte, pixels);
+            cpu_tex_w = w;
+            cpu_tex_h = h;
+        }
+        else
+        {
+            glActiveTexture(kGlTexture0);
+            glBindTexture(kGlTexture2d, cpu_tex);
+            glPixelStorei(kGlUnpackAlignment, 4);
+            glTexSubImage2D(kGlTexture2d, 0, 0, 0, w, h, kGlRgba, kGlUnsignedByte, pixels);
+        }
+        DrawTexture(cpu_tex, win_w, win_h, true);
+    }
+};
+
 class SdlDisplayBackend final : public DisplayBackend
 {
 public:
@@ -132,6 +407,7 @@ public:
 
         if (config.dummy)
         {
+            has_gl_context_.store(false);
             SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
             if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
             {
@@ -144,9 +420,14 @@ public:
 
         // Run SDL video/window/event pump on a dedicated thread so the OS message
         // loop remains responsive while the main thread blocks in Scheduler::Run().
+        has_gl_context_.store(false);
         ui_ready_ = false;
         ui_init_ok_ = false;
         ui_stop_.store(false);
+        job_running_ = false;
+        pending_presents_ = 0;
+        gl_present_dirty_ = false;
+        frame_dirty_ = false;
         ui_thread_ = std::thread([this]()
         {
             UiThreadMain();
@@ -192,6 +473,7 @@ public:
         {
             ui_thread_.join();
         }
+        has_gl_context_.store(false);
     }
 
     void PresentRgba8(const uint8_t* pixels, int width, int height, int pitch_bytes) override
@@ -228,6 +510,76 @@ public:
         return !close_requested_.load();
     }
 
+    bool HasGlContext() const override
+    {
+        return has_gl_context_.load();
+    }
+
+    void SubmitRenderJob(std::function<void()> job) override
+    {
+        if (!job || config_.dummy || !has_gl_context_.load() || ui_stop_.load())
+        {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(ui_mutex_);
+        job_queue_.push_back(std::move(job));
+        ui_cv_.notify_all();
+    }
+
+    void WaitRenderIdle() override
+    {
+        if (config_.dummy || !has_gl_context_.load())
+        {
+            return;
+        }
+        std::unique_lock<std::mutex> lock(ui_mutex_);
+        ui_cv_.wait(lock, [this]()
+        {
+            return (job_queue_.empty() && !job_running_) || ui_stop_.load();
+        });
+    }
+
+    void* GetGlProcAddress(const char* name) const override
+    {
+        if (!has_gl_context_.load() || name == nullptr)
+        {
+            return nullptr;
+        }
+        SDL_FunctionPointer sym = SDL_GL_GetProcAddress(name);
+        if (sym == nullptr)
+        {
+            return nullptr;
+        }
+        void* ptr = nullptr;
+        static_assert(sizeof(ptr) == sizeof(sym));
+        std::memcpy(&ptr, &sym, sizeof(ptr));
+        return ptr;
+    }
+
+    void PresentGlTexture(uint32_t texture_id, int width, int height) override
+    {
+        if (config_.dummy || !has_gl_context_.load() || ui_stop_.load() ||
+            texture_id == 0 || width <= 0 || height <= 0)
+        {
+            return;
+        }
+        std::unique_lock<std::mutex> lock(ui_mutex_);
+        ui_cv_.wait(lock, [this]()
+        {
+            return pending_presents_ <= 1 || ui_stop_.load();
+        });
+        if (ui_stop_.load())
+        {
+            return;
+        }
+        gl_present_tex_ = texture_id;
+        gl_present_w_ = width;
+        gl_present_h_ = height;
+        gl_present_dirty_ = true;
+        ++pending_presents_;
+        ui_cv_.notify_all();
+    }
+
 private:
     void UiThreadMain()
     {
@@ -245,6 +597,18 @@ private:
         {
             flags |= SDL_WINDOW_FULLSCREEN;
         }
+        if (config_.hidden)
+        {
+            flags |= SDL_WINDOW_HIDDEN;
+        }
+        if (config_.use_opengl)
+        {
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+            SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+            SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+            flags |= SDL_WINDOW_OPENGL;
+        }
 
         SDL_Window* win = SDL_CreateWindow(config_.title.c_str(), config_.width, config_.height, flags);
         if (win == nullptr)
@@ -257,10 +621,38 @@ private:
             return;
         }
 
-        SDL_Renderer* ren = SDL_CreateRenderer(win, nullptr);
+        SDL_GLContext gl_ctx = nullptr;
+        GlPresentHelper gl_helper;
+        SDL_Renderer* ren = nullptr;
         SDL_Texture* tex = nullptr;
         int tex_w = 0;
         int tex_h = 0;
+
+        if (config_.use_opengl)
+        {
+            gl_ctx = SDL_GL_CreateContext(win);
+            if (gl_ctx == nullptr || !SDL_GL_MakeCurrent(win, gl_ctx) || !gl_helper.Init())
+            {
+                gl_helper.Shutdown();
+                if (gl_ctx != nullptr)
+                {
+                    SDL_GL_DestroyContext(gl_ctx);
+                }
+                SDL_DestroyWindow(win);
+                SDL_QuitSubSystem(SDL_INIT_VIDEO);
+                std::lock_guard<std::mutex> lock(ui_mutex_);
+                ui_init_ok_ = false;
+                ui_ready_ = true;
+                ui_cv_.notify_all();
+                return;
+            }
+            SDL_GL_SetSwapInterval(config_.vsync ? 1 : 0);
+            has_gl_context_.store(true);
+        }
+        else
+        {
+            ren = SDL_CreateRenderer(win, nullptr);
+        }
 
         bool gamepad_init = SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK);
         SDL_Gamepad* gamepad = gamepad_init ? OpenFirstGamepad() : nullptr;
@@ -273,6 +665,7 @@ private:
         }
 
         std::vector<uint8_t> local_buf;
+        std::deque<std::function<void()>> local_jobs;
         while (!ui_stop_.load())
         {
             SDL_Event event;
@@ -300,16 +693,49 @@ private:
             }
             UpdateInputSnapshotFromSdl(gamepad);
 
-            int w = 0;
-            int h = 0;
-            bool has_frame = false;
             {
                 std::unique_lock<std::mutex> lock(ui_mutex_);
-                if (!frame_dirty_ && !ui_stop_.load())
+                if (job_queue_.empty() && !frame_dirty_ && !gl_present_dirty_ && !ui_stop_.load())
                 {
                     ui_cv_.wait_for(lock, std::chrono::milliseconds(8));
                 }
-                if (frame_dirty_)
+                if (!job_queue_.empty())
+                {
+                    local_jobs.swap(job_queue_);
+                    job_running_ = true;
+                }
+            }
+
+            if (!local_jobs.empty())
+            {
+                while (!local_jobs.empty())
+                {
+                    auto job = std::move(local_jobs.front());
+                    local_jobs.pop_front();
+                    if (job)
+                    {
+                        job();
+                    }
+                }
+                std::lock_guard<std::mutex> lock(ui_mutex_);
+                job_running_ = false;
+                ui_cv_.notify_all();
+            }
+
+            int w = 0;
+            int h = 0;
+            bool has_frame = false;
+            uint32_t present_tex = 0;
+            bool has_gl_present = false;
+            {
+                std::lock_guard<std::mutex> lock(ui_mutex_);
+                if (gl_present_dirty_)
+                {
+                    present_tex = gl_present_tex_;
+                    gl_present_dirty_ = false;
+                    has_gl_present = true;
+                }
+                else if (frame_dirty_)
                 {
                     local_buf = frame_buf_;
                     w = frame_w_;
@@ -319,7 +745,38 @@ private:
                 }
             }
 
-            if (has_frame && ren != nullptr && w > 0 && h > 0)
+            if (gl_ctx != nullptr)
+            {
+                int win_w = config_.width;
+                int win_h = config_.height;
+                SDL_GetWindowSizeInPixels(win, &win_w, &win_h);
+                if (win_w <= 0) win_w = config_.width;
+                if (win_h <= 0) win_h = config_.height;
+
+                if (has_gl_present && present_tex != 0)
+                {
+                    gl_helper.DrawTexture(present_tex, win_w, win_h, false);
+                    if (!config_.hidden)
+                    {
+                        SDL_GL_SwapWindow(win);
+                    }
+                    std::lock_guard<std::mutex> lock(ui_mutex_);
+                    if (pending_presents_ > 0)
+                    {
+                        --pending_presents_;
+                    }
+                    ui_cv_.notify_all();
+                }
+                else if (has_frame && w > 0 && h > 0)
+                {
+                    gl_helper.DrawCpuRgba8(local_buf.data(), w, h, win_w, win_h);
+                    if (!config_.hidden)
+                    {
+                        SDL_GL_SwapWindow(win);
+                    }
+                }
+            }
+            else if (has_frame && ren != nullptr && w > 0 && h > 0)
             {
                 if (tex == nullptr || tex_w != w || tex_h != h)
                 {
@@ -355,6 +812,12 @@ private:
         }
         ResetInputSnapshot(true);
 
+        if (gl_ctx != nullptr)
+        {
+            gl_helper.Shutdown();
+            SDL_GL_MakeCurrent(win, nullptr);
+            SDL_GL_DestroyContext(gl_ctx);
+        }
         if (tex != nullptr) SDL_DestroyTexture(tex);
         if (ren != nullptr) SDL_DestroyRenderer(ren);
         SDL_DestroyWindow(win);
@@ -366,15 +829,23 @@ private:
     SDL_Window* window_ = nullptr;
     std::atomic<bool> close_requested_{false};
     std::atomic<bool> ui_stop_{false};
+    std::atomic<bool> has_gl_context_{false};
     std::thread ui_thread_;
     std::mutex ui_mutex_;
     std::condition_variable ui_cv_;
     bool ui_ready_ = false;
     bool ui_init_ok_ = false;
+    std::deque<std::function<void()>> job_queue_;
+    bool job_running_ = false;
     std::vector<uint8_t> frame_buf_;
     int frame_w_ = 0;
     int frame_h_ = 0;
     bool frame_dirty_ = false;
+    uint32_t gl_present_tex_ = 0;
+    int gl_present_w_ = 0;
+    int gl_present_h_ = 0;
+    bool gl_present_dirty_ = false;
+    int pending_presents_ = 0;
 };
 
 class SdlInputBackend final : public InputBackend
