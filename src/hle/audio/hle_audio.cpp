@@ -263,12 +263,18 @@ int32_t OutputChannelCommon(int32_t channel, int32_t left_vol, int32_t right_vol
 
             auto& sched = runtime::GetScheduler();
             sched.AddExternalWaitSource(1);
-            const int32_t wait_res = sched.WaitCurrent(
+            const int32_t wait_res = sched.WaitCurrentIf(
                 runtime::WaitType::kAudio,
                 static_cast<runtime::KernelUid>(channel),
                 wait_for_zero ? "AudioDrain" : "AudioOutput",
                 nullptr,
-                false);
+                false,
+                [channel, wait_for_zero]()
+                {
+                    std::lock_guard<std::mutex> pred_lock(g_audio_mutex);
+                    const auto& c = g_channels[static_cast<size_t>(channel)];
+                    return g_initialized && c.reserved && !WaitConditionMetLocked(c, wait_for_zero);
+                });
             sched.RemoveExternalWaitSource(1);
 
             lock.lock();
