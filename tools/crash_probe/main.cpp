@@ -346,7 +346,9 @@ int main(int argc, char** argv)
         {
             TEST_ASSERT(report.find("Stop/fault while holding scheduler lock: simulated stop while holding scheduler mutex") != std::string::npos);
             TEST_ASSERT(report.find("name=mutex_held_worker") != std::string::npos);
-            TEST_ASSERT(report.find("scheduler_mutex_owner_host_tid: 0") != std::string::npos);
+            // The live owner may already be another scheduler thread by the time the
+            // report is written; the frozen recovery record is what must be there.
+            TEST_ASSERT(report.find("scheduler_mutex_held_at_recovery: host_tid=") != std::string::npos);
         }
     }
 

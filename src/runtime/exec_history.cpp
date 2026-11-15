@@ -63,6 +63,8 @@ thread_local ThreadExecHistory* t_history = nullptr;
 
 std::atomic<uint64_t> g_mutex_owner_host_tid{0};
 std::atomic<int32_t> g_mutex_owner_guest_uid{0};
+std::atomic<uint64_t> g_recovery_host_tid{0};
+std::atomic<int32_t> g_recovery_guest_uid{0};
 char g_last_stop_reason[256]{};
 std::atomic<bool> g_provider_registered{false};
 
@@ -117,6 +119,13 @@ void WriteCrashStateReport(void* /*user_data*/, platform::CrashTextBuffer* out)
     out->AppendFormat("stop_reason: %s\n", g_last_stop_reason[0] ? g_last_stop_reason : "(none)");
     out->AppendFormat("scheduler_mutex_owner_host_tid: %llu\n", static_cast<unsigned long long>(lock_tid));
     out->AppendFormat("scheduler_mutex_owner_guest_uid: %d\n", lock_uid);
+    const uint64_t rec_tid = g_recovery_host_tid.load(std::memory_order_acquire);
+    if (rec_tid != 0)
+    {
+        out->AppendFormat("scheduler_mutex_held_at_recovery: host_tid=%llu guest_uid=%d (released by boundary recovery)\n",
+                          static_cast<unsigned long long>(rec_tid),
+                          g_recovery_guest_uid.load(std::memory_order_relaxed));
+    }
     out->AppendFormat("vblank_count: %llu\n", static_cast<unsigned long long>(GetVblankClock().Count()));
 
     const ThreadExecHistory* hist = FindHistoryByHostTid(cur_tid);
@@ -294,6 +303,12 @@ void SetCrashStopReason(const char* reason)
     {
         g_last_stop_reason[0] = '\0';
     }
+}
+
+void SetCrashSchedulerMutexRecovery(uint64_t host_tid, int32_t guest_uid)
+{
+    g_recovery_guest_uid.store(guest_uid, std::memory_order_relaxed);
+    g_recovery_host_tid.store(host_tid, std::memory_order_release);
 }
 
 void SetCrashSchedulerMutexOwner(uint64_t host_tid, int32_t guest_uid)

@@ -368,6 +368,9 @@ void Scheduler::AbortIfMutexHeldAfterGuardedRun(const platform::GuardedRunResult
     {
         return;
     }
+    // Freeze who held the lock: once released, another scheduler thread may
+    // take it before the crash report is written.
+    SetCrashSchedulerMutexRecovery(platform::GetCurrentHostThreadId(), t_current_thread_uid);
 
     std::string orig_reason;
     if (!res.succeeded)
