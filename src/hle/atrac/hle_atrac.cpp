@@ -3,11 +3,13 @@
 #include "repsp/hle/kernel_errors.h"
 #include "repsp/recomp/recomp_helpers.h"
 #include "repsp/runtime/guest_memory.h"
+#include "repsp/runtime/log.h"
 #include "repsp/runtime/nid_registry.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -76,6 +78,7 @@ struct AtracGlobalState
     uint64_t decoded_samples = 0;
     uint64_t stream_bytes_added = 0;
     uint64_t resets = 0;
+    bool trace_enabled = false;
 };
 
 AtracGlobalState g_atrac;
@@ -364,6 +367,23 @@ void HleAtracSetDataAndGetId()
 
     g_atrac.handles[static_cast<size_t>(free_id)] = parsed;
     g_atrac.created_ids += 1;
+    if (g_atrac.trace_enabled)
+    {
+        runtime::Log(runtime::LogLevel::kInfo,
+                     "[ATRAC_TRACE] Open id=%d mode=%s tag=0x%04X ch=%u rate=%u blockAlign=%u "
+                     "spf=%u dataSize=%u endSample=%u delay=%u loopStart=%d loopEnd=%d",
+                     free_id,
+                     parsed.all_in_memory ? "mem" : "stream",
+                     static_cast<unsigned>(parsed.info.format_tag),
+                     static_cast<unsigned>(parsed.info.channels),
+                     parsed.info.sample_rate,
+                     static_cast<unsigned>(parsed.info.block_align),
+                     parsed.info.samples_per_frame,
+                     parsed.data_size,
+                     parsed.end_sample,
+                     parsed.loop_start,
+                     parsed.loop_end);
+    }
     recomp::Return(free_id);
 }
 
@@ -541,6 +561,18 @@ void HleAtracDecodeData()
     g_atrac.decode_calls += 1;
     g_atrac.decoded_frames += 1;
     g_atrac.decoded_samples += samples_this_frame;
+    if (g_atrac.trace_enabled)
+    {
+        runtime::Log(runtime::LogLevel::kInfo,
+                     "[ATRAC_TRACE] Decode id=%d call=%llu frame=%u cur=%u samples=%u end=%u remain=%d ret=0",
+                     id,
+                     static_cast<unsigned long long>(g_atrac.decode_calls),
+                     h->frame_index,
+                     h->current_sample,
+                     samples_this_frame,
+                     ended,
+                     ComputeRemainFrames(*h));
+    }
     recomp::Return(int32_t{ 0 });
 }
 
@@ -654,6 +686,10 @@ void HleAtracSetLoopNum()
     }
 
     h->loop_num = loop_num;
+    if (g_atrac.trace_enabled)
+    {
+        runtime::Log(runtime::LogLevel::kInfo, "[ATRAC_TRACE] SetLoopNum id=%d loopNum=%d", id, loop_num);
+    }
     recomp::Return(int32_t{ 0 });
 }
 
@@ -672,6 +708,10 @@ void HleAtracReleaseId()
     DestroyCodecContext(*h);
     *h = AtracHandle{};
     g_atrac.released_ids += 1;
+    if (g_atrac.trace_enabled)
+    {
+        runtime::Log(runtime::LogLevel::kInfo, "[ATRAC_TRACE] Release id=%d", id);
+    }
     recomp::Return(int32_t{ 0 });
 }
 
@@ -807,6 +847,14 @@ void HleAtracResetPlayPosition()
     }
 
     g_atrac.resets += 1;
+    if (g_atrac.trace_enabled)
+    {
+        runtime::Log(runtime::LogLevel::kInfo,
+                     "[ATRAC_TRACE] ResetPos id=%d sample=%u writeByteFirst=%u",
+                     id,
+                     sample,
+                     write_byte_first);
+    }
     recomp::Return(int32_t{ 0 });
 }
 
@@ -837,6 +885,7 @@ void HleAtracGetInternalErrorInfo()
 
 void Register()
 {
+    const char* trace_env = std::getenv("REPSP_ATRAC_TRACE");
     std::lock_guard<std::mutex> lock(g_atrac.mutex);
     for (auto& h : g_atrac.handles)
     {
@@ -850,6 +899,7 @@ void Register()
     g_atrac.decoded_samples = 0;
     g_atrac.stream_bytes_added = 0;
     g_atrac.resets = 0;
+    g_atrac.trace_enabled = (trace_env != nullptr && *trace_env != '\0' && *trace_env != '0');
     g_atrac.registered = true;
 
     auto& reg = runtime::GetNidRegistry();

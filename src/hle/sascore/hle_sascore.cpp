@@ -3,12 +3,17 @@
 #include "repsp/hle/kernel_errors.h"
 #include "repsp/recomp/recomp_helpers.h"
 #include "repsp/runtime/guest_memory.h"
+#include "repsp/runtime/log.h"
 #include "repsp/runtime/nid_registry.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -127,9 +132,103 @@ struct SasGlobalState
     uint64_t key_ons = 0;
     uint64_t key_offs = 0;
     uint64_t voices_set = 0;
+
+    bool trace_enabled = false;
+    uint32_t last_end_flags_traced = 0xFFFFFFFFu;
+
+    bool dump_enabled = false;
+    std::string dump_path;
+    std::ofstream dump_file;
+    bool dump_open_attempted = false;
+    uint32_t dump_bytes_written = 0;
 };
 
 SasGlobalState g_sas;
+
+void WriteLe16Buf(uint8_t* dst, uint16_t v)
+{
+    dst[0] = static_cast<uint8_t>(v & 0xFFu);
+    dst[1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
+}
+
+void WriteLe32Buf(uint8_t* dst, uint32_t v)
+{
+    dst[0] = static_cast<uint8_t>(v & 0xFFu);
+    dst[1] = static_cast<uint8_t>((v >> 8) & 0xFFu);
+    dst[2] = static_cast<uint8_t>((v >> 16) & 0xFFu);
+    dst[3] = static_cast<uint8_t>((v >> 24) & 0xFFu);
+}
+
+std::string MakeSasDumpPath(const std::string& base)
+{
+    if (base.size() >= 4)
+    {
+        const std::string ext = base.substr(base.size() - 4);
+        if (ext == ".wav" || ext == ".WAV")
+        {
+            return base.substr(0, base.size() - 4) + ".sas.wav";
+        }
+    }
+    return base + ".sas.wav";
+}
+
+void WriteSasDumpLocked(const std::vector<int16_t>& stereo_pcm, int32_t sample_rate)
+{
+    if (!g_sas.dump_enabled || stereo_pcm.empty())
+    {
+        return;
+    }
+    if (!g_sas.dump_open_attempted)
+    {
+        g_sas.dump_open_attempted = true;
+        g_sas.dump_file.open(g_sas.dump_path, std::ios::binary | std::ios::trunc);
+        if (g_sas.dump_file.is_open())
+        {
+            const uint32_t rate = static_cast<uint32_t>(sample_rate > 0 ? sample_rate : kSasDefaultSampleRate);
+            uint8_t header[44]{};
+            std::memcpy(header + 0, "RIFF", 4);
+            WriteLe32Buf(header + 4, 36);
+            std::memcpy(header + 8, "WAVE", 4);
+            std::memcpy(header + 12, "fmt ", 4);
+            WriteLe32Buf(header + 16, 16);
+            WriteLe16Buf(header + 20, 1);
+            WriteLe16Buf(header + 22, 2);
+            WriteLe32Buf(header + 24, rate);
+            WriteLe32Buf(header + 28, rate * 4u);
+            WriteLe16Buf(header + 32, 4);
+            WriteLe16Buf(header + 34, 16);
+            std::memcpy(header + 36, "data", 4);
+            WriteLe32Buf(header + 40, 0);
+            g_sas.dump_file.write(reinterpret_cast<const char*>(header), sizeof(header));
+            g_sas.dump_bytes_written = 0;
+        }
+    }
+    if (!g_sas.dump_file.is_open())
+    {
+        return;
+    }
+    const size_t bytes = stereo_pcm.size() * sizeof(int16_t);
+    g_sas.dump_file.write(reinterpret_cast<const char*>(stereo_pcm.data()), static_cast<std::streamsize>(bytes));
+    g_sas.dump_bytes_written += static_cast<uint32_t>(bytes);
+}
+
+void CloseSasDumpLocked()
+{
+    if (g_sas.dump_file.is_open())
+    {
+        uint8_t riff_size[4];
+        uint8_t data_size[4];
+        WriteLe32Buf(riff_size, 36u + g_sas.dump_bytes_written);
+        WriteLe32Buf(data_size, g_sas.dump_bytes_written);
+        g_sas.dump_file.seekp(4, std::ios::beg);
+        g_sas.dump_file.write(reinterpret_cast<const char*>(riff_size), 4);
+        g_sas.dump_file.seekp(40, std::ios::beg);
+        g_sas.dump_file.write(reinterpret_cast<const char*>(data_size), 4);
+        g_sas.dump_file.close();
+    }
+    g_sas.dump_bytes_written = 0;
+    g_sas.dump_open_attempted = false;
+}
 
 int16_t ClampS16(int64_t v)
 {
@@ -197,7 +296,7 @@ bool ValidateVoice(const SasCoreInstance& inst, int32_t voice)
     return voice >= 0 && voice < inst.max_voices && voice < kSasMaxVoices;
 }
 
-bool DecodeNextVagBlock(VoiceState& v, runtime::GuestMemory& mem)
+bool DecodeNextVagBlock(int32_t voice_idx, VoiceState& v, runtime::GuestMemory& mem)
 {
     if (v.vag_addr == 0 || v.vag_size < kVagBlockBytes || v.at_end_block)
     {
@@ -241,6 +340,7 @@ bool DecodeNextVagBlock(VoiceState& v, runtime::GuestMemory& mem)
     }
 
     const uint8_t flags = block[1];
+    const uint32_t cur_off = v.block_offset;
     if ((flags & kVagFlagLoopStart) != 0)
     {
         v.loop_start_offset = v.block_offset;
@@ -249,6 +349,16 @@ bool DecodeNextVagBlock(VoiceState& v, runtime::GuestMemory& mem)
     const bool end_mute = (flags & kVagFlagEndMute) == kVagFlagEndMute;
     if (end_mute)
     {
+        if (g_sas.trace_enabled)
+        {
+            runtime::Log(runtime::LogLevel::kInfo,
+                         "[SAS_TRACE] Block v=%d off=0x%X flags=0x%02X(end_mute) loopStart=0x%X vLoop=%d",
+                         voice_idx,
+                         cur_off,
+                         static_cast<unsigned>(flags),
+                         v.loop_start_offset,
+                         v.loop ? 1 : 0);
+        }
         v.decoded_block.fill(0);
         v.at_end_block = true;
         return false;
@@ -277,7 +387,7 @@ bool DecodeNextVagBlock(VoiceState& v, runtime::GuestMemory& mem)
 
     if ((flags & kVagFlagLoopEnd) != 0)
     {
-        if (((flags & kVagFlagLoopRepeat) != 0 || v.loop) &&
+        if (((flags & kVagFlagLoopRepeat) != 0 && v.loop) &&
             v.loop_start_offset + kVagBlockBytes <= v.vag_size)
         {
             v.block_offset = v.loop_start_offset;
@@ -286,6 +396,18 @@ bool DecodeNextVagBlock(VoiceState& v, runtime::GuestMemory& mem)
         {
             v.at_end_block = true;
         }
+    }
+    if (g_sas.trace_enabled && (cur_off == v.data_start_offset || flags != 0))
+    {
+        runtime::Log(runtime::LogLevel::kInfo,
+                     "[SAS_TRACE] Block v=%d off=0x%X flags=0x%02X loopStart=0x%X vLoop=%d nextOff=0x%X atEnd=%d",
+                     voice_idx,
+                     cur_off,
+                     static_cast<unsigned>(flags),
+                     v.loop_start_offset,
+                     v.loop ? 1 : 0,
+                     v.block_offset,
+                     v.at_end_block ? 1 : 0);
     }
     return true;
 }
@@ -366,7 +488,7 @@ void AdvanceEnvelope(VoiceState& v)
     }
 }
 
-void MixVoiceSample(VoiceState& v, runtime::GuestMemory& mem, int64_t& out_left, int64_t& out_right)
+void MixVoiceSample(int32_t voice_idx, VoiceState& v, runtime::GuestMemory& mem, int64_t& out_left, int64_t& out_right)
 {
     if (!v.playing || v.ended)
     {
@@ -376,12 +498,18 @@ void MixVoiceSample(VoiceState& v, runtime::GuestMemory& mem, int64_t& out_left,
     while ((v.sample_pos_fp >> 12) >= static_cast<uint32_t>(kVagSamplesPerBlock))
     {
         v.prev_sample = v.decoded_block[static_cast<size_t>(kVagSamplesPerBlock - 1)];
-        if (!DecodeNextVagBlock(v, mem))
+        if (!DecodeNextVagBlock(voice_idx, v, mem))
         {
             v.playing = false;
             v.ended = true;
             v.env_phase = AdsrPhase::kOff;
             v.env_level = 0;
+            if (g_sas.trace_enabled)
+            {
+                runtime::Log(runtime::LogLevel::kInfo,
+                             "[SAS_TRACE] End v=%d reason=vag_block_end",
+                             voice_idx);
+            }
             return;
         }
         v.sample_pos_fp -= static_cast<uint32_t>(kVagSamplesPerBlock) << 12;
@@ -397,6 +525,12 @@ void MixVoiceSample(VoiceState& v, runtime::GuestMemory& mem, int64_t& out_left,
     AdvanceEnvelope(v);
     if (!v.playing)
     {
+        if (g_sas.trace_enabled)
+        {
+            runtime::Log(runtime::LogLevel::kInfo,
+                         "[SAS_TRACE] End v=%d reason=env_release_zero",
+                         voice_idx);
+        }
         return;
     }
 
@@ -455,6 +589,16 @@ void HleSasInit()
     {
         g_sas.primary_core = core;
     }
+    if (g_sas.trace_enabled)
+    {
+        runtime::Log(runtime::LogLevel::kInfo,
+                     "[SAS_TRACE] Init core=0x%08X grain=%d maxVoices=%d outMode=%d rate=%d",
+                     core,
+                     grain,
+                     max_voices,
+                     out_mode,
+                     sample_rate);
+    }
 
     recomp::Return(int32_t{ 0 });
 }
@@ -489,17 +633,27 @@ void HleSasCore()
     }
 
     const int32_t grain = inst.grain;
+    std::vector<int16_t> dump_pcm;
+    if (g_sas.dump_enabled)
+    {
+        dump_pcm.reserve(static_cast<size_t>(grain) * 2u);
+    }
     for (int32_t f = 0; f < grain; ++f)
     {
         int64_t left = 0;
         int64_t right = 0;
         for (int32_t v = 0; v < inst.max_voices; ++v)
         {
-            MixVoiceSample(inst.voices[static_cast<size_t>(v)], mem, left, right);
+            MixVoiceSample(v, inst.voices[static_cast<size_t>(v)], mem, left, right);
         }
 
         const int16_t s_left = ClampS16(left);
         const int16_t s_right = ClampS16(right);
+        if (g_sas.dump_enabled)
+        {
+            dump_pcm.push_back(s_left);
+            dump_pcm.push_back(s_right);
+        }
         if (inst.out_mode == kSasOutputModeRaw)
         {
             mem.WriteU16(sas_out + static_cast<uint32_t>(f * 2), static_cast<uint16_t>(s_left));
@@ -512,6 +666,10 @@ void HleSasCore()
             mem.WriteU16(sas_out + static_cast<uint32_t>(f * 4 + 2),
                          static_cast<uint16_t>(s_right));
         }
+    }
+    if (g_sas.dump_enabled)
+    {
+        WriteSasDumpLocked(dump_pcm, inst.sample_rate);
     }
 
     g_sas.core_calls += 1;
@@ -568,6 +726,43 @@ void HleSasSetVoice()
     v.sample_pos_fp = static_cast<uint32_t>(kVagSamplesPerBlock) << 12;
 
     g_sas.voices_set += 1;
+    if (g_sas.trace_enabled)
+    {
+        uint32_t f00 = 0, f01 = 0, f02 = 0, f03 = 0, f04 = 0, f06 = 0, f07 = 0, fother = 0;
+        uint8_t last_nonzero_flag = 0;
+        uint32_t last_nonzero_off = 0;
+        for (uint32_t off = start_off; off + kVagBlockBytes <= static_cast<uint32_t>(size); off += static_cast<uint32_t>(kVagBlockBytes))
+        {
+            const uint8_t fl = mem.ReadU8(vag_addr + off + 1u);
+            switch (fl)
+            {
+            case 0x00: ++f00; break;
+            case 0x01: ++f01; break;
+            case 0x02: ++f02; break;
+            case 0x03: ++f03; break;
+            case 0x04: ++f04; break;
+            case 0x06: ++f06; break;
+            case 0x07: ++f07; break;
+            default: ++fother; break;
+            }
+            if (fl != 0)
+            {
+                last_nonzero_flag = fl;
+                last_nonzero_off = off;
+            }
+        }
+        runtime::Log(runtime::LogLevel::kInfo,
+                     "[SAS_TRACE] SetVoice v=%d addr=0x%08X size=0x%X startOff=0x%X loop=%d "
+                     "flags(00=%u,01=%u,02=%u,03=%u,04=%u,06=%u,07=%u,oth=%u,last=0x%02X@0x%X)",
+                     voice,
+                     vag_addr,
+                     static_cast<uint32_t>(size),
+                     start_off,
+                     loop,
+                     f00, f01, f02, f03, f04, f06, f07, fother,
+                     static_cast<unsigned>(last_nonzero_flag),
+                     last_nonzero_off);
+    }
     recomp::Return(int32_t{ 0 });
 }
 
@@ -618,6 +813,18 @@ void HleSasSetKeyOn()
     }
 
     g_sas.key_ons += 1;
+    if (g_sas.trace_enabled)
+    {
+        runtime::Log(runtime::LogLevel::kInfo,
+                     "[SAS_TRACE] KeyOn v=%d playing=%d ended=%d addr=0x%08X size=0x%X loop=%d pitch=0x%X",
+                     voice,
+                     v.playing ? 1 : 0,
+                     v.ended ? 1 : 0,
+                     v.vag_addr,
+                     v.vag_size,
+                     v.loop ? 1 : 0,
+                     v.pitch);
+    }
     recomp::Return(int32_t{ 0 });
 }
 
@@ -654,6 +861,14 @@ void HleSasSetKeyOff()
     }
 
     g_sas.key_offs += 1;
+    if (g_sas.trace_enabled)
+    {
+        runtime::Log(runtime::LogLevel::kInfo,
+                     "[SAS_TRACE] KeyOff v=%d playing=%d ended=%d",
+                     voice,
+                     v.playing ? 1 : 0,
+                     v.ended ? 1 : 0);
+    }
     recomp::Return(int32_t{ 0 });
 }
 
@@ -682,6 +897,13 @@ void HleSasSetPitch()
     }
 
     it->second.voices[static_cast<size_t>(voice)].pitch = pitch;
+    if (g_sas.trace_enabled)
+    {
+        runtime::Log(runtime::LogLevel::kInfo,
+                     "[SAS_TRACE] SetPitch v=%d pitch=0x%X",
+                     voice,
+                     pitch);
+    }
     recomp::Return(int32_t{ 0 });
 }
 
@@ -831,7 +1053,16 @@ void HleSasGetEndFlag()
         return;
     }
 
-    recomp::Return(ComputeEndFlags(it->second));
+    const uint32_t flags = ComputeEndFlags(it->second);
+    if (g_sas.trace_enabled && flags != g_sas.last_end_flags_traced)
+    {
+        runtime::Log(runtime::LogLevel::kInfo,
+                     "[SAS_TRACE] GetEndFlag 0x%08X -> 0x%08X",
+                     g_sas.last_end_flags_traced,
+                     flags);
+        g_sas.last_end_flags_traced = flags;
+    }
+    recomp::Return(flags);
 }
 
 void HleSasRevType()
@@ -899,7 +1130,11 @@ void HleSasRevVon()
 
 void Register()
 {
+    const char* trace_env = std::getenv("REPSP_SAS_TRACE");
+    const char* dump_env = std::getenv("REPSP_AUDIO_DUMP");
+
     std::lock_guard<std::mutex> lock(g_sas.mutex);
+    CloseSasDumpLocked();
     g_sas.instances.clear();
     g_sas.primary_core = 0;
     g_sas.core_calls = 0;
@@ -907,6 +1142,10 @@ void Register()
     g_sas.key_ons = 0;
     g_sas.key_offs = 0;
     g_sas.voices_set = 0;
+    g_sas.trace_enabled = (trace_env != nullptr && *trace_env != '\0' && *trace_env != '0');
+    g_sas.last_end_flags_traced = 0xFFFFFFFFu;
+    g_sas.dump_enabled = (dump_env != nullptr && *dump_env != '\0');
+    g_sas.dump_path = g_sas.dump_enabled ? MakeSasDumpPath(dump_env) : "";
     g_sas.registered = true;
 
     auto& reg = runtime::GetNidRegistry();
@@ -928,6 +1167,10 @@ void Register()
 void Shutdown()
 {
     std::lock_guard<std::mutex> lock(g_sas.mutex);
+    CloseSasDumpLocked();
+    g_sas.dump_enabled = false;
+    g_sas.dump_path.clear();
+    g_sas.trace_enabled = false;
     g_sas.instances.clear();
     g_sas.primary_core = 0;
     g_sas.registered = false;

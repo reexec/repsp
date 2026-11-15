@@ -189,9 +189,33 @@ int main()
     TEST_ASSERT(!stats.reverb_applied);
     TEST_ASSERT(FormatStats().find("reverb=dry only (not mixed)") != std::string::npos);
 
+    // 5. Regression check (#26): one-shot VAG (flags=0x01 + 0x07) passed with loop=1 must NOT loop.
+    WriteVagBlock(mem, kVagRawAddr + 0u, 0x00, 0x01 /*end only, no repeat*/, 0x11);
+    WriteVagBlock(mem, kVagRawAddr + 16u, 0x00, 0x07 /*end+mute padding*/, 0x00);
+    TEST_ASSERT(CallNid7(kNidSasSetVoice, kCoreAddr, 2u, kVagRawAddr, 32u, 1u /*loop=1*/) == 0);
+    TEST_ASSERT(CallNid7(kNidSasSetPitch, kCoreAddr, 2u, static_cast<uint32_t>(kSasPitchBase)) == 0);
+    TEST_ASSERT(CallNid7(kNidSasSetVolume, kCoreAddr, 2u, 0x1000u, 0x1000u, 0u, 0u) == 0);
+    TEST_ASSERT(CallNid7(kNidSasSetAdsr, kCoreAddr, 2u, 0x0Fu, 0x40000000u, 0u, 0u, 0x10000000u) == 0);
+    TEST_ASSERT(CallNid7(kNidSasSetKeyOn, kCoreAddr, 2u) == 0);
+    TEST_ASSERT((static_cast<uint32_t>(CallNid7(kNidSasGetEndFlag, kCoreAddr)) & (1u << 2)) == 0u);
+    TEST_ASSERT(CallNid7(kNidSasCore, kCoreAddr, kOutAddr) == 0);
+    TEST_ASSERT((static_cast<uint32_t>(CallNid7(kNidSasGetEndFlag, kCoreAddr)) & (1u << 2)) != 0u);
+
+    // 6. Loop-flagged VAG (0x04 -> 0x03) passed with loop=0 must NOT loop.
+    WriteVagBlock(mem, kVagRawAddr + 64u, 0x00, 0x04 /*loop start*/, 0x11);
+    WriteVagBlock(mem, kVagRawAddr + 80u, 0x00, 0x03 /*loop end+repeat*/, 0x11);
+    TEST_ASSERT(CallNid7(kNidSasSetVoice, kCoreAddr, 3u, kVagRawAddr + 64u, 32u, 0u /*loop=0*/) == 0);
+    TEST_ASSERT(CallNid7(kNidSasSetPitch, kCoreAddr, 3u, static_cast<uint32_t>(kSasPitchBase)) == 0);
+    TEST_ASSERT(CallNid7(kNidSasSetVolume, kCoreAddr, 3u, 0x1000u, 0x1000u, 0u, 0u) == 0);
+    TEST_ASSERT(CallNid7(kNidSasSetAdsr, kCoreAddr, 3u, 0x0Fu, 0x40000000u, 0u, 0u, 0x10000000u) == 0);
+    TEST_ASSERT(CallNid7(kNidSasSetKeyOn, kCoreAddr, 3u) == 0);
+    TEST_ASSERT(CallNid7(kNidSasCore, kCoreAddr, kOutAddr) == 0);
+    TEST_ASSERT(CallNid7(kNidSasCore, kCoreAddr, kOutAddr) == 0);
+    TEST_ASSERT((static_cast<uint32_t>(CallNid7(kNidSasGetEndFlag, kCoreAddr)) & (1u << 3)) != 0u);
+
     Shutdown();
     mem.Shutdown();
 
-    std::printf("[PASS] sas_probe: 4/4 checks passed\n");
+    std::printf("[PASS] sas_probe: 6/6 checks passed\n");
     return 0;
 }
