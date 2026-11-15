@@ -20,6 +20,7 @@ function(add_repsp_probe name)
     )
     repsp_apply_host_flags(${name})
     add_test(NAME ${name} COMMAND ${name})
+    set_tests_properties(${name} PROPERTIES TIMEOUT 30)
 endfunction()
 
 add_repsp_probe(memory_probe)
@@ -44,6 +45,7 @@ add_repsp_probe(atrac_probe)
 add_repsp_probe(mpeg_probe)
 add_repsp_probe(utility_probe)
 add_repsp_probe(codec_loader_probe)
+add_repsp_probe(crash_probe)
 
 add_library(codec_fake_bad_abi_plugin SHARED
     codec_loader_probe/fake_bad_abi_plugin.cpp
