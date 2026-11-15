@@ -89,6 +89,28 @@ constexpr uint32_t kAddrIntrIsr   = 0x0880C010u;
 constexpr uint32_t kAddrIntrNest  = 0x0880C020u;
 constexpr uint32_t kAddrIntrWaitMain = 0x0880C030u;
 constexpr uint32_t kAddrIntrWaitIsr  = 0x0880C040u;
+constexpr uint32_t kAddrDeepStack    = 0x0880E000u;
+
+volatile uintptr_t g_deep_stack_span = 0;
+volatile uint64_t g_deep_stack_committed = 0;
+
+uint32_t DeepStackTouch(int depth)
+{
+    volatile uint8_t frame[4096];
+    frame[0] = static_cast<uint8_t>(depth & 0xFF);
+    frame[4095] = static_cast<uint8_t>((depth * 3) & 0xFF);
+    if (depth <= 0)
+    {
+        repsp::platform::HostStackInfo info{};
+        if (repsp::platform::HostThread::GetCurrentThreadStackInfo(info))
+        {
+            g_deep_stack_span = info.stack_high - info.stack_low;
+            g_deep_stack_committed = info.committed_bytes;
+        }
+        return frame[0] + frame[4095];
+    }
+    return DeepStackTouch(depth - 1) + frame[0];
+}
 
 int32_t g_steal_hi_tid = 0;
 
@@ -409,6 +431,11 @@ void FakeCallGuest(uint32_t addr)
         HleCall("sceKernelSleepThread"); // forbidden inside interrupt handler
         break;
     }
+    case kAddrDeepStack:
+    {
+        g_cpu.gpr[2] = DeepStackTouch(600);
+        break;
+    }
     default:
         TEST_ASSERT(false);
     }
@@ -546,6 +573,41 @@ int main()
     TEST_ASSERT(!intr_guard.succeeded);
     TEST_ASSERT(intr_guard.stopped);
     TEST_ASSERT(intr_guard.stop_reason.find("interrupt") != std::string::npos);
+
+    // 13. Explicit 64 MiB reserved host stack for guest threads and per-thread high-water stats
+    TEST_ASSERT(GetScheduler().GetGuestHostStackReserveBytes() ==
+                repsp::runtime::Scheduler::kDefaultGuestHostStackReserveBytes);
+    GetScheduler().SetGuestHostStackReserveBytes(8ull * 1024ull * 1024ull);
+    TEST_ASSERT(GetScheduler().GetGuestHostStackReserveBytes() == 8ull * 1024ull * 1024ull);
+    GetScheduler().SetGuestHostStackReserveBytes(
+        repsp::runtime::Scheduler::kDefaultGuestHostStackReserveBytes);
+
+    kernel::Register(kernel::KernelConfig{});
+    g_deep_stack_span = 0;
+    g_deep_stack_committed = 0;
+    int32_t t_deep = GetScheduler().CreateThread("deep_stack", kAddrDeepStack, 0x20, 0x4000, 0, 0);
+    GetScheduler().Run(t_deep);
+    TEST_ASSERT(g_deep_stack_span >= repsp::runtime::Scheduler::kDefaultGuestHostStackReserveBytes);
+    TEST_ASSERT(g_deep_stack_committed >= 2ull * 1024ull * 1024ull);
+    TEST_ASSERT(g_deep_stack_committed < repsp::runtime::Scheduler::kDefaultGuestHostStackReserveBytes);
+    {
+        const auto snap = GetScheduler().GetThreadsSnapshot();
+        bool found_deep = false;
+        for (const auto& info : snap)
+        {
+            if (info.uid == t_deep)
+            {
+                found_deep = true;
+                TEST_ASSERT(info.host_stack_reserve_bytes ==
+                            repsp::runtime::Scheduler::kDefaultGuestHostStackReserveBytes);
+                TEST_ASSERT(info.host_stack_high_water_bytes >= 2ull * 1024ull * 1024ull);
+            }
+        }
+        TEST_ASSERT(found_deep);
+        const std::string stats = GetScheduler().FormatHostStackStats();
+        TEST_ASSERT(stats.find("deep_stack") != std::string::npos);
+        TEST_ASSERT(stats.find("high_water=") != std::string::npos);
+    }
 
     GetScheduler().Reset();
     std::printf("kernel_sched_probe passed.\n");
