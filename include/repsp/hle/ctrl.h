@@ -39,6 +39,10 @@ void Shutdown();
 // Override the input source for deterministic testing (pass nullptr to restore platform polling).
 void SetInputSource(InputSourceFn fn);
 
+// Record button state changes in --input-script format (<vblank> <button names>).
+bool StartInputRecording(const std::string& path);
+void StopInputRecording();
+
 CtrlStats GetStats();
 std::string FormatStats();
 

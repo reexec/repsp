@@ -11,6 +11,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #define TEST_ASSERT(cond)                                                              \
@@ -233,8 +237,79 @@ int main()
     repsp::hle::ctrl::Shutdown();
     repsp::runtime::GetScheduler().Reset();
     clock.ResetForTest();
+
+    // 7. Input recording produces --input-script format and reads back identically
+    {
+        const std::filesystem::path rec_path =
+            std::filesystem::temp_directory_path() / "repsp_ctrl_probe_input.txt";
+        std::filesystem::remove(rec_path);
+
+        repsp::hle::ctrl::Register();
+        repsp::hle::ctrl::SetInputSource([](uint32_t vcount)
+        {
+            repsp::platform::ControllerState st{};
+            if (vcount >= 2 && vcount <= 3)
+            {
+                st.buttons = repsp::platform::kPspCtrlCross | repsp::platform::kPspCtrlUp;
+            }
+            else if (vcount >= 5 && vcount <= 6)
+            {
+                st.buttons = repsp::platform::kPspCtrlStart;
+            }
+            return st;
+        });
+
+        TEST_ASSERT(repsp::hle::ctrl::StartInputRecording(rec_path.string()));
+        for (int i = 0; i < 8; ++i)
+        {
+            clock.StepForTest();
+        }
+        repsp::hle::ctrl::StopInputRecording();
+        repsp::hle::ctrl::Shutdown();
+        clock.ResetForTest();
+
+        std::ifstream in(rec_path);
+        TEST_ASSERT(in.is_open());
+        struct RecLine
+        {
+            uint32_t vblank = 0;
+            uint32_t buttons = 0;
+        };
+        std::vector<RecLine> parsed;
+        std::string line;
+        while (std::getline(in, line))
+        {
+            if (line.empty() || line[0] == '#')
+            {
+                continue;
+            }
+            std::istringstream iss(line);
+            uint32_t vb = 0;
+            TEST_ASSERT(static_cast<bool>(iss >> vb));
+            uint32_t mask = 0;
+            std::string tok;
+            while (iss >> tok)
+            {
+                if (tok == "UP") mask |= repsp::platform::kPspCtrlUp;
+                else if (tok == "CROSS") mask |= repsp::platform::kPspCtrlCross;
+                else if (tok == "START") mask |= repsp::platform::kPspCtrlStart;
+                else if (tok == "NONE") mask |= 0u;
+                else TEST_ASSERT(false);
+            }
+            parsed.push_back(RecLine{vb, mask});
+        }
+        in.close();
+        std::filesystem::remove(rec_path);
+
+        TEST_ASSERT(parsed.size() == 4);
+        TEST_ASSERT(parsed[0].vblank == 2 && parsed[0].buttons == (repsp::platform::kPspCtrlUp | repsp::platform::kPspCtrlCross));
+        TEST_ASSERT(parsed[1].vblank == 4 && parsed[1].buttons == 0u);
+        TEST_ASSERT(parsed[2].vblank == 5 && parsed[2].buttons == repsp::platform::kPspCtrlStart);
+        TEST_ASSERT(parsed[3].vblank == 7 && parsed[3].buttons == 0u);
+    }
+
     mem.Shutdown();
 
-    std::printf("[PASS] ctrl_probe: 6/6 checks passed\n");
+    std::printf("[PASS] ctrl_probe: 7/7 checks passed\n");
     return 0;
 }
