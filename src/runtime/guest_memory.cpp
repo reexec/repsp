@@ -1,4 +1,5 @@
 #include "repsp/runtime/guest_memory.h"
+#include "repsp/platform/crash_handler.h"
 #include "repsp/platform/virtual_memory.h"
 
 #include <cstring>
@@ -51,11 +52,13 @@ bool GuestMemory::Initialize()
         return false;
     }
 
+    platform::SetCrashGuestMemoryRange(reinterpret_cast<uintptr_t>(base_), kWindowSize);
     return true;
 }
 
 void GuestMemory::Shutdown()
 {
+    platform::SetCrashGuestMemoryRange(0, 0);
     if (base_ != nullptr)
     {
         platform::ReleaseAddressSpace(base_, kWindowSize);

@@ -1,6 +1,8 @@
 #include "repsp/runtime/scheduler.h"
 
+#include "repsp/platform/crash_handler.h"
 #include "repsp/platform/guarded_run.h"
+#include "repsp/runtime/exec_history.h"
 #include "repsp/runtime/guest_memory.h"
 #include "repsp/runtime/log.h"
 #include "repsp/runtime/user_partition.h"
@@ -79,7 +81,7 @@ const char* WaitTypeName(WaitType wt)
     }
 }
 
-void RaiseStopIfShuttingDownLocked(bool stopping, std::unique_lock<std::mutex>& lock)
+void RaiseStopIfShuttingDownLocked(bool stopping, std::unique_lock<TrackedMutex>& lock)
 {
     if (stopping && t_current_thread_uid != 0)
     {
@@ -122,11 +124,67 @@ void RecordWakeBucket(WakeLatencyBucketStats& b, size_t bucket, uint64_t us)
 
 } // namespace
 
+void TrackedMutex::lock()
+{
+    const uint64_t self_tid = platform::GetCurrentHostThreadId();
+    if (owner_host_tid.load(std::memory_order_acquire) == self_tid)
+    {
+        const char* reason = "Scheduler mutex re-lock by same host thread";
+        SetCrashStopReason(reason);
+        platform::WriteLogFileLine("FATAL", reason);
+        std::fprintf(stderr, "[FATAL] %s\n", reason);
+        std::fflush(stderr);
+        std::abort();
+    }
+    mutex.lock();
+    owner_host_tid.store(self_tid, std::memory_order_release);
+    SetCrashSchedulerMutexOwner(self_tid, t_current_thread_uid);
+}
+
+void TrackedMutex::unlock()
+{
+    owner_host_tid.store(0, std::memory_order_release);
+    SetCrashSchedulerMutexOwner(0, 0);
+    mutex.unlock();
+}
+
+bool TrackedMutex::try_lock()
+{
+    const uint64_t self_tid = platform::GetCurrentHostThreadId();
+    if (owner_host_tid.load(std::memory_order_acquire) == self_tid)
+    {
+        return false;
+    }
+    if (!mutex.try_lock())
+    {
+        return false;
+    }
+    owner_host_tid.store(self_tid, std::memory_order_release);
+    SetCrashSchedulerMutexOwner(self_tid, t_current_thread_uid);
+    return true;
+}
+
+bool TrackedMutex::IsHeldByCurrentThread() const
+{
+    const uint64_t self_tid = platform::GetCurrentHostThreadId();
+    return self_tid != 0 && owner_host_tid.load(std::memory_order_acquire) == self_tid;
+}
+
+bool TrackedMutex::UnlockIfHeldByCurrentThread()
+{
+    if (!IsHeldByCurrentThread())
+    {
+        return false;
+    }
+    unlock();
+    return true;
+}
+
 void Scheduler::Reset()
 {
     std::vector<std::shared_ptr<GuestThread>> old_threads;
     {
-        std::unique_lock<std::mutex> lock(mutex_);
+        std::unique_lock<TrackedMutex> lock(mutex_);
         shutdown_ = true;
         running_ = false;
         cv_.notify_all();
@@ -151,7 +209,7 @@ void Scheduler::Reset()
         GetKernelObjects().Remove(t->uid, KernelObjectType::kThread);
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     shutdown_ = false;
     const char* env = std::getenv("REPSP_SCHED_STATS");
     wake_latency_enabled_ = (env != nullptr && std::strcmp(env, "1") == 0);
@@ -161,7 +219,7 @@ void Scheduler::Reset()
 
 void Scheduler::SetCpuOps(const repsp_guest_cpu_ops* ops)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     ops_ = ops;
 }
 
@@ -269,13 +327,13 @@ void Scheduler::UpdateCurrentHostStackHighWaterLocked(const std::shared_ptr<Gues
 
 void Scheduler::SetGuestHostStackReserveBytes(size_t bytes)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     guest_host_stack_reserve_bytes_ = bytes;
 }
 
 size_t Scheduler::GetGuestHostStackReserveBytes() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     return guest_host_stack_reserve_bytes_;
 }
 
@@ -295,6 +353,7 @@ void Scheduler::ReportFatalStopLocked(const std::string& reason)
     {
         fatal_stop_ = true;
         fatal_stop_reason_ = reason;
+        SetCrashStopReason(fatal_stop_reason_.c_str());
     }
     if (active_thread_uid_ != 0)
     {
@@ -303,7 +362,42 @@ void Scheduler::ReportFatalStopLocked(const std::string& reason)
     cv_.notify_all();
 }
 
-void Scheduler::SwitchOutCurrentLocked(std::unique_lock<std::mutex>& lock, const std::shared_ptr<GuestThread>& cur)
+void Scheduler::AbortIfMutexHeldAfterGuardedRun(const platform::GuardedRunResult& res)
+{
+    if (!mutex_.UnlockIfHeldByCurrentThread())
+    {
+        return;
+    }
+
+    std::string orig_reason;
+    if (!res.succeeded)
+    {
+        orig_reason = res.stopped ? res.stop_reason : ("Guest hardware fault: " + res.description);
+    }
+    else
+    {
+        orig_reason = "GuardedRun returned while holding scheduler mutex";
+    }
+    const std::string fatal_reason = "Stop/fault while holding scheduler lock: " + orig_reason;
+
+    {
+        std::lock_guard<TrackedMutex> lock(mutex_);
+        ReportFatalStopLocked(fatal_reason);
+    }
+    SetCrashStopReason(fatal_reason.c_str());
+    platform::WriteLogFileLine("FATAL", fatal_reason.c_str());
+    std::fprintf(stderr, "[FATAL] %s\n", fatal_reason.c_str());
+    std::fflush(stderr);
+    std::abort();
+}
+
+[[noreturn]] void Scheduler::TriggerMutexHeldStopForTest()
+{
+    mutex_.lock();
+    platform::RaiseStop("simulated stop while holding scheduler mutex");
+}
+
+void Scheduler::SwitchOutCurrentLocked(std::unique_lock<TrackedMutex>& lock, const std::shared_ptr<GuestThread>& cur)
 {
     UpdateCurrentHostStackHighWaterLocked(cur);
     if (in_interrupt_)
@@ -359,7 +453,7 @@ void Scheduler::WakeWaitersLocked(WaitType type, KernelUid target_uid, int32_t r
     }
 }
 
-int32_t Scheduler::RunPendingCallbacksLocked(std::unique_lock<std::mutex>& lock, const std::shared_ptr<GuestThread>& cur)
+int32_t Scheduler::RunPendingCallbacksLocked(std::unique_lock<TrackedMutex>& lock, const std::shared_ptr<GuestThread>& cur)
 {
     if (!cur || !intr_enabled_ || ops_ == nullptr || ops_->call_guest == nullptr)
     {
@@ -433,12 +527,13 @@ void Scheduler::ThreadEntry(std::shared_ptr<GuestThread> self)
     {
         ~ResetCurrentThreadUid()
         {
+            ClearCurrentThreadExecInfo();
             t_current_thread_uid = 0;
         }
     } reset_uid_guard;
 
     {
-        std::unique_lock<std::mutex> lock(mutex_);
+        std::unique_lock<TrackedMutex> lock(mutex_);
         cv_.wait(lock, [&]()
         {
             return shutdown_ || fatal_stop_ || active_thread_uid_ == self->uid;
@@ -448,6 +543,11 @@ void Scheduler::ThreadEntry(std::shared_ptr<GuestThread> self)
             return;
         }
         t_current_thread_uid = self->uid;
+        SetCurrentThreadExecInfo(
+            platform::GetCurrentHostThreadId(),
+            self->uid,
+            self->name.c_str(),
+            self->current_priority);
         UpdateCurrentHostStackHighWaterLocked(self);
         if (ops_ != nullptr && ops_->restore != nullptr && !self->cpu_context.empty())
         {
@@ -462,8 +562,9 @@ void Scheduler::ThreadEntry(std::shared_ptr<GuestThread> self)
             ops_->call_guest(self->entry);
         }
     });
+    AbortIfMutexHeldAfterGuardedRun(res);
 
-    std::unique_lock<std::mutex> lock(mutex_);
+    std::unique_lock<TrackedMutex> lock(mutex_);
     UpdateCurrentHostStackHighWaterLocked(self);
     if (!res.succeeded)
     {
@@ -546,7 +647,7 @@ int32_t Scheduler::CreateThread(const std::string& name, uint32_t entry, int32_t
     t->initial_sp = (stack_addr + aligned_stack - 64u) & ~15u;
     t->state = ThreadState::kDormant;
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     if (ops_ != nullptr && ops_->context_size > 0)
     {
         t->cpu_context.resize(ops_->context_size, 0);
@@ -562,7 +663,7 @@ int32_t Scheduler::StartThread(KernelUid thread_uid, uint32_t arglen, uint32_t a
     std::shared_ptr<GuestThread> cur;
     bool should_yield = false;
     {
-        std::unique_lock<std::mutex> lock(mutex_);
+        std::unique_lock<TrackedMutex> lock(mutex_);
         t = FindThreadLocked(thread_uid);
         if (!t)
         {
@@ -670,7 +771,7 @@ int32_t Scheduler::StartThread(KernelUid thread_uid, uint32_t arglen, uint32_t a
 [[noreturn]] void Scheduler::ExitThread(int32_t status, bool delete_self)
 {
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         auto cur = FindThreadLocked(active_thread_uid_);
         if (cur)
         {
@@ -694,7 +795,7 @@ int32_t Scheduler::DeleteThread(KernelUid thread_uid)
 {
     std::shared_ptr<GuestThread> target;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         target = FindThreadLocked(thread_uid);
         if (!target)
         {
@@ -725,7 +826,7 @@ int32_t Scheduler::TerminateThread(KernelUid thread_uid, bool delete_target)
 {
     std::shared_ptr<GuestThread> target;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         target = FindThreadLocked(thread_uid);
         if (!target)
         {
@@ -759,7 +860,7 @@ int32_t Scheduler::TerminateThread(KernelUid thread_uid, bool delete_target)
 int32_t Scheduler::WaitThreadEnd(KernelUid thread_uid, uint32_t* timeout_us, bool allow_callbacks)
 {
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         auto target = FindThreadLocked(thread_uid);
         if (!target)
         {
@@ -775,13 +876,13 @@ int32_t Scheduler::WaitThreadEnd(KernelUid thread_uid, uint32_t* timeout_us, boo
 
 KernelUid Scheduler::GetCurrentThreadId() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     return active_thread_uid_;
 }
 
 int32_t Scheduler::GetThreadPriority(KernelUid thread_uid) const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     KernelUid target_uid = (thread_uid == 0) ? active_thread_uid_ : thread_uid;
     auto target = FindThreadLocked(target_uid);
     if (!target)
@@ -799,7 +900,7 @@ int32_t Scheduler::ChangeThreadPriority(KernelUid thread_uid, int32_t new_priori
     }
     bool should_yield = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         KernelUid target_uid = (thread_uid == 0) ? active_thread_uid_ : thread_uid;
         auto target = FindThreadLocked(target_uid);
         if (!target)
@@ -827,7 +928,7 @@ int32_t Scheduler::ChangeThreadPriority(KernelUid thread_uid, int32_t new_priori
 int32_t Scheduler::SleepThread(bool allow_callbacks)
 {
     {
-        std::unique_lock<std::mutex> lock(mutex_);
+        std::unique_lock<TrackedMutex> lock(mutex_);
         RaiseStopIfShuttingDownLocked(shutdown_ || fatal_stop_, lock);
         auto cur = FindThreadLocked(active_thread_uid_);
         if (!cur)
@@ -851,7 +952,7 @@ int32_t Scheduler::WakeupThread(KernelUid thread_uid)
 {
     bool should_yield = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         auto target = FindThreadLocked(thread_uid);
         if (!target)
         {
@@ -901,7 +1002,18 @@ int32_t Scheduler::DelayThread(uint32_t delay_us, bool allow_callbacks)
 
 int32_t Scheduler::WaitCurrent(WaitType type, KernelUid target_uid, const std::string& detail, const uint32_t* timeout_us, bool allow_callbacks)
 {
-    std::unique_lock<std::mutex> lock(mutex_);
+    return WaitCurrentIf(type, target_uid, detail, timeout_us, allow_callbacks, {});
+}
+
+int32_t Scheduler::WaitCurrentIf(
+    WaitType type,
+    KernelUid target_uid,
+    const std::string& detail,
+    const uint32_t* timeout_us,
+    bool allow_callbacks,
+    const std::function<bool()>& should_wait)
+{
+    std::unique_lock<TrackedMutex> lock(mutex_);
     RaiseStopIfShuttingDownLocked(shutdown_ || fatal_stop_, lock);
     if (in_interrupt_)
     {
@@ -918,6 +1030,11 @@ int32_t Scheduler::WaitCurrent(WaitType type, KernelUid target_uid, const std::s
     if (allow_callbacks)
     {
         RunPendingCallbacksLocked(lock, cur);
+    }
+
+    if (should_wait && !should_wait())
+    {
+        return kWaitOk;
     }
 
     cur->state = ThreadState::kWaiting;
@@ -951,7 +1068,7 @@ bool Scheduler::WakeOneWaiter(WaitType type, KernelUid target_uid, int32_t resul
     bool woke = false;
     bool should_yield = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         for (const auto& t : threads_)
         {
             if (t->state == ThreadState::kWaiting && t->wait_type == type && t->wait_target_uid == target_uid)
@@ -984,7 +1101,7 @@ size_t Scheduler::WakeAllWaiters(WaitType type, KernelUid target_uid, int32_t re
     size_t count = 0;
     bool should_yield = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         auto cur = FindThreadLocked(active_thread_uid_);
         for (const auto& t : threads_)
         {
@@ -1016,7 +1133,7 @@ bool Scheduler::WakeThreadFromWait(KernelUid thread_uid, int32_t result)
     bool woke = false;
     bool should_yield = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         auto t = FindThreadLocked(thread_uid);
         if (t && t->state == ThreadState::kWaiting)
         {
@@ -1047,7 +1164,7 @@ size_t Scheduler::WakeThreadsFromWait(const std::vector<KernelUid>& thread_uids,
     size_t count = 0;
     bool should_yield = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         auto cur = FindThreadLocked(active_thread_uid_);
         for (KernelUid uid : thread_uids)
         {
@@ -1077,7 +1194,7 @@ size_t Scheduler::WakeThreadsFromWait(const std::vector<KernelUid>& thread_uids,
 
 int32_t Scheduler::CreateCallback(const std::string& name, uint32_t entry, uint32_t common_arg)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     auto cur = FindThreadLocked(active_thread_uid_);
     auto cb = std::make_shared<GuestCallback>();
     cb->name = name;
@@ -1094,7 +1211,7 @@ int32_t Scheduler::CreateCallback(const std::string& name, uint32_t entry, uint3
 
 int32_t Scheduler::NotifyCallback(KernelUid cb_uid, int32_t arg)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     std::shared_ptr<GuestCallback> cb;
     if (GetKernelObjects().LookupAs(cb_uid, KernelObjectType::kCallback, &cb) != LookupStatus::kOk || !cb)
     {
@@ -1107,7 +1224,7 @@ int32_t Scheduler::NotifyCallback(KernelUid cb_uid, int32_t arg)
 
 int32_t Scheduler::CheckCallbacks()
 {
-    std::unique_lock<std::mutex> lock(mutex_);
+    std::unique_lock<TrackedMutex> lock(mutex_);
     RaiseStopIfShuttingDownLocked(shutdown_ || fatal_stop_, lock);
     auto cur = FindThreadLocked(active_thread_uid_);
     if (!cur)
@@ -1157,7 +1274,7 @@ int32_t Scheduler::CallGuestFunction(uint32_t entry, uint32_t a0, uint32_t a1, u
 
 uint32_t Scheduler::SuspendInterrupts()
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     uint32_t prev = intr_enabled_ ? 1u : 0u;
     intr_enabled_ = false;
     return prev;
@@ -1168,7 +1285,7 @@ void Scheduler::ResumeInterrupts(uint32_t prev_state)
     bool should_yield = false;
     bool should_deliver = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         intr_enabled_ = (prev_state != 0);
         if (intr_enabled_)
         {
@@ -1192,7 +1309,7 @@ void Scheduler::ResumeInterrupts(uint32_t prev_state)
 
 bool Scheduler::AreInterruptsEnabled() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     return intr_enabled_;
 }
 
@@ -1202,20 +1319,20 @@ void Scheduler::QueueInterrupt(uint32_t entry, uint32_t arg0, uint32_t arg1, uin
     {
         return;
     }
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     pending_interrupts_.push_back(PendingInterrupt{entry, arg0, arg1, gp_value});
     cv_.notify_all();
 }
 
 bool Scheduler::IsInInterrupt() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     return in_interrupt_;
 }
 
 uint32_t Scheduler::GetCurrentThreadGp() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     auto cur = FindThreadLocked(active_thread_uid_);
     if (cur && cur->gp_value != 0)
     {
@@ -1228,7 +1345,7 @@ uint32_t Scheduler::GetCurrentThreadGp() const
     return 0;
 }
 
-void Scheduler::DeliverPendingInterruptsLocked(std::unique_lock<std::mutex>& lock)
+void Scheduler::DeliverPendingInterruptsLocked(std::unique_lock<TrackedMutex>& lock)
 {
     if (!intr_enabled_ || in_interrupt_ || pending_interrupts_.empty() || shutdown_ || fatal_stop_)
     {
@@ -1282,6 +1399,7 @@ void Scheduler::DeliverPendingInterruptsLocked(std::unique_lock<std::mutex>& loc
             {
                 ops_->call_guest(intr.entry);
             });
+            AbortIfMutexHeldAfterGuardedRun(guard);
             lock.lock();
             if (!guard.succeeded && guard.stopped)
             {
@@ -1305,13 +1423,13 @@ void Scheduler::DeliverPendingInterruptsLocked(std::unique_lock<std::mutex>& loc
 
 void Scheduler::DeliverPendingInterrupts()
 {
-    std::unique_lock<std::mutex> lock(mutex_);
+    std::unique_lock<TrackedMutex> lock(mutex_);
     DeliverPendingInterruptsLocked(lock);
 }
 
 void Scheduler::YieldIfPreempted()
 {
-    std::unique_lock<std::mutex> lock(mutex_);
+    std::unique_lock<TrackedMutex> lock(mutex_);
     RaiseStopIfShuttingDownLocked(shutdown_ || fatal_stop_, lock);
     if (!intr_enabled_ || in_interrupt_ || active_thread_uid_ == 0 || t_current_thread_uid == 0)
     {
@@ -1329,7 +1447,7 @@ void Scheduler::YieldIfPreempted()
 
 void Scheduler::YieldCurrent()
 {
-    std::unique_lock<std::mutex> lock(mutex_);
+    std::unique_lock<TrackedMutex> lock(mutex_);
     RaiseStopIfShuttingDownLocked(shutdown_ || fatal_stop_, lock);
     if (in_interrupt_)
     {
@@ -1373,7 +1491,7 @@ void Scheduler::Poll()
 
 void Scheduler::SetExternalWaitSources(uint32_t count)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     external_wait_sources_ = count;
     cv_.notify_all();
 }
@@ -1384,7 +1502,7 @@ void Scheduler::AddExternalWaitSource(uint32_t count)
     {
         return;
     }
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     external_wait_sources_ += count;
     cv_.notify_all();
 }
@@ -1395,20 +1513,20 @@ void Scheduler::RemoveExternalWaitSource(uint32_t count)
     {
         return;
     }
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     external_wait_sources_ = (external_wait_sources_ > count) ? (external_wait_sources_ - count) : 0u;
     cv_.notify_all();
 }
 
 void Scheduler::NotifyExternalEvent()
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     cv_.notify_all();
 }
 
 void Scheduler::RequestStop(const std::string& reason)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     ReportFatalStopLocked(reason);
 }
 
@@ -1440,10 +1558,11 @@ std::string Scheduler::FormatDeadlockReportLocked() const
 void Scheduler::Run(KernelUid entry_thread_uid)
 {
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<TrackedMutex> lock(mutex_);
         auto entry = FindThreadLocked(entry_thread_uid);
         if (!entry)
         {
+            lock.unlock();
             platform::RaiseStop("Scheduler::Run called with unknown entry thread UID");
         }
         running_ = true;
@@ -1454,7 +1573,7 @@ void Scheduler::Run(KernelUid entry_thread_uid)
 
     // Start entry thread if still dormant.
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         auto entry = FindThreadLocked(entry_thread_uid);
         if (entry && entry->state == ThreadState::kDormant)
         {
@@ -1467,7 +1586,7 @@ void Scheduler::Run(KernelUid entry_thread_uid)
     std::string stop_reason;
 
     {
-        std::unique_lock<std::mutex> lock(mutex_);
+        std::unique_lock<TrackedMutex> lock(mutex_);
         while (running_ && !fatal_stop_)
         {
             if (active_thread_uid_ != 0)
@@ -1584,7 +1703,7 @@ void Scheduler::Run(KernelUid entry_thread_uid)
     // Join all host threads cleanly before propagating any RaiseStop to caller's GuardedRun.
     std::vector<std::shared_ptr<GuestThread>> all_threads;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<TrackedMutex> lock(mutex_);
         all_threads = threads_;
     }
     for (auto& t : all_threads)
@@ -1604,14 +1723,14 @@ void Scheduler::Run(KernelUid entry_thread_uid)
 
 void Scheduler::SetWakeLatencyProfiling(bool enabled)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     wake_latency_enabled_ = enabled;
     wake_stats_.enabled = enabled;
 }
 
 WakeLatencyStats Scheduler::GetWakeLatencyStats() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     return wake_stats_;
 }
 
@@ -1661,7 +1780,7 @@ std::string Scheduler::FormatWakeLatencyStats() const
 
 std::string Scheduler::FormatHostStackStats() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     std::ostringstream oss;
     oss << "=== Guest Host Stack High-Water ===\n";
     for (const auto& t : threads_)
@@ -1677,7 +1796,7 @@ std::string Scheduler::FormatHostStackStats() const
 
 std::vector<GuestThreadInfo> Scheduler::GetThreadsSnapshot() const
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<TrackedMutex> lock(mutex_);
     std::vector<GuestThreadInfo> out;
     out.reserve(threads_.size());
     for (const auto& t : threads_)

@@ -1,4 +1,5 @@
 target_sources(repsp_runtime PRIVATE
+    exec_history.cpp
     guest_memory.cpp
     nid_names.cpp
     nid_registry.cpp

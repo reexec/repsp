@@ -26,6 +26,7 @@ const repsp_guest_cpu_ops* repsp_recomp_get_cpu_ops(void);
 void repsp_recomp_hle_call(uint32_t nid);         /* an import thunk was called */
 void repsp_recomp_syscall(uint32_t code);         /* a raw syscall instruction */
 void repsp_recomp_poll(void);                     /* safe point: deliver pending interrupts */
+void repsp_note_guest_entry(uint32_t addr);       /* record guest function entry in ring buffer */
 
 /* C-callable guest memory access helpers */
 uint8_t* repsp_guest_base(void);
