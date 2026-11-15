@@ -57,6 +57,8 @@ struct GuestThreadInfo
     KernelUid wait_target_uid = 0;
     std::string wait_detail;
     int32_t exit_status = 0;
+    uint64_t host_stack_reserve_bytes = 0;
+    uint64_t host_stack_high_water_bytes = 0;
 };
 
 struct GuestCallback
@@ -100,6 +102,7 @@ public:
     static constexpr uint32_t kInterruptStackBase = 0x08010000u;
     static constexpr uint32_t kInterruptStackSize = 16u * 1024u;
     static constexpr uint32_t kInterruptStackTop = kInterruptStackBase + kInterruptStackSize - 16u;
+    static constexpr size_t kDefaultGuestHostStackReserveBytes = 64ull * 1024ull * 1024ull;
 
     struct PendingInterrupt
     {
@@ -166,9 +169,12 @@ public:
     void Run(KernelUid entry_thread_uid);
 
     // Diagnostics
+    void SetGuestHostStackReserveBytes(size_t bytes);
+    size_t GetGuestHostStackReserveBytes() const;
     void SetWakeLatencyProfiling(bool enabled);
     WakeLatencyStats GetWakeLatencyStats() const;
     std::string FormatWakeLatencyStats() const;
+    std::string FormatHostStackStats() const;
     std::vector<GuestThreadInfo> GetThreadsSnapshot() const;
 
 private:
@@ -203,6 +209,8 @@ private:
         std::vector<uint8_t> cpu_context;
         std::unique_ptr<platform::HostThread> host_thread;
         std::vector<KernelUid> callbacks;
+        uint64_t host_stack_reserve_bytes = 0;
+        uint64_t host_stack_high_water_bytes = 0;
     };
 
     std::shared_ptr<GuestThread> FindThreadLocked(KernelUid uid) const;
@@ -218,8 +226,10 @@ private:
     void ReportFatalStopLocked(const std::string& reason);
     std::string FormatDeadlockReportLocked() const;
     void FreeThreadStackLocked(const std::shared_ptr<GuestThread>& t);
+    void UpdateCurrentHostStackHighWaterLocked(const std::shared_ptr<GuestThread>& t);
 
     const repsp_guest_cpu_ops* ops_ = nullptr;
+    size_t guest_host_stack_reserve_bytes_ = kDefaultGuestHostStackReserveBytes;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
 

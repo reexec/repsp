@@ -251,6 +251,34 @@ bool Scheduler::HasHigherPriorityReadyLocked(int32_t priority) const
     return false;
 }
 
+void Scheduler::UpdateCurrentHostStackHighWaterLocked(const std::shared_ptr<GuestThread>& t)
+{
+    if (!t)
+    {
+        return;
+    }
+    platform::HostStackInfo info{};
+    if (platform::HostThread::GetCurrentThreadStackInfo(info))
+    {
+        if (info.committed_bytes > t->host_stack_high_water_bytes)
+        {
+            t->host_stack_high_water_bytes = info.committed_bytes;
+        }
+    }
+}
+
+void Scheduler::SetGuestHostStackReserveBytes(size_t bytes)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    guest_host_stack_reserve_bytes_ = bytes;
+}
+
+size_t Scheduler::GetGuestHostStackReserveBytes() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return guest_host_stack_reserve_bytes_;
+}
+
 void Scheduler::FreeThreadStackLocked(const std::shared_ptr<GuestThread>& t)
 {
     if (t && t->stack_block_uid > 0)
@@ -277,6 +305,7 @@ void Scheduler::ReportFatalStopLocked(const std::string& reason)
 
 void Scheduler::SwitchOutCurrentLocked(std::unique_lock<std::mutex>& lock, const std::shared_ptr<GuestThread>& cur)
 {
+    UpdateCurrentHostStackHighWaterLocked(cur);
     if (in_interrupt_)
     {
         ReportFatalStopLocked("Wait or yield called inside interrupt handler");
@@ -419,6 +448,7 @@ void Scheduler::ThreadEntry(std::shared_ptr<GuestThread> self)
             return;
         }
         t_current_thread_uid = self->uid;
+        UpdateCurrentHostStackHighWaterLocked(self);
         if (ops_ != nullptr && ops_->restore != nullptr && !self->cpu_context.empty())
         {
             ops_->restore(self->cpu_context.data());
@@ -434,6 +464,7 @@ void Scheduler::ThreadEntry(std::shared_ptr<GuestThread> self)
     });
 
     std::unique_lock<std::mutex> lock(mutex_);
+    UpdateCurrentHostStackHighWaterLocked(self);
     if (!res.succeeded)
     {
         if (res.stopped && res.stop_reason == kInternalThreadExitStop)
@@ -609,10 +640,16 @@ int32_t Scheduler::StartThread(KernelUid thread_uid, uint32_t arglen, uint32_t a
         if (!t->spawned)
         {
             t->spawned = true;
-            t->host_thread = std::make_unique<platform::HostThread>("guest:" + t->name, [this, t]()
-            {
-                ThreadEntry(t);
-            });
+            t->host_stack_reserve_bytes = guest_host_stack_reserve_bytes_;
+            platform::HostThreadOptions thread_opts{};
+            thread_opts.stack_reserve_bytes = guest_host_stack_reserve_bytes_;
+            t->host_thread = std::make_unique<platform::HostThread>(
+                "guest:" + t->name,
+                [this, t]()
+                {
+                    ThreadEntry(t);
+                },
+                thread_opts);
         }
 
         cur = FindThreadLocked(active_thread_uid_);
@@ -637,6 +674,7 @@ int32_t Scheduler::StartThread(KernelUid thread_uid, uint32_t arglen, uint32_t a
         auto cur = FindThreadLocked(active_thread_uid_);
         if (cur)
         {
+            UpdateCurrentHostStackHighWaterLocked(cur);
             cur->exit_status = status;
             cur->state = ThreadState::kDead;
             cur->delete_on_exit = delete_self;
@@ -1621,6 +1659,22 @@ std::string Scheduler::FormatWakeLatencyStats() const
     return oss.str();
 }
 
+std::string Scheduler::FormatHostStackStats() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::ostringstream oss;
+    oss << "=== Guest Host Stack High-Water ===\n";
+    for (const auto& t : threads_)
+    {
+        oss << "  [uid=0x" << std::hex << t->uid << std::dec
+            << "] name=\"" << t->name << "\""
+            << " reserve=" << t->host_stack_reserve_bytes << " B"
+            << " high_water=" << t->host_stack_high_water_bytes << " B"
+            << " (" << (t->host_stack_high_water_bytes / 1024u) << " KiB)\n";
+    }
+    return oss.str();
+}
+
 std::vector<GuestThreadInfo> Scheduler::GetThreadsSnapshot() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1642,6 +1696,8 @@ std::vector<GuestThreadInfo> Scheduler::GetThreadsSnapshot() const
         info.wait_target_uid = t->wait_target_uid;
         info.wait_detail = t->wait_detail;
         info.exit_status = t->exit_status;
+        info.host_stack_reserve_bytes = t->host_stack_reserve_bytes;
+        info.host_stack_high_water_bytes = t->host_stack_high_water_bytes;
         out.push_back(std::move(info));
     }
     return out;

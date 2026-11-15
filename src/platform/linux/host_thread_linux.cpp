@@ -1,6 +1,8 @@
 #include "repsp/platform/host_thread.h"
 
 #include <pthread.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <time.h>
 #include <utility>
 
@@ -25,10 +27,25 @@ struct HostThread::Impl
 };
 
 HostThread::HostThread(std::string name, std::function<void()> entry)
+    : HostThread(std::move(name), std::move(entry), HostThreadOptions{})
+{
+}
+
+HostThread::HostThread(std::string name, std::function<void()> entry, const HostThreadOptions& options)
     : impl_(std::make_unique<Impl>()), name_(std::move(name))
 {
     impl_->entry = std::move(entry);
-    pthread_create(&impl_->thread, nullptr, &Impl::ThreadProc, impl_.get());
+    pthread_attr_t attr;
+    const bool has_attr = (pthread_attr_init(&attr) == 0);
+    if (has_attr && options.stack_reserve_bytes > 0)
+    {
+        pthread_attr_setstacksize(&attr, options.stack_reserve_bytes);
+    }
+    pthread_create(&impl_->thread, has_attr ? &attr : nullptr, &Impl::ThreadProc, impl_.get());
+    if (has_attr)
+    {
+        pthread_attr_destroy(&attr);
+    }
     if (!name_.empty())
     {
         // Linux limits thread name to 16 bytes including null
@@ -82,6 +99,72 @@ uint64_t HostThread::GetCurrentThreadCpuTimeNs()
         return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts.tv_nsec);
     }
     return 0;
+}
+
+bool HostThread::GetCurrentThreadStackInfo(HostStackInfo& out)
+{
+    pthread_attr_t attr;
+    if (pthread_getattr_np(pthread_self(), &attr) != 0)
+    {
+        return false;
+    }
+    void* stack_addr = nullptr;
+    size_t stack_size = 0;
+    const int rc = pthread_attr_getstack(&attr, &stack_addr, &stack_size);
+    pthread_attr_destroy(&attr);
+    if (rc != 0 || stack_addr == nullptr || stack_size == 0)
+    {
+        return false;
+    }
+
+    volatile uint8_t probe = 0;
+    (void)probe;
+    out.stack_low = reinterpret_cast<uintptr_t>(stack_addr);
+    out.stack_high = out.stack_low + static_cast<uintptr_t>(stack_size);
+    out.current_sp = reinterpret_cast<uintptr_t>(const_cast<uint8_t*>(&probe));
+
+    // committed_bytes means the same as on Windows: how deep the stack has ever
+    // been touched, not how deep it is now. Pages of a thread stack become
+    // resident only when touched, so the deepest resident page marks the
+    // high-water. The scan starts at the deepest point found so far on this
+    // thread (or the current sp) and walks down until a non-resident page, so
+    // a call costs a few pages, not the whole reservation.
+    static thread_local uintptr_t t_deepest = 0;
+    const uintptr_t page = static_cast<uintptr_t>(sysconf(_SC_PAGESIZE));
+    uintptr_t deepest = out.current_sp & ~(page - 1u);
+    if (t_deepest != 0 && t_deepest >= out.stack_low && t_deepest < deepest)
+    {
+        deepest = t_deepest;
+    }
+    unsigned char resident[64];
+    while (deepest > out.stack_low)
+    {
+        uintptr_t chunk_low = deepest - 64u * page;
+        if (chunk_low < out.stack_low || chunk_low > deepest)
+        {
+            chunk_low = out.stack_low;
+        }
+        const size_t pages = static_cast<size_t>((deepest - chunk_low) / page);
+        if (pages == 0 || mincore(reinterpret_cast<void*>(chunk_low), pages * page, resident) != 0)
+        {
+            break;
+        }
+        size_t i = pages;
+        while (i > 0 && (resident[i - 1] & 1u) != 0)
+        {
+            --i;
+        }
+        deepest = chunk_low + i * page;
+        if (i > 0)
+        {
+            break; // found a non-resident page below the touched region
+        }
+    }
+    t_deepest = deepest;
+    out.committed_bytes = (out.stack_high > deepest)
+        ? static_cast<uint64_t>(out.stack_high - deepest)
+        : 0;
+    return true;
 }
 
 } // namespace repsp::platform
