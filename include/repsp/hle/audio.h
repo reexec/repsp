@@ -23,6 +23,7 @@ constexpr int32_t kAudioMaxSamples = 65472;
 struct AudioHleConfig
 {
     bool auto_attach_platform = true;
+    uint32_t target_latency_ms = 20;
 };
 
 struct ChannelStats
@@ -33,6 +34,8 @@ struct ChannelStats
     uint32_t rest_length = 0;
     uint64_t output_calls = 0;
     uint64_t frames_written = 0;
+    uint64_t underruns = 0;
+    uint64_t shortfall_frames = 0;
 };
 
 struct AudioStats
@@ -43,6 +46,21 @@ struct AudioStats
     uint64_t total_frames_written = 0;
     uint64_t total_frames_pulled = 0;
     uint64_t underruns = 0;
+    uint64_t empty_underruns = 0;
+    uint64_t partial_underruns = 0;
+    uint64_t shortfall_frames = 0;
+    uint64_t pull_calls = 0;
+    uint64_t pull_size_min = 0;
+    uint64_t pull_size_max = 0;
+    std::array<uint64_t, 5> pull_size_hist{}; // <=256, 257-512, 513-1024, 1025-2048, >2048
+    uint32_t target_latency_ms = 0;
+    uint32_t target_buffer_frames = 0;
+    uint64_t buffer_depth_frames = 0;
+    uint64_t buffer_depth_min = 0;
+    uint64_t buffer_depth_max = 0;
+    uint64_t buffer_depth_avg = 0;
+    uint64_t host_underruns = 0;
+    uint64_t host_shortfall_frames = 0;
 };
 
 // Register all 6 sceAudio NIDs and attach the pull mixer to the platform audio backend.

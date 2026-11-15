@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -18,6 +19,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace repsp::hle::audio
@@ -48,10 +50,16 @@ struct AudioChannelState
     bool wait_active = false;
     bool wait_for_zero = false;
     bool flushing_null = false;
+    bool active_audio = false;
     uint64_t output_calls = 0;
     uint64_t frames_written = 0;
+    uint64_t underruns = 0;
+    uint64_t shortfall_frames = 0;
+    uint64_t frames_since_last_data = 0;
     WavDumpStream dump;
 };
+
+constexpr size_t kClockQuantumFrames = 128;
 
 std::mutex g_audio_mutex;
 bool g_initialized = false;
@@ -61,6 +69,26 @@ uint64_t g_total_output_calls = 0;
 uint64_t g_total_frames_written = 0;
 uint64_t g_total_frames_pulled = 0;
 uint64_t g_underruns = 0;
+uint64_t g_empty_underruns = 0;
+uint64_t g_partial_underruns = 0;
+uint64_t g_shortfall_frames = 0;
+uint64_t g_pull_calls = 0;
+uint64_t g_pull_size_min = 0;
+uint64_t g_pull_size_max = 0;
+std::array<uint64_t, 5> g_pull_size_hist{};
+uint32_t g_target_latency_ms = 20;
+uint32_t g_target_buffer_frames = 0;
+std::deque<StereoFrame> g_intermediate_buf;
+uint64_t g_buffer_depth_frames = 0;
+uint64_t g_buffer_depth_min = 0;
+uint64_t g_buffer_depth_max = 0;
+uint64_t g_buffer_depth_sum = 0;
+uint64_t g_buffer_depth_samples = 0;
+uint64_t g_host_underruns = 0;
+uint64_t g_host_shortfall_frames = 0;
+std::condition_variable g_clock_cv;
+std::thread g_clock_thread;
+bool g_clock_stop = false;
 bool g_dump_enabled = false;
 std::string g_dump_base_path;
 
@@ -261,10 +289,14 @@ int32_t OutputChannelCommon(int32_t channel, int32_t left_vol, int32_t right_vol
         if (wait_for_zero)
         {
             ch.flushing_null = false;
+            ch.active_audio = false;
             ++ch.output_calls;
             ++g_total_output_calls;
             return 0;
         }
+
+        ch.active_audio = true;
+        ch.frames_since_last_data = 0;
 
         sample_count = ch.sample_count;
         const int32_t format = ch.format;
@@ -309,6 +341,7 @@ int32_t OutputChannelCommon(int32_t channel, int32_t left_vol, int32_t right_vol
         ++g_total_output_calls;
         g_total_frames_written += static_cast<uint64_t>(sample_count);
     }
+    g_clock_cv.notify_one();
 
     return sample_count;
 }
@@ -487,6 +520,191 @@ void AttachBackendPull(platform::AudioBackend* backend)
     });
 }
 
+bool AnyChannelHasDataLocked()
+{
+    for (const auto& ch : g_channels)
+    {
+        if (ch.reserved && !ch.queue.empty())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AnyActiveAudioChannelLocked()
+{
+    for (const auto& ch : g_channels)
+    {
+        if (ch.reserved && ch.active_audio && !ch.flushing_null)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void MixFromChannelsLocked(
+    int16_t* stereo_out,
+    size_t frame_count,
+    std::array<bool, kAudioMaxChannels>& to_wake,
+    bool& any_to_wake)
+{
+    std::array<size_t, kAudioMaxChannels> initial_depth{};
+    for (size_t c = 0; c < static_cast<size_t>(kAudioMaxChannels); ++c)
+    {
+        initial_depth[c] = g_channels[c].queue.size();
+    }
+
+    for (size_t f = 0; f < frame_count; ++f)
+    {
+        int32_t sum_l = 0;
+        int32_t sum_r = 0;
+        for (size_t c = 0; c < static_cast<size_t>(kAudioMaxChannels); ++c)
+        {
+            auto& ch = g_channels[c];
+            if (!ch.reserved || ch.queue.empty())
+            {
+                continue;
+            }
+            const StereoFrame s = ch.queue.front();
+            ch.queue.pop_front();
+            sum_l += s.left;
+            sum_r += s.right;
+        }
+        stereo_out[f * 2u] = ClampI16(sum_l);
+        stereo_out[f * 2u + 1u] = ClampI16(sum_r);
+    }
+
+    constexpr uint64_t kIdleCutoffFrames = static_cast<uint64_t>(kAudioSampleRate) / 10u; // 100 ms
+    for (size_t c = 0; c < static_cast<size_t>(kAudioMaxChannels); ++c)
+    {
+        auto& ch = g_channels[c];
+        if (initial_depth[c] > 0)
+        {
+            ch.frames_since_last_data = 0;
+        }
+        else if (ch.active_audio && !ch.flushing_null)
+        {
+            ch.frames_since_last_data += static_cast<uint64_t>(frame_count);
+            if (ch.frames_since_last_data >= kIdleCutoffFrames)
+            {
+                ch.active_audio = false;
+            }
+        }
+
+        if (ch.reserved && ch.active_audio && !ch.flushing_null && initial_depth[c] < frame_count)
+        {
+            const uint64_t shortfall = static_cast<uint64_t>(frame_count - initial_depth[c]);
+            ++g_underruns;
+            ++ch.underruns;
+            g_shortfall_frames += shortfall;
+            ch.shortfall_frames += shortfall;
+            if (initial_depth[c] == 0)
+            {
+                ++g_empty_underruns;
+            }
+            else
+            {
+                ++g_partial_underruns;
+            }
+        }
+        if (ch.flushing_null && ch.queue.empty())
+        {
+            ch.active_audio = false;
+        }
+        if (ch.reserved && ch.wait_active && WaitConditionMetLocked(ch, ch.wait_for_zero))
+        {
+            to_wake[c] = true;
+            any_to_wake = true;
+        }
+    }
+}
+
+void WakeAudioWaiters(const std::array<bool, kAudioMaxChannels>& to_wake, bool any_to_wake)
+{
+    if (!any_to_wake)
+    {
+        return;
+    }
+    auto& sched = runtime::GetScheduler();
+    for (size_t c = 0; c < static_cast<size_t>(kAudioMaxChannels); ++c)
+    {
+        if (to_wake[c])
+        {
+            sched.WakeAllWaiters(
+                runtime::WaitType::kAudio,
+                static_cast<runtime::KernelUid>(c),
+                runtime::Scheduler::kWaitOk);
+        }
+    }
+}
+
+void ClockThreadMain()
+{
+    std::array<int16_t, kClockQuantumFrames * 2u> chunk_buf{};
+    for (;;)
+    {
+        std::array<bool, kAudioMaxChannels> to_wake{};
+        bool any_to_wake = false;
+        {
+            std::unique_lock<std::mutex> lock(g_audio_mutex);
+            g_clock_cv.wait(lock, []()
+            {
+                return g_clock_stop ||
+                    (g_initialized && g_target_buffer_frames > 0 &&
+                     g_intermediate_buf.size() < g_target_buffer_frames &&
+                     AnyChannelHasDataLocked());
+            });
+            if (g_clock_stop)
+            {
+                break;
+            }
+            const size_t chunk = kClockQuantumFrames;
+            if (g_intermediate_buf.size() < g_target_buffer_frames)
+            {
+                std::fill_n(chunk_buf.data(), chunk * 2u, int16_t{0});
+                MixFromChannelsLocked(chunk_buf.data(), chunk, to_wake, any_to_wake);
+                for (size_t f = 0; f < chunk; ++f)
+                {
+                    g_intermediate_buf.push_back(StereoFrame{ chunk_buf[f * 2u], chunk_buf[f * 2u + 1u] });
+                }
+            }
+        }
+        WakeAudioWaiters(to_wake, any_to_wake);
+    }
+}
+
+void StopClockThread()
+{
+    {
+        std::lock_guard<std::mutex> lock(g_audio_mutex);
+        g_clock_stop = true;
+    }
+    g_clock_cv.notify_all();
+    if (g_clock_thread.joinable())
+    {
+        g_clock_thread.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_audio_mutex);
+        g_clock_stop = false;
+    }
+}
+
+void EnsureClockThreadStarted()
+{
+    if (g_target_buffer_frames == 0 || g_backend == nullptr)
+    {
+        return;
+    }
+    if (!g_clock_thread.joinable())
+    {
+        g_clock_stop = false;
+        g_clock_thread = std::thread(ClockThreadMain);
+    }
+}
+
 } // namespace
 
 void MixPull(int16_t* stereo_out, size_t frame_count)
@@ -499,6 +717,7 @@ void MixPull(int16_t* stereo_out, size_t frame_count)
 
     std::array<bool, kAudioMaxChannels> to_wake{};
     bool any_to_wake = false;
+    bool notify_clock = false;
 
     {
         std::lock_guard<std::mutex> lock(g_audio_mutex);
@@ -507,63 +726,66 @@ void MixPull(int16_t* stereo_out, size_t frame_count)
             return;
         }
 
-        std::array<size_t, kAudioMaxChannels> initial_depth{};
-        for (size_t c = 0; c < static_cast<size_t>(kAudioMaxChannels); ++c)
-        {
-            initial_depth[c] = g_channels[c].queue.size();
-        }
-
-        for (size_t f = 0; f < frame_count; ++f)
-        {
-            int32_t sum_l = 0;
-            int32_t sum_r = 0;
-            for (size_t c = 0; c < static_cast<size_t>(kAudioMaxChannels); ++c)
-            {
-                auto& ch = g_channels[c];
-                if (!ch.reserved || ch.queue.empty())
-                {
-                    continue;
-                }
-                const StereoFrame s = ch.queue.front();
-                ch.queue.pop_front();
-                sum_l += s.left;
-                sum_r += s.right;
-            }
-            stereo_out[f * 2u] = ClampI16(sum_l);
-            stereo_out[f * 2u + 1u] = ClampI16(sum_r);
-        }
-
         g_total_frames_pulled += static_cast<uint64_t>(frame_count);
-
-        for (size_t c = 0; c < static_cast<size_t>(kAudioMaxChannels); ++c)
+        ++g_pull_calls;
+        const uint64_t fc = static_cast<uint64_t>(frame_count);
+        if (g_pull_calls == 1 || fc < g_pull_size_min)
         {
-            const auto& ch = g_channels[c];
-            if (initial_depth[c] > 0 && initial_depth[c] < frame_count && !ch.flushing_null && ch.queue.empty())
+            g_pull_size_min = fc;
+        }
+        if (fc > g_pull_size_max)
+        {
+            g_pull_size_max = fc;
+        }
+        size_t hist_idx = 4;
+        if (fc <= 256u) hist_idx = 0;
+        else if (fc <= 512u) hist_idx = 1;
+        else if (fc <= 1024u) hist_idx = 2;
+        else if (fc <= 2048u) hist_idx = 3;
+        ++g_pull_size_hist[hist_idx];
+
+        if (g_target_buffer_frames > 0 && g_backend != nullptr)
+        {
+            const uint64_t depth = static_cast<uint64_t>(g_intermediate_buf.size());
+            g_buffer_depth_frames = depth;
+            if (g_buffer_depth_samples == 0 || depth < g_buffer_depth_min)
             {
-                ++g_underruns;
+                g_buffer_depth_min = depth;
             }
-            if (ch.reserved && ch.wait_active && WaitConditionMetLocked(ch, ch.wait_for_zero))
+            if (depth > g_buffer_depth_max)
             {
-                to_wake[c] = true;
-                any_to_wake = true;
+                g_buffer_depth_max = depth;
             }
+            g_buffer_depth_sum += depth;
+            ++g_buffer_depth_samples;
+
+            if (depth < frame_count && AnyActiveAudioChannelLocked())
+            {
+                ++g_host_underruns;
+                g_host_shortfall_frames += (frame_count - depth);
+            }
+
+            const size_t avail = std::min(frame_count, g_intermediate_buf.size());
+            for (size_t f = 0; f < avail; ++f)
+            {
+                const StereoFrame s = g_intermediate_buf.front();
+                g_intermediate_buf.pop_front();
+                stereo_out[f * 2u] = s.left;
+                stereo_out[f * 2u + 1u] = s.right;
+            }
+            notify_clock = (g_intermediate_buf.size() < g_target_buffer_frames);
+        }
+        else
+        {
+            MixFromChannelsLocked(stereo_out, frame_count, to_wake, any_to_wake);
         }
     }
 
-    if (any_to_wake)
+    if (notify_clock)
     {
-        auto& sched = runtime::GetScheduler();
-        for (size_t c = 0; c < static_cast<size_t>(kAudioMaxChannels); ++c)
-        {
-            if (to_wake[c])
-            {
-                sched.WakeAllWaiters(
-                    runtime::WaitType::kAudio,
-                    static_cast<runtime::KernelUid>(c),
-                    runtime::Scheduler::kWaitOk);
-            }
-        }
+        g_clock_cv.notify_one();
     }
+    WakeAudioWaiters(to_wake, any_to_wake);
 }
 
 void Register(const AudioHleConfig& config)
@@ -572,6 +794,16 @@ void Register(const AudioHleConfig& config)
 
     platform::AudioBackend* backend = config.auto_attach_platform ? platform::GetAudio() : nullptr;
     const char* dump_env = std::getenv("REPSP_AUDIO_DUMP");
+    const char* lat_env = std::getenv("REPSP_AUDIO_LATENCY_MS");
+    uint32_t latency_ms = config.target_latency_ms;
+    if (lat_env != nullptr && *lat_env != '\0')
+    {
+        const long v = std::strtol(lat_env, nullptr, 10);
+        if (v >= 0 && v <= 500)
+        {
+            latency_ms = static_cast<uint32_t>(v);
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(g_audio_mutex);
         for (auto& ch : g_channels)
@@ -583,6 +815,23 @@ void Register(const AudioHleConfig& config)
         g_total_frames_written = 0;
         g_total_frames_pulled = 0;
         g_underruns = 0;
+        g_empty_underruns = 0;
+        g_partial_underruns = 0;
+        g_shortfall_frames = 0;
+        g_pull_calls = 0;
+        g_pull_size_min = 0;
+        g_pull_size_max = 0;
+        g_pull_size_hist.fill(0);
+        g_target_latency_ms = latency_ms;
+        g_target_buffer_frames = (latency_ms * static_cast<uint32_t>(kAudioSampleRate)) / 1000u;
+        g_intermediate_buf.clear();
+        g_buffer_depth_frames = 0;
+        g_buffer_depth_min = 0;
+        g_buffer_depth_max = 0;
+        g_buffer_depth_sum = 0;
+        g_buffer_depth_samples = 0;
+        g_host_underruns = 0;
+        g_host_shortfall_frames = 0;
         g_backend = backend;
         g_dump_enabled = (dump_env != nullptr && *dump_env != '\0');
         g_dump_base_path = g_dump_enabled ? dump_env : "";
@@ -590,6 +839,7 @@ void Register(const AudioHleConfig& config)
     }
 
     AttachBackendPull(backend);
+    EnsureClockThreadStarted();
 
     auto& reg = runtime::GetNidRegistry();
     reg.RegisterByName("sceAudio", "sceAudioChReserve", HleAudioChReserve);
@@ -604,12 +854,15 @@ void Register(const AudioHleConfig& config)
 
 void Shutdown()
 {
+    StopClockThread();
+
     platform::AudioBackend* old_backend = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_audio_mutex);
         old_backend = g_backend;
         g_backend = nullptr;
         g_initialized = false;
+        g_intermediate_buf.clear();
         g_dump_enabled = false;
         g_dump_base_path.clear();
         for (auto& ch : g_channels)
@@ -636,6 +889,8 @@ void Shutdown()
 
 void SetBackend(platform::AudioBackend* backend)
 {
+    StopClockThread();
+
     platform::AudioBackend* old_backend = nullptr;
     bool initialized = false;
     {
@@ -652,6 +907,7 @@ void SetBackend(platform::AudioBackend* backend)
     if (initialized && backend != nullptr)
     {
         AttachBackendPull(backend);
+        EnsureClockThreadStarted();
     }
 }
 
@@ -669,6 +925,8 @@ AudioStats GetStats()
         dst.rest_length = static_cast<uint32_t>(src.queue.size());
         dst.output_calls = src.output_calls;
         dst.frames_written = src.frames_written;
+        dst.underruns = src.underruns;
+        dst.shortfall_frames = src.shortfall_frames;
         if (src.reserved)
         {
             ++stats.reserved_count;
@@ -678,6 +936,21 @@ AudioStats GetStats()
     stats.total_frames_written = g_total_frames_written;
     stats.total_frames_pulled = g_total_frames_pulled;
     stats.underruns = g_underruns;
+    stats.empty_underruns = g_empty_underruns;
+    stats.partial_underruns = g_partial_underruns;
+    stats.shortfall_frames = g_shortfall_frames;
+    stats.pull_calls = g_pull_calls;
+    stats.pull_size_min = g_pull_size_min;
+    stats.pull_size_max = g_pull_size_max;
+    stats.pull_size_hist = g_pull_size_hist;
+    stats.target_latency_ms = g_target_latency_ms;
+    stats.target_buffer_frames = g_target_buffer_frames;
+    stats.buffer_depth_frames = g_buffer_depth_frames;
+    stats.buffer_depth_min = g_buffer_depth_min;
+    stats.buffer_depth_max = g_buffer_depth_max;
+    stats.buffer_depth_avg = (g_buffer_depth_samples > 0) ? (g_buffer_depth_sum / g_buffer_depth_samples) : 0u;
+    stats.host_underruns = g_host_underruns;
+    stats.host_shortfall_frames = g_host_shortfall_frames;
     return stats;
 }
 
@@ -689,7 +962,19 @@ std::string FormatStats()
         << " output_calls=" << s.total_output_calls
         << " frames_written=" << s.total_frames_written
         << " frames_pulled=" << s.total_frames_pulled
-        << " underruns=" << s.underruns;
+        << " underruns=" << s.underruns
+        << "(empty=" << s.empty_underruns << ",partial=" << s.partial_underruns << ")"
+        << " shortfall_frames=" << s.shortfall_frames
+        << " host_ur=" << s.host_underruns
+        << "(short=" << s.host_shortfall_frames << ")"
+        << " buf_ms=" << s.target_latency_ms
+        << " buf_depth(avg/min/max/target)=" << s.buffer_depth_avg
+        << "/" << s.buffer_depth_min << "/" << s.buffer_depth_max << "/" << s.target_buffer_frames
+        << " pulls=" << s.pull_calls
+        << " pull_range=[" << s.pull_size_min << ".." << s.pull_size_max << "]"
+        << " pull_hist(<=256/512/1024/2048/>2048)="
+        << s.pull_size_hist[0] << "/" << s.pull_size_hist[1] << "/" << s.pull_size_hist[2]
+        << "/" << s.pull_size_hist[3] << "/" << s.pull_size_hist[4];
     for (int32_t i = 0; i < kAudioMaxChannels; ++i)
     {
         const auto& ch = s.channels[static_cast<size_t>(i)];
@@ -701,7 +986,9 @@ std::string FormatStats()
                 << ",fmt=" << (ch.format == kAudioFormatMono ? "mono" : "stereo")
                 << ",calls=" << ch.output_calls
                 << ",frames=" << ch.frames_written
-                << ",rest=" << ch.rest_length << ")";
+                << ",rest=" << ch.rest_length
+                << ",ur=" << ch.underruns
+                << ",short=" << ch.shortfall_frames << ")";
         }
     }
     return oss.str();
