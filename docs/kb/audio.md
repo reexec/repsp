@@ -34,11 +34,11 @@ sequenceDiagram
 
 * **이중 버퍼 규약**(**추정**, 합성 `audio_probe` 검증): 각 채널은 재생 중인 앞 버퍼와 다음 대기 버퍼의 최대 2단 버퍼를 가진다. 큐가 비어 있으면 즉시 복사하고 복귀하며, 대기 슬롯이 이미 차 있으면 소비될 때까지 `WaitType::kAudio`로 대기한다.
 * **`buf == 0` 드레인**(**추정**): `sceAudioOutputBlocking` / `sceAudioOutputPannedBlocking`에 널 버퍼 포인터(`0`)를 넘기면 새 샘플을 쓰지 않고 해당 채널의 남은 샘플이 모두 소비될 때까지 대기한 뒤 `0`을 반환한다.
-* **호스트 오디오 시계**(**확인됨**, `platform_probe` 및 `audio_probe` 합성 검증):
-  * 실제 장치가 열리면 `SDL_OpenAudioDeviceStream`의 pull 콜백이 오디오 장치 소비 속도에 맞춰 `MixPull()`을 호출한다.
-  * 헤드리스(`dummy`) 장치에서는 별도 워커 스레드가 호스트 단조 시계(`std::chrono::steady_clock`)로 44.1 kHz에 맞춰 `MixPull()`을 호출해 게스트 오디오 스레드의 진행 속도를 유지한다.
-  * 외부 스레드(오디오 콜백, VBlank 스레드)에서 `WakeAllWaiters`를 호출할 때는 TLS 기반 `t_current_thread_uid` 가드로 게스트 스레드가 아닌 호스트 스레드가 `YieldIfPreempted()`를 자기 자신에게 실행하지 않도록 보호한다.
-* **포화 믹싱 및 Underrun**: 8개 채널 출력은 64비트 누적기에서 합산한 뒤 `[-32768, 32767]`로 포화(saturate)된다. 모든 채널이 비어 있을 때 pull이 발생하면 무음(0)을 출력하고 `underruns` 통계를 증가시킨다.
+* **호스트 오디오 시계와 중간 버퍼**(**확인됨**, `platform_probe` 및 `audio_probe` 합성 검증):
+  * 호스트 OS 오디오 장치(예: Windows WASAPI 441프레임 = 10 ms)의 pull 단위와 게스트 채널 버퍼 크기(예: 256프레임 이중 버퍼 = 512프레임)가 정수 배수로 맞지 않으면 한 번의 콜백이 두 게스트 버퍼를 소비하고 다음 버퍼가 도착하기 전에 부분 underrun이 발생할 수 있다.
+  * 이를 막기 위해 호스트 측 오디오 시계 스레드(`ClockThreadMain`)가 `std::chrono::steady_clock` 기준으로 `128`-프레임 고정 단위(게스트 256프레임 블록의 약수)로 게스트 채널을 믹싱해 `target_latency_ms`(기본 20 ms = 882프레임) 크기의 중간 버퍼를 채우고, `SDL_OpenAudioDeviceStream` 콜백 또는 헤드리스(`dummy`) 소비자가 이 중간 버퍼에서 임의 크기로 꺼내 간다.
+  * 외부 스레드(오디오 시계/콜백, VBlank 스레드)에서 `WakeAllWaiters`를 호출할 때는 TLS 기반 `t_current_thread_uid` 가드로 게스트 스레드가 아닌 호스트 스레드가 `YieldIfPreempted()`를 자기 자신에게 실행하지 않도록 보호하며, 반대로 게스트 스레드가 긴 GE 디스플레이 리스트를 실행하는 도중에도 주기적 선점 지점에서 깨어난 오디오 스레드로 전환할 수 있어야 한다.
+* **포화 믹싱 및 Underrun**: 8개 채널 출력은 64비트 누적기에서 합산한 뒤 `[-32768, 32767]`로 포화(saturate)된다. 게스트 채널이 비어 있을 때의 믹싱 부족(`empty_underruns`/`partial_underruns`)과 호스트 pull 소비자가 중간 버퍼에서 읽을 때의 부족(`host_underruns`)을 구분해 집계한다.
 
 ---
 
@@ -69,5 +69,5 @@ This document describes PSP's hardware audio output library (`sceAudio`), coveri
 
 * **Double-buffered wait contract** (**Inferred**, tested by synthetic `audio_probe`): Each channel holds at most one active buffer and one queued buffer. If space is available, guest samples are copied immediately; otherwise the caller blocks on `WaitType::kAudio` until active samples drain.
 * **Null buffer drain (`buf == 0`)** (**Inferred**): Calling `sceAudioOutput*Blocking` with guest pointer `0` blocks until all pending samples on the channel drain, then returns `0`.
-* **Host pacing & preemption safety** (**Confirmed** via `platform_probe` and `audio_probe`): Real devices pace via SDL3's `SDL_OpenAudioDeviceStream` pull callback, while headless dummy mode paces on `std::chrono::steady_clock` at 44.1 kHz. `Wake*Wait*` checks thread-local guest UID (`t_current_thread_uid`) so external audio/VBlank host threads never call `YieldIfPreempted()` on themselves.
-* **Saturation & underruns**: Active channels sum in 64-bit fixed point (`volume / 0x8000`) and clamp to `int16_t`. Pulling when no channel has buffered frames outputs zeros and increments `underruns`.
+* **Host pacing, intermediate buffering & preemption safety** (**Confirmed** via `platform_probe` and `audio_probe`): Host audio callbacks (e.g., Windows WASAPI 441-frame / 10 ms pulls) do not generally align with guest 64-multiple buffers (e.g., 256-frame double buffers). A `128`-frame steady-clock mixing thread (`ClockThreadMain`) fills a host-side intermediate buffer (`target_latency_ms`, default 20 ms = 882 frames) from guest channels, while `SDL_OpenAudioDeviceStream` or dummy mode drains arbitrary callback sizes from it. `Wake*Wait*` checks thread-local guest UID (`t_current_thread_uid`) so external host threads never call `YieldIfPreempted()` on themselves, while long guest GE display lists yield at periodic preemption points so woken audio threads run promptly.
+* **Saturation & underruns**: Active channels sum in 64-bit fixed point (`volume / 0x8000`) and clamp to `int16_t`. Guest-side shortfalls (`empty_underruns`, `partial_underruns`) and host-side intermediate buffer shortfalls (`host_underruns`) are tracked separately.

@@ -8,9 +8,11 @@
 #include "repsp/runtime/scheduler.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #define TEST_ASSERT(cond)                                                              \
@@ -210,8 +212,77 @@ int main()
     Shutdown();
     repsp::platform::Shutdown();
     repsp::runtime::GetScheduler().Reset();
+
+    // 5 & 6. Intermediate buffer: large device pulls (1024 frames) with 256-sample channel.
+    {
+        class ProbeAudioBackend final : public repsp::platform::AudioBackend
+        {
+        public:
+            bool Initialize(const repsp::platform::AudioConfig&) override { return true; }
+            void Shutdown() override { cb_ = nullptr; }
+            void SetPullCallback(repsp::platform::AudioPullCallback cb) override { cb_ = std::move(cb); }
+            bool QueueAudio(const int16_t*, size_t) override { return true; }
+            void Pull(size_t frames, std::vector<int16_t>& out)
+            {
+                out.assign(frames * 2u, 0);
+                if (cb_) cb_(out.data(), frames);
+            }
+        private:
+            repsp::platform::AudioPullCallback cb_;
+        };
+
+        ProbeAudioBackend mock_backend;
+        AudioHleConfig lat_cfg{};
+        lat_cfg.auto_attach_platform = false;
+        lat_cfg.target_latency_ms = 30; // 1323 frames > 1024-frame pull
+        Register(lat_cfg);
+        SetBackend(&mock_backend);
+
+        const int32_t ch = CallNid(kNidChReserve, 0u, 256u, kAudioFormatStereo);
+        TEST_ASSERT(ch == 0);
+        for (int i = 0; i < 256; ++i)
+        {
+            mem.WriteU16(kGuestBuf0 + static_cast<uint32_t>(i * 4), 1000);
+            mem.WriteU16(kGuestBuf0 + static_cast<uint32_t>(i * 4 + 2), 1000);
+        }
+
+        // Write 6 blocks (1536 frames) so the 30 ms intermediate buffer fills above 1024 frames.
+        for (int b = 0; b < 6; ++b)
+        {
+            TEST_ASSERT(CallNid(kNidOutputBlocking, 0u, 0x8000u, kGuestBuf0) == 256);
+        }
+        // Give the clock thread a moment to pull into the intermediate buffer.
+        for (int w = 0; w < 50; ++w)
+        {
+            if (CallNid(kNidGetRestLength, 0u) <= 256)
+            {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        std::vector<int16_t> out;
+        mock_backend.Pull(1024u, out);
+        const AudioStats s5 = GetStats();
+        TEST_ASSERT(s5.target_latency_ms == 30u);
+        TEST_ASSERT(s5.target_buffer_frames == (30u * 44100u) / 1000u);
+        TEST_ASSERT(s5.host_underruns == 0u);
+        TEST_ASSERT(s5.buffer_depth_frames >= 1024u);
+        TEST_ASSERT(out[0] == 1000 && out[2047] == 1000);
+
+        // 6. Late producer: drain remaining frames without feeding new ones -> host_underruns > 0.
+        mock_backend.Pull(1024u, out);
+        mock_backend.Pull(1024u, out);
+        const AudioStats s6 = GetStats();
+        TEST_ASSERT(s6.host_underruns > 0u);
+        TEST_ASSERT(s6.host_shortfall_frames > 0u);
+
+        Shutdown();
+        repsp::runtime::GetScheduler().Reset();
+    }
+
     mem.Shutdown();
 
-    std::printf("[PASS] audio_probe: 4/4 checks passed\n");
+    std::printf("[PASS] audio_probe: 6/6 checks passed\n");
     return 0;
 }

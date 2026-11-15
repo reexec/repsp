@@ -5,6 +5,7 @@
 #include "repsp/recomp/guest_cpu.h"
 #include "repsp/runtime/kernel_objects.h"
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -67,6 +68,25 @@ struct GuestCallback
     KernelUid owner_thread_uid = 0;
     int32_t notify_count = 0;
     int32_t last_arg = 0;
+};
+
+struct WakeLatencyBucketStats
+{
+    uint64_t count = 0;
+    uint64_t total_us = 0;
+    uint64_t max_us = 0;
+    std::array<uint64_t, 9> hist{}; // <0.1, <0.5, <1, <2, <5, <10, <20, <50, >=50 ms
+};
+
+struct WakeLatencyStats
+{
+    bool enabled = false;
+    uint64_t total_wakes = 0;
+    uint64_t total_latency_us = 0;
+    uint64_t max_latency_us = 0;
+    std::array<uint64_t, 9> hist{};
+    std::array<WakeLatencyBucketStats, 10> by_wait_type{};
+    std::array<WakeLatencyBucketStats, 4> by_priority{}; // 0-15, 16-31, 32-63, 64+
 };
 
 class Scheduler
@@ -146,6 +166,9 @@ public:
     void Run(KernelUid entry_thread_uid);
 
     // Diagnostics
+    void SetWakeLatencyProfiling(bool enabled);
+    WakeLatencyStats GetWakeLatencyStats() const;
+    std::string FormatWakeLatencyStats() const;
     std::vector<GuestThreadInfo> GetThreadsSnapshot() const;
 
 private:
@@ -174,6 +197,9 @@ private:
         int32_t exit_status = 0;
         bool delete_on_exit = false;
         bool spawned = false;
+        bool has_wake_stamp = false;
+        WaitType wake_wait_type = WaitType::kNone;
+        std::chrono::steady_clock::time_point wake_time{};
         std::vector<uint8_t> cpu_context;
         std::unique_ptr<platform::HostThread> host_thread;
         std::vector<KernelUid> callbacks;
@@ -209,6 +235,8 @@ private:
     bool fatal_stop_ = false;
     std::string fatal_stop_reason_;
     uint32_t external_wait_sources_ = 0;
+    bool wake_latency_enabled_ = false;
+    WakeLatencyStats wake_stats_{};
 };
 
 Scheduler& GetScheduler();

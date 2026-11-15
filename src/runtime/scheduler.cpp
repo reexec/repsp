@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <sstream>
 
@@ -87,6 +88,38 @@ void RaiseStopIfShuttingDownLocked(bool stopping, std::unique_lock<std::mutex>& 
     }
 }
 
+size_t WakeLatencyBucketIndex(uint64_t us)
+{
+    if (us < 100u) return 0;
+    if (us < 500u) return 1;
+    if (us < 1000u) return 2;
+    if (us < 2000u) return 3;
+    if (us < 5000u) return 4;
+    if (us < 10000u) return 5;
+    if (us < 20000u) return 6;
+    if (us < 50000u) return 7;
+    return 8;
+}
+
+size_t PriorityBucketIndex(int32_t prio)
+{
+    if (prio < 16) return 0;
+    if (prio < 32) return 1;
+    if (prio < 64) return 2;
+    return 3;
+}
+
+void RecordWakeBucket(WakeLatencyBucketStats& b, size_t bucket, uint64_t us)
+{
+    ++b.count;
+    b.total_us += us;
+    if (us > b.max_us)
+    {
+        b.max_us = us;
+    }
+    ++b.hist[bucket];
+}
+
 } // namespace
 
 void Scheduler::Reset()
@@ -120,6 +153,10 @@ void Scheduler::Reset()
 
     std::lock_guard<std::mutex> lock(mutex_);
     shutdown_ = false;
+    const char* env = std::getenv("REPSP_SCHED_STATS");
+    wake_latency_enabled_ = (env != nullptr && std::strcmp(env, "1") == 0);
+    wake_stats_ = WakeLatencyStats{};
+    wake_stats_.enabled = wake_latency_enabled_;
 }
 
 void Scheduler::SetCpuOps(const repsp_guest_cpu_ops* ops)
@@ -150,6 +187,12 @@ void Scheduler::MakeReadyLocked(const std::shared_ptr<GuestThread>& t, bool at_f
     if (!t || t->state == ThreadState::kDead)
     {
         return;
+    }
+    if (wake_latency_enabled_ && t->state == ThreadState::kWaiting)
+    {
+        t->has_wake_stamp = true;
+        t->wake_wait_type = t->wait_type;
+        t->wake_time = std::chrono::steady_clock::now();
     }
     t->state = ThreadState::kReady;
     t->wait_type = WaitType::kNone;
@@ -1401,6 +1444,29 @@ void Scheduler::Run(KernelUid entry_thread_uid)
             auto next = PickNextReadyLocked();
             if (next)
             {
+                if (wake_latency_enabled_ && next->has_wake_stamp)
+                {
+                    const auto now = std::chrono::steady_clock::now();
+                    const uint64_t us = (now > next->wake_time)
+                        ? static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now - next->wake_time).count())
+                        : 0u;
+                    const size_t bucket = WakeLatencyBucketIndex(us);
+                    const size_t wt_idx = static_cast<size_t>(next->wake_wait_type);
+                    const size_t prio_idx = PriorityBucketIndex(next->current_priority);
+                    ++wake_stats_.total_wakes;
+                    wake_stats_.total_latency_us += us;
+                    if (us > wake_stats_.max_latency_us)
+                    {
+                        wake_stats_.max_latency_us = us;
+                    }
+                    ++wake_stats_.hist[bucket];
+                    if (wt_idx < wake_stats_.by_wait_type.size())
+                    {
+                        RecordWakeBucket(wake_stats_.by_wait_type[wt_idx], bucket, us);
+                    }
+                    RecordWakeBucket(wake_stats_.by_priority[prio_idx], bucket, us);
+                    next->has_wake_stamp = false;
+                }
                 next->state = ThreadState::kRunning;
                 active_thread_uid_ = next->uid;
                 cv_.notify_all();
@@ -1496,6 +1562,63 @@ void Scheduler::Run(KernelUid entry_thread_uid)
     {
         platform::RaiseStop(stop_reason.c_str());
     }
+}
+
+void Scheduler::SetWakeLatencyProfiling(bool enabled)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    wake_latency_enabled_ = enabled;
+    wake_stats_.enabled = enabled;
+}
+
+WakeLatencyStats Scheduler::GetWakeLatencyStats() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return wake_stats_;
+}
+
+std::string Scheduler::FormatWakeLatencyStats() const
+{
+    const WakeLatencyStats s = GetWakeLatencyStats();
+    if (!s.enabled)
+    {
+        return "wake_latency=disabled";
+    }
+    std::ostringstream oss;
+    const uint64_t avg_us = (s.total_wakes > 0) ? (s.total_latency_us / s.total_wakes) : 0u;
+    oss << "wakes=" << s.total_wakes
+        << " avg_us=" << avg_us
+        << " max_us=" << s.max_latency_us
+        << " hist(<0.1/0.5/1/2/5/10/20/50/>=50ms)="
+        << s.hist[0] << "/" << s.hist[1] << "/" << s.hist[2] << "/"
+        << s.hist[3] << "/" << s.hist[4] << "/" << s.hist[5] << "/"
+        << s.hist[6] << "/" << s.hist[7] << "/" << s.hist[8];
+    for (size_t i = 0; i < s.by_wait_type.size(); ++i)
+    {
+        const auto& b = s.by_wait_type[i];
+        if (b.count > 0)
+        {
+            oss << " | " << WaitTypeName(static_cast<WaitType>(i))
+                << "(n=" << b.count
+                << ",avg=" << (b.total_us / b.count) << "us"
+                << ",max=" << b.max_us << "us"
+                << ",>=10ms=" << (b.hist[6] + b.hist[7] + b.hist[8]) << ")";
+        }
+    }
+    static constexpr const char* kPrioNames[4] = { "p0-15", "p16-31", "p32-63", "p64+" };
+    for (size_t i = 0; i < s.by_priority.size(); ++i)
+    {
+        const auto& b = s.by_priority[i];
+        if (b.count > 0)
+        {
+            oss << " | " << kPrioNames[i]
+                << "(n=" << b.count
+                << ",avg=" << (b.total_us / b.count) << "us"
+                << ",max=" << b.max_us << "us"
+                << ",>=10ms=" << (b.hist[6] + b.hist[7] + b.hist[8]) << ")";
+        }
+    }
+    return oss.str();
 }
 
 std::vector<GuestThreadInfo> Scheduler::GetThreadsSnapshot() const

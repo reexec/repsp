@@ -234,6 +234,10 @@ void Reset()
     gpu::GetGeInterpreter().Reset();
     gpu::GetGeInterpreter().SetInterruptCallback(OnGeInterrupt);
     gpu::GetGeInterpreter().SetListDoneCallback(OnGeListDone);
+    gpu::GetGeInterpreter().SetYieldCallback([]()
+    {
+        runtime::GetScheduler().YieldIfPreempted();
+    });
     if (gpu::GetRenderBackend()->init)
     {
         gpu::GetRenderBackend()->init(480, 272);
