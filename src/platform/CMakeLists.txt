@@ -1,5 +1,6 @@
 if(WIN32)
     target_sources(repsp_platform PRIVATE
+        win32/crash_handler_win32.cpp
         win32/dynlib_win32.cpp
         win32/virtual_memory_win32.cpp
         win32/guarded_run_win32.cpp
@@ -8,6 +9,7 @@ if(WIN32)
     )
 else()
     target_sources(repsp_platform PRIVATE
+        linux/crash_handler_linux.cpp
         linux/dynlib_linux.cpp
         linux/virtual_memory_linux.cpp
         linux/guarded_run_linux.cpp
@@ -18,5 +20,6 @@ else()
 endif()
 
 target_sources(repsp_platform PRIVATE
+    crash_handler_common.cpp
     sdl/sdl_platform.cpp
 )
