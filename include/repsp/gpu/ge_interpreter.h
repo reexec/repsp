@@ -31,6 +31,7 @@ enum class GeInterruptEvent
 
 using GeInterruptCallback = std::function<void(GeInterruptEvent event, int32_t cb_id, uint32_t arg)>;
 using GeListDoneCallback = std::function<void(uint32_t list_id)>;
+using GeYieldCallback = std::function<void()>;
 
 struct GeStats
 {
@@ -52,6 +53,11 @@ struct GeStats
     uint32_t fbw = 0;
     uint32_t psm = 3;
     uint32_t vtype = 0;
+    uint64_t list_time_calls = 0;
+    uint64_t list_time_total_us = 0;
+    uint64_t list_time_max_us = 0;
+    uint64_t list_time_hist[8] = {0}; // <0.5, <1, <2, <5, <10, <20, <50, >=50 ms
+    uint64_t yield_points = 0;
 };
 
 struct LightingState
@@ -105,6 +111,7 @@ public:
     void Reset();
     void SetInterruptCallback(GeInterruptCallback cb);
     void SetListDoneCallback(GeListDoneCallback cb);
+    void SetYieldCallback(GeYieldCallback cb);
 
     // Enqueue a display list and run synchronously until END/FINISH or stall.
     // Returns positive list UID on success, or negative kernel error code.
@@ -167,6 +174,8 @@ private:
     GeStats stats_;
     GeInterruptCallback interrupt_cb_;
     GeListDoneCallback list_done_cb_;
+    GeYieldCallback yield_cb_;
+    bool running_list_ = false;
 
     DrawState ds_;
     LightingState lt_;

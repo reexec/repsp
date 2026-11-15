@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #define TEST_ASSERT(cond) \
@@ -41,6 +42,18 @@ uint32_t g_last_finish_arg1 = 0;
 
 constexpr uint32_t kSignalFuncAddr = 0x08901000u;
 constexpr uint32_t kFinishFuncAddr = 0x08901100u;
+constexpr uint32_t kPreemptLowEntry = 0x08901200u;
+constexpr uint32_t kPreemptHighEntry = 0x08901300u;
+
+uint32_t g_preempt_list1_addr = 0;
+uint32_t g_preempt_list2_addr = 0;
+int32_t g_preempt_hi_tid = -1;
+bool g_long_list_done = false;
+bool g_hi_woke_during_ge = false;
+int32_t g_hi_enqueued_list_id = -1;
+
+uint32_t InvokeNid(repsp::runtime::NidRegistry& reg, uint32_t nid,
+                   uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3);
 
 void MockSave(void* ctx) { std::memcpy(ctx, &g_cpu, sizeof(g_cpu)); }
 void MockRestore(const void* ctx) { std::memcpy(&g_cpu, ctx, sizeof(g_cpu)); }
@@ -61,6 +74,37 @@ void MockCallGuest(uint32_t addr)
         ++g_finish_calls;
         g_last_finish_arg0 = g_cpu.gpr[4];
         g_last_finish_arg1 = g_cpu.gpr[5];
+    }
+    else if (addr == kPreemptLowEntry)
+    {
+        auto& sched = repsp::runtime::GetScheduler();
+        auto& nids = repsp::runtime::GetNidRegistry();
+        TEST_ASSERT(sched.StartThread(g_preempt_hi_tid, 0, 0) == 0);
+        const int32_t list_id = static_cast<int32_t>(
+            InvokeNid(nids, 0xAB49E76Au, g_preempt_list1_addr, 0, static_cast<uint32_t>(-1), 0));
+        TEST_ASSERT(list_id > 0);
+        g_long_list_done = true;
+        sched.ExitThread(0, false);
+    }
+    else if (addr == kPreemptHighEntry)
+    {
+        auto& sched = repsp::runtime::GetScheduler();
+        auto& nids = repsp::runtime::GetNidRegistry();
+        std::thread waker([&sched]()
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            sched.WakeupThread(g_preempt_hi_tid);
+        });
+        waker.detach();
+        TEST_ASSERT(sched.SleepThread(false) == 0);
+        if (!g_long_list_done)
+        {
+            g_hi_woke_during_ge = true;
+            g_hi_enqueued_list_id = static_cast<int32_t>(
+                InvokeNid(nids, 0xAB49E76Au, g_preempt_list2_addr, 0, static_cast<uint32_t>(-1), 0));
+            TEST_ASSERT(g_hi_enqueued_list_id > 0);
+        }
+        sched.ExitThread(0, false);
     }
 }
 
@@ -663,6 +707,74 @@ int main()
         TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
         TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 35, 205) == 0xFF112233u);
         TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 45, 205) == 0xFF00AA00u);
+    }
+
+    // 13. Preemption during long GE list & re-entrant ListEnQueue ordering
+    {
+        auto& psched = repsp::runtime::GetScheduler();
+        psched.SetWakeLatencyProfiling(true);
+
+        constexpr uint32_t kPreemptList1 = 0x08920000u;
+        constexpr uint32_t kPreemptList2 = 0x08928000u;
+        constexpr uint32_t kPreemptVert1 = 0x08914000u;
+        constexpr uint32_t kPreemptVert2 = 0x08914100u;
+        g_preempt_list1_addr = kPreemptList1;
+        g_preempt_list2_addr = kPreemptList2;
+        g_long_list_done = false;
+        g_hi_woke_during_ge = false;
+        g_hi_enqueued_list_id = -1;
+
+        const VertexColorPos2D rect1[2] = {
+            { 0xFF224466u, 0, 0, 0, 0 },
+            { 0xFF224466u, 220, 220, 0, 0 },
+        };
+        const VertexColorPos2D rect2[2] = {
+            { 0xFF998877u, 5, 5, 0, 0 },
+            { 0xFF998877u, 25, 25, 0, 0 },
+        };
+        std::memcpy(mem.Translate(kPreemptVert1), rect1, sizeof(rect1));
+        std::memcpy(mem.Translate(kPreemptVert2), rect2, sizeof(rect2));
+
+        std::vector<uint32_t> cmds1 = {
+            GeCmd(kOpFbp, kFbAddr & 0x00FFFFFFu),
+            GeCmd(kOpFbw, ((kFbAddr >> 8) & 0x00FF0000u) | kFbw),
+            GeCmd(kOpPsm, 3u),
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2)),
+            GeCmd(kOpBase, (kPreemptVert1 >> 8) & 0x00FF0000u),
+        };
+        for (int i = 0; i < 3000; ++i)
+        {
+            cmds1.push_back(GeCmd(kOpVaddr, kPreemptVert1 & 0x00FFFFFFu));
+            cmds1.push_back(GeCmd(kOpPrim, (6u << 16) | 2u));
+        }
+        cmds1.push_back(GeCmd(kOpFinish, 0));
+        cmds1.push_back(GeCmd(kOpEnd, 0));
+        WriteList(kPreemptList1, cmds1);
+
+        const std::vector<uint32_t> cmds2 = {
+            GeCmd(kOpFbp, kFbAddr & 0x00FFFFFFu),
+            GeCmd(kOpFbw, ((kFbAddr >> 8) & 0x00FF0000u) | kFbw),
+            GeCmd(kOpPsm, 3u),
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2)),
+            GeCmd(kOpBase, (kPreemptVert2 >> 8) & 0x00FF0000u),
+            GeCmd(kOpVaddr, kPreemptVert2 & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u),
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kPreemptList2, cmds2);
+
+        const int32_t low_tid = psched.CreateThread("ge_low", kPreemptLowEntry, 0x30, 0x4000, 0, 0);
+        g_preempt_hi_tid = psched.CreateThread("ge_hi", kPreemptHighEntry, 0x10, 0x4000, 0, 0);
+        TEST_ASSERT(low_tid > 0 && g_preempt_hi_tid > 0);
+        psched.Run(low_tid);
+
+        TEST_ASSERT(g_long_list_done);
+        TEST_ASSERT(g_hi_woke_during_ge);
+        TEST_ASSERT(g_hi_enqueued_list_id > 0);
+        TEST_ASSERT(repsp::hle::ge::GetStats().yield_points > 0);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 10, 10) == 0xFF998877u);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 50, 50) == 0xFF224466u);
     }
 
     std::printf("ge_probe passed.\n");

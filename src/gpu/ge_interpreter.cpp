@@ -5,6 +5,7 @@
 #include "repsp/platform/guarded_run.h"
 #include "repsp/runtime/guest_memory.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -392,6 +393,8 @@ void GeInterpreter::Reset()
     stats_ = GeStats{};
     interrupt_cb_ = nullptr;
     list_done_cb_ = nullptr;
+    yield_cb_ = nullptr;
+    running_list_ = false;
 
     ds_ = DrawState{};
     std::memset(clut_, 0, sizeof(clut_));
@@ -415,6 +418,11 @@ void GeInterpreter::SetInterruptCallback(GeInterruptCallback cb)
 void GeInterpreter::SetListDoneCallback(GeListDoneCallback cb)
 {
     list_done_cb_ = std::move(cb);
+}
+
+void GeInterpreter::SetYieldCallback(GeYieldCallback cb)
+{
+    yield_cb_ = std::move(cb);
 }
 
 bool GeInterpreter::HandleLightCmd(uint32_t cmd, uint32_t arg)
@@ -493,7 +501,25 @@ void GeInterpreter::DrawPrim(uint32_t type, uint32_t count)
 
     if (n > 0)
     {
-        GetRenderBackend()->draw(static_cast<int>(type), v, static_cast<int>(n), &ds_);
+        auto* backend = GetRenderBackend();
+        const uint32_t step = (type == kPrimTriangles) ? 3u : ((type == kPrimSprites || type == kPrimLines) ? 2u : 0u);
+        const uint32_t chunk = (type == kPrimTriangles) ? 24u : 16u;
+        if (step != 0u && n > chunk && yield_cb_)
+        {
+            for (uint32_t off = 0; off < n; off += chunk)
+            {
+                const uint32_t cnt = (n - off < chunk) ? (n - off) : chunk;
+                backend->draw(static_cast<int>(type), v + off, static_cast<int>(cnt), &ds_);
+                if (off + cnt < n)
+                {
+                    yield_cb_();
+                }
+            }
+        }
+        else
+        {
+            backend->draw(static_cast<int>(type), v, static_cast<int>(n), &ds_);
+        }
     }
 }
 
@@ -508,7 +534,58 @@ void GeInterpreter::FinishSlot(QueueSlot* q)
 
 void GeInterpreter::RunList(QueueSlot* q)
 {
+    struct RunListTimer
+    {
+        GeStats& stats;
+        std::chrono::steady_clock::time_point start;
+        ~RunListTimer()
+        {
+            const auto end = std::chrono::steady_clock::now();
+            const uint64_t us = (end > start)
+                ? static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count())
+                : 0u;
+            ++stats.list_time_calls;
+            stats.list_time_total_us += us;
+            if (us > stats.list_time_max_us)
+            {
+                stats.list_time_max_us = us;
+            }
+            size_t b = 7;
+            if (us < 500u) b = 0;
+            else if (us < 1000u) b = 1;
+            else if (us < 2000u) b = 2;
+            else if (us < 5000u) b = 3;
+            else if (us < 10000u) b = 4;
+            else if (us < 20000u) b = 5;
+            else if (us < 50000u) b = 6;
+            ++stats.list_time_hist[b];
+        }
+    } run_timer{ stats_, std::chrono::steady_clock::now() };
+
     uint64_t budget = 1u << 22;
+    uint32_t ops_since_check = 0;
+    uint32_t prims_since_check = 0;
+    auto last_yield_check = std::chrono::steady_clock::now();
+    auto maybe_yield = [&](bool force_check)
+    {
+        if (!yield_cb_)
+        {
+            return;
+        }
+        if (!force_check && ops_since_check < 256u && prims_since_check < 2u)
+        {
+            return;
+        }
+        ops_since_check = 0;
+        prims_since_check = 0;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_yield_check >= std::chrono::microseconds(1000))
+        {
+            last_yield_check = now;
+            ++stats_.yield_points;
+            yield_cb_();
+        }
+    };
 
     if (!q->started)
     {
@@ -543,6 +620,8 @@ void GeInterpreter::RunList(QueueSlot* q)
             ++stats_.prims[type];
             stats_.vertices += count;
             DrawPrim(type, count);
+            ++prims_since_check;
+            maybe_yield(count >= 64u);
             break;
         }
         case kGeBezier:
@@ -751,6 +830,8 @@ void GeInterpreter::RunList(QueueSlot* q)
             stats_.op_last[cmd] = arg;
             break;
         }
+        ++ops_since_check;
+        maybe_yield(false);
     }
 
     platform::RaiseStop("GE command budget exhausted");
@@ -778,6 +859,18 @@ const GeInterpreter::QueueSlot* GeInterpreter::FindQueue(int32_t list_id) const
 
 void GeInterpreter::DrainQueue()
 {
+    if (running_list_)
+    {
+        return;
+    }
+    struct RunningGuard
+    {
+        bool& flag;
+        ~RunningGuard() { flag = false; }
+    };
+    running_list_ = true;
+    RunningGuard guard{ running_list_ };
+
     while (order_count_ > 0)
     {
         QueueSlot* q = &queues_[order_[0]];
@@ -845,7 +938,10 @@ int32_t GeInterpreter::Enqueue(uint32_t list_addr, uint32_t stall_addr, int32_t 
     }
     ++order_count_;
 
-    DrainQueue();
+    if (!running_list_)
+    {
+        DrainQueue();
+    }
     return static_cast<int32_t>(q->id);
 }
 
@@ -861,7 +957,10 @@ int32_t GeInterpreter::UpdateStallAddr(int32_t list_id, uint32_t stall_addr)
     if (order_count_ > 0 && &queues_[order_[0]] == q && !q->done && !q->paused)
     {
         q->stalled = false;
-        DrainQueue();
+        if (!running_list_)
+        {
+            DrainQueue();
+        }
     }
     return 0;
 }
@@ -877,6 +976,7 @@ int32_t GeInterpreter::GetListState(int32_t list_id) const
     if (q->done) return kGeListDone;
     if (q->paused) return kGeListPaused;
     if (q->stalled) return kGeListStalled;
+    if (running_list_ && order_count_ > 0 && &queues_[order_[0]] == q) return kGeListRunning;
     return kGeListQueued;
 }
 
@@ -903,7 +1003,10 @@ int32_t GeInterpreter::Continue()
         if (q->used && q->paused && !q->done)
         {
             q->paused = false;
-            DrainQueue();
+            if (!running_list_)
+            {
+                DrainQueue();
+            }
         }
     }
     return 0;
@@ -935,6 +1038,19 @@ std::string GeInterpreter::FormatStats() const
         }
     }
     oss << "    pixels written: " << GetRenderedPixelCount() << "\n";
+    if (stats_.list_time_calls > 0)
+    {
+        const uint64_t avg_us = stats_.list_time_total_us / stats_.list_time_calls;
+        oss << "    list run time: runs=" << stats_.list_time_calls
+            << " avg_us=" << avg_us
+            << " max_us=" << stats_.list_time_max_us
+            << " hist(<0.5/1/2/5/10/20/50/>=50ms)="
+            << stats_.list_time_hist[0] << "/" << stats_.list_time_hist[1] << "/"
+            << stats_.list_time_hist[2] << "/" << stats_.list_time_hist[3] << "/"
+            << stats_.list_time_hist[4] << "/" << stats_.list_time_hist[5] << "/"
+            << stats_.list_time_hist[6] << "/" << stats_.list_time_hist[7]
+            << " yields=" << stats_.yield_points << "\n";
+    }
     if (stats_.unknown_commands > 0)
     {
         oss << "    " << stats_.unknown_commands << " commands not individually decoded:\n";
