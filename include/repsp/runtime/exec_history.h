@@ -16,6 +16,9 @@ void ClearCurrentThreadExecInfo();
 
 void SetCrashStopReason(const char* reason);
 void SetCrashSchedulerMutexOwner(uint64_t host_tid, int32_t guest_uid);
+// Records, once, the thread found holding the scheduler mutex by boundary
+// recovery. Unlike the live owner, this does not change after the release.
+void SetCrashSchedulerMutexRecovery(uint64_t host_tid, int32_t guest_uid);
 
 void ClearCrashThreadSnapshots();
 void UpdateCrashThreadSnapshot(
