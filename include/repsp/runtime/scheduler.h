@@ -6,6 +6,7 @@
 #include "repsp/runtime/kernel_objects.h"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -15,8 +16,24 @@
 #include <string>
 #include <vector>
 
+namespace repsp::platform
+{
+struct GuardedRunResult;
+}
+
 namespace repsp::runtime
 {
+
+struct TrackedMutex
+{
+    std::mutex mutex;
+    std::atomic<uint64_t> owner_host_tid{0};
+    void lock();
+    void unlock();
+    bool try_lock();
+    bool IsHeldByCurrentThread() const;
+    bool UnlockIfHeldByCurrentThread();
+};
 
 enum class ThreadState
 {
@@ -133,6 +150,13 @@ public:
 
     // Generic wait / wake primitives for synchronization objects and later HLE modules
     int32_t WaitCurrent(WaitType type, KernelUid target_uid, const std::string& detail, const uint32_t* timeout_us, bool allow_callbacks);
+    int32_t WaitCurrentIf(
+        WaitType type,
+        KernelUid target_uid,
+        const std::string& detail,
+        const uint32_t* timeout_us,
+        bool allow_callbacks,
+        const std::function<bool()>& should_wait);
     bool WakeOneWaiter(WaitType type, KernelUid target_uid, int32_t result);
     size_t WakeAllWaiters(WaitType type, KernelUid target_uid, int32_t result);
     bool WakeThreadFromWait(KernelUid thread_uid, int32_t result);
@@ -176,6 +200,7 @@ public:
     std::string FormatWakeLatencyStats() const;
     std::string FormatHostStackStats() const;
     std::vector<GuestThreadInfo> GetThreadsSnapshot() const;
+    [[noreturn]] void TriggerMutexHeldStopForTest();
 
 private:
     struct GuestThread
@@ -218,20 +243,21 @@ private:
     void RemoveFromReadyQueueLocked(KernelUid uid);
     std::shared_ptr<GuestThread> PickNextReadyLocked();
     bool HasHigherPriorityReadyLocked(int32_t priority) const;
-    void SwitchOutCurrentLocked(std::unique_lock<std::mutex>& lock, const std::shared_ptr<GuestThread>& cur);
-    void DeliverPendingInterruptsLocked(std::unique_lock<std::mutex>& lock);
+    void SwitchOutCurrentLocked(std::unique_lock<TrackedMutex>& lock, const std::shared_ptr<GuestThread>& cur);
+    void DeliverPendingInterruptsLocked(std::unique_lock<TrackedMutex>& lock);
     void WakeWaitersLocked(WaitType type, KernelUid target_uid, int32_t result, bool wake_all);
-    int32_t RunPendingCallbacksLocked(std::unique_lock<std::mutex>& lock, const std::shared_ptr<GuestThread>& cur);
+    int32_t RunPendingCallbacksLocked(std::unique_lock<TrackedMutex>& lock, const std::shared_ptr<GuestThread>& cur);
     void ThreadEntry(std::shared_ptr<GuestThread> self);
     void ReportFatalStopLocked(const std::string& reason);
+    void AbortIfMutexHeldAfterGuardedRun(const platform::GuardedRunResult& res);
     std::string FormatDeadlockReportLocked() const;
     void FreeThreadStackLocked(const std::shared_ptr<GuestThread>& t);
     void UpdateCurrentHostStackHighWaterLocked(const std::shared_ptr<GuestThread>& t);
 
     const repsp_guest_cpu_ops* ops_ = nullptr;
     size_t guest_host_stack_reserve_bytes_ = kDefaultGuestHostStackReserveBytes;
-    mutable std::mutex mutex_;
-    std::condition_variable cv_;
+    mutable TrackedMutex mutex_;
+    std::condition_variable_any cv_;
 
     std::vector<std::shared_ptr<GuestThread>> threads_;
     std::vector<KernelUid> ready_queue_;

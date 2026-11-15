@@ -165,6 +165,7 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 * `GuardedRun(fn)`: 함수를 보호 컨텍스트 내에서 실행합니다. 결함 또는 정지가 발생하면 `GuardedRunResult`를 반환합니다 (`succeeded`, `stopped`, `stop_reason`).
 * `repsp::platform::RaiseStop(reason)` 및 C API `repsp_raise_stop(reason)`: 현재 실행 중인 가장 안쪽 `GuardedRun`을 정지시키고 `stop_reason`을 전달합니다. Win32에서는 전용 SEH 예외 코드(`0xE0000001`)를 사용하고 Linux에서는 스레드별 `siglongjmp`를 사용합니다.
 * **제약사항**: 정지를 유발한 C 프레임과 이를 감싸는 `GuardedRun` 호출 사이에는 **소멸자(destructor)를 가진 C++ 스택 프레임이 존재하지 않아야 합니다**. SEH 및 `siglongjmp` 언와인딩 과정에서 C++ 스택 소멸자가 호출되지 않으므로, 게스트 실행 스택은 순수 C 호출 규약으로 구성되어야 합니다.
+* **크래시 핸들러 및 실행 로그 (`crash_handler.h`, `exec_history.h`)**: `InstallCrashHandler(const CrashConfig&)`는 Win32 SEH(`SetUnhandledExceptionFilter`), POSIX 시그널(`SIGSEGV`, `SIGABRT`, `SIGFPE`, `SIGILL`, `SIGBUS`), `std::set_terminate`, `SIGABRT`를 포착해 크래시 보고서(`crash_report_*.txt`)와 미니덤프(`crash_dump_*.dmp`)를 기록하고 기존 종료 경로로 전달합니다. `SetCrashReportExtra`, `SetCrashGuestMemoryRange`, `RegisterCrashCleanupCallback`, `SetLogFile`/`FlushLogFile`/`CloseLogFile`, `RegisterRuntimeCrashProvider`, `NoteGuestEntry`로 런타임 실행 이력(`stop_reason`, `scheduler_mutex_owner_*`, 스레드별 최근 게스트 진입/HLE 호출)과 앱 컨텍스트를 함께 남깁니다. `crash_probe`로 6가지 종료 경로를 검증합니다.
 
 ### 2.8. 커널 설정 및 스케줄러 계약 (`kernel.h`, `scheduler.h`)
 
@@ -190,7 +191,7 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 
 * 소비자는 `repsp::hle::ctrl::Register()`와 `repsp::hle::dmac::Register()`로 `sceCtrl`(3개 NID)과 `sceDmac`(1개 NID) HLE를 등록하고, 종료 시 `Shutdown()`으로 정리합니다.
 * `repsp::hle::ctrl::SetInputSource(fn)`을 호출하면 기본 `platform::InputBackend` 폴링 대신 합성/스크립트 입력 공급자 `fn(vcount) -> ControllerState`를 사용할 수 있으며, `nullptr`로 복원할 수 있습니다.
-* `repsp::hle::ctrl::GetStats()` / `FormatStats()`로 샘플링 주기·모드·생성/읽기 통계를 조회할 수 있습니다.
+* `repsp::hle::ctrl::GetStats()` / `FormatStats()`로 샘플링 주기·모드·생성/읽기 통계를 조회할 수 있습니다. `StartInputRecording(path)` / `StopInputRecording()`은 VBlank 샘플링 시점의 입력 변화를 `--input-script` 호환 텍스트 형식으로 기록하고 크래시 정리 시 안전하게 플러시·종료합니다(`ctrl_probe`로 왕복 검증).
 
 ### 2.11. 오디오·SAS·ATRAC 계약 (`audio.h`, `sascore.h`, `atrac.h`)
 
@@ -250,6 +251,7 @@ Provides guarded execution for catching hardware faults and explicit stop reques
 * `GuardedRun(fn)`: Executes function within guarded context, returning `GuardedRunResult` (`succeeded`, `stopped`, `stop_reason`).
 * `repsp::platform::RaiseStop(reason)` and C API `repsp_raise_stop(reason)`: Stops the innermost active `GuardedRun` and records `stop_reason`. Implemented via custom SEH exception (`0xE0000001`) on Win32 and per-thread `siglongjmp` on Linux.
 * **Constraint**: No C++ frames with destructors may reside between the caller of `RaiseStop` and the enclosing `GuardedRun` frame, as SEH/`siglongjmp` unwinding does not run non-trivial C++ destructors. Guest execution stacks must consist of pure C calling conventions.
+* **Crash Handler and Run Log (`crash_handler.h`, `exec_history.h`)**: `InstallCrashHandler(const CrashConfig&)` hooks Win32 SEH (`SetUnhandledExceptionFilter`), POSIX signals (`SIGSEGV`, `SIGABRT`, `SIGFPE`, `SIGILL`, `SIGBUS`), `std::set_terminate`, and `SIGABRT` to write a crash report (`crash_report_*.txt`) and minidump (`crash_dump_*.dmp`) before passing to the original termination path. `SetCrashReportExtra`, `SetCrashGuestMemoryRange`, `RegisterCrashCleanupCallback`, `SetLogFile`/`FlushLogFile`/`CloseLogFile`, `RegisterRuntimeCrashProvider`, and `NoteGuestEntry` attach runtime history (including `stop_reason` and `scheduler_mutex_owner_*`) and app context. Verified across 6 termination kinds by `crash_probe`.
 
 ### 2.8. Kernel Configuration and Scheduler Contract (`kernel.h`, `scheduler.h`)
 
@@ -264,7 +266,7 @@ Consumers register `repsp::hle::ge::Register()` and `repsp::hle::display::Regist
 
 ### 2.10. Controller Input and DMAC Contract (`ctrl.h`, `dmac.h`)
 
-Consumers register `repsp::hle::ctrl::Register()` and `repsp::hle::dmac::Register()` for `sceCtrl` (3 NIDs) and `sceDmac` (`sceDmacMemcpy`), and call `Shutdown()` on exit. `repsp::hle::ctrl::SetInputSource(fn)` injects a custom `fn(vcount) -> ControllerState` source instead of polling `platform::InputBackend` (pass `nullptr` to restore). `repsp::hle::ctrl::GetStats()` / `FormatStats()` expose sampling cycle/mode and sample counters.
+Consumers register `repsp::hle::ctrl::Register()` and `repsp::hle::dmac::Register()` for `sceCtrl` (3 NIDs) and `sceDmac` (`sceDmacMemcpy`), and call `Shutdown()` on exit. `repsp::hle::ctrl::SetInputSource(fn)` injects a custom `fn(vcount) -> ControllerState` source instead of polling `platform::InputBackend` (pass `nullptr` to restore). `repsp::hle::ctrl::GetStats()` / `FormatStats()` expose sampling cycle/mode and sample counters. `StartInputRecording(path)` / `StopInputRecording()` record button changes at VBlank sampling points in `--input-script`-compatible format and flush cleanly via crash cleanup (`ctrl_probe` round-trip verified).
 
 ### 2.11. Audio, SAS Synthesizer, and ATRAC Contract (`audio.h`, `sascore.h`, `atrac.h`)
 

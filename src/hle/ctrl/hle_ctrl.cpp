@@ -1,5 +1,6 @@
 #include "repsp/hle/ctrl.h"
 #include "repsp/hle/kernel_errors.h"
+#include "repsp/platform/crash_handler.h"
 #include "repsp/platform/input.h"
 #include "repsp/platform/platform.h"
 #include "repsp/recomp/recomp_helpers.h"
@@ -11,9 +12,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
 #include <mutex>
 #include <sstream>
 #include <utility>
@@ -44,6 +48,60 @@ uint64_t g_samples_produced = 0;
 uint64_t g_last_read_seq = 0;
 uint64_t g_samples_read = 0;
 InputSourceFn g_input_source;
+
+std::atomic<std::FILE*> g_record_file{nullptr};
+uint32_t g_last_recorded_buttons = 0;
+bool g_record_cleanup_registered = false;
+
+void OnCrashCleanup(void* /*user_data*/)
+{
+    std::FILE* f = g_record_file.exchange(nullptr, std::memory_order_acq_rel);
+    if (f != nullptr)
+    {
+        std::fflush(f);
+        std::fclose(f);
+    }
+}
+
+void WriteRecordedButtons(std::FILE* f, uint32_t vcount, uint32_t buttons)
+{
+    struct ButtonMap
+    {
+        uint32_t mask;
+        const char* name;
+    };
+    static constexpr ButtonMap kButtons[] = {
+        {platform::kPspCtrlSelect, "SELECT"},
+        {platform::kPspCtrlStart, "START"},
+        {platform::kPspCtrlUp, "UP"},
+        {platform::kPspCtrlRight, "RIGHT"},
+        {platform::kPspCtrlDown, "DOWN"},
+        {platform::kPspCtrlLeft, "LEFT"},
+        {platform::kPspCtrlLTrigger, "L"},
+        {platform::kPspCtrlRTrigger, "R"},
+        {platform::kPspCtrlTriangle, "TRIANGLE"},
+        {platform::kPspCtrlCircle, "CIRCLE"},
+        {platform::kPspCtrlCross, "CROSS"},
+        {platform::kPspCtrlSquare, "SQUARE"},
+    };
+
+    std::fprintf(f, "%u", vcount);
+    bool any = false;
+    for (const auto& b : kButtons)
+    {
+        if ((buttons & b.mask) != 0u)
+        {
+            std::fprintf(f, " %s", b.name);
+            any = true;
+        }
+    }
+    if (!any)
+    {
+        std::fprintf(f, " NONE");
+    }
+    std::fputc('\n', f);
+    std::fflush(f);
+}
 
 uint8_t NormalizeAnalogAxis(float v)
 {
@@ -97,6 +155,13 @@ void ProduceSample(uint32_t vcount)
 
     g_ring[(next_seq - 1) % kRingSize] = sample;
     g_samples_produced = next_seq;
+
+    std::FILE* rec = g_record_file.load(std::memory_order_acquire);
+    if (rec != nullptr && raw.buttons != g_last_recorded_buttons)
+    {
+        WriteRecordedButtons(rec, vcount, raw.buttons);
+        g_last_recorded_buttons = raw.buttons;
+    }
 }
 
 void OnVblankTick(uint32_t vcount)
@@ -284,12 +349,64 @@ void Shutdown()
         runtime::GetVblankClock().Unsubscribe(sub_id);
         runtime::GetVblankClock().Stop();
     }
+    StopInputRecording();
 }
 
 void SetInputSource(InputSourceFn fn)
 {
     std::lock_guard<std::mutex> lock(g_ctrl_mutex);
     g_input_source = std::move(fn);
+}
+
+bool StartInputRecording(const std::string& path)
+{
+    std::lock_guard<std::mutex> lock(g_ctrl_mutex);
+    std::FILE* prev = g_record_file.exchange(nullptr, std::memory_order_acq_rel);
+    if (prev != nullptr)
+    {
+        std::fflush(prev);
+        std::fclose(prev);
+    }
+    g_last_recorded_buttons = 0;
+
+    if (path.empty())
+    {
+        return false;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path fs_path(path);
+    if (fs_path.has_parent_path())
+    {
+        std::filesystem::create_directories(fs_path.parent_path(), ec);
+    }
+
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (f == nullptr)
+    {
+        return false;
+    }
+    std::fprintf(f, "# repsp input recording (<vblank> <buttons>)\n");
+    std::fflush(f);
+    g_record_file.store(f, std::memory_order_release);
+    if (!g_record_cleanup_registered)
+    {
+        platform::RegisterCrashCleanupCallback(&OnCrashCleanup, nullptr);
+        g_record_cleanup_registered = true;
+    }
+    return true;
+}
+
+void StopInputRecording()
+{
+    std::lock_guard<std::mutex> lock(g_ctrl_mutex);
+    std::FILE* f = g_record_file.exchange(nullptr, std::memory_order_acq_rel);
+    if (f != nullptr)
+    {
+        std::fflush(f);
+        std::fclose(f);
+    }
+    g_last_recorded_buttons = 0;
 }
 
 CtrlStats GetStats()

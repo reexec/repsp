@@ -1,4 +1,5 @@
 #include "repsp/runtime/log.h"
+#include "repsp/platform/crash_handler.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -56,6 +57,8 @@ void Log(LogLevel level, const char* format, ...)
     std::vector<char> buffer(static_cast<size_t>(len) + 1);
     vsnprintf(buffer.data(), buffer.size(), format, args);
     va_end(args);
+
+    platform::WriteLogFileLine(LevelToString(level), buffer.data());
 
     if (g_log_callback != nullptr)
     {

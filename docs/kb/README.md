@@ -19,6 +19,7 @@ PSP 일반 지식(컨테이너 형식, Allegrex·VFPU, 펌웨어 모듈과 NID, 
 | [`atrac3plus.md`](atrac3plus.md) | RIFF/WAVE ATRAC3·ATRAC3plus 컨테이너, `sceAtrac3plus` 상태 머신, 교체형 `AtracDecoder` | **추정** (PSPSDK `pspatrac3.h`, RIFF 규격; `atrac_probe` 합성 검증) |
 | [`psmf-mpeg.md`](psmf-mpeg.md) | PSMF 헤더, MPEG-2 PS/PES 분리, 링 버퍼 콜백, `SceMpegAu`, `sceMpeg` 오류 코드 | **추정** (PSPSDK `pspmpeg.h`, ISO 13818-1, PSDevWiki; `mpeg_probe` 합성 검증) |
 | [`utility.md`](utility.md) | `sceUtility` 단일 다이얼로그 상태 머신, 세이브 데이터(`PARAM.SFO`), `MsgDialog`, `DialogPolicy` | **추정** / **확인됨** (PSPSDK, `ULKS-46050` 역어셈블; `utility_probe` 합성 검증) |
+| [`crash-handling.md`](crash-handling.md) | 크래시 핸들러(SEH·시그널·`std::terminate`·미니덤프), `GuardedRun`/`RaiseStop` 풀기·뮤텍스 규약, 입력 녹화 형식 | **확인됨** (`crash_probe`·`ctrl_probe` 합성 검증) |
 
 ---
 
@@ -43,3 +44,4 @@ General PSP knowledge (container formats, the Allegrex and VFPU, firmware module
 | [`atrac3plus.md`](atrac3plus.md) | RIFF/WAVE ATRAC3/ATRAC3plus container, `sceAtrac3plus` state machine, replaceable `AtracDecoder` | **Inferred** (PSPSDK `pspatrac3.h`, RIFF spec; synthetic `atrac_probe` verified) |
 | [`psmf-mpeg.md`](psmf-mpeg.md) | PSMF header, MPEG-2 PS/PES demuxing, ring buffer callback, `SceMpegAu`, `sceMpeg` error codes | **Inferred** (PSPSDK `pspmpeg.h`, ISO 13818-1, PSDevWiki; synthetic `mpeg_probe` verified) |
 | [`utility.md`](utility.md) | `sceUtility` single-dialog state machine, savedata (`PARAM.SFO`), `MsgDialog`, `DialogPolicy` | **Inferred** / **Confirmed** (PSPSDK, `ULKS-46050` disassembly; `utility_probe` verified) |
+| [`crash-handling.md`](crash-handling.md) | Crash handler (SEH/signals/`std::terminate`/minidump), `GuardedRun`/`RaiseStop` unwinding & mutex rules, input recording format | **Confirmed** (`crash_probe` & `ctrl_probe` verified) |

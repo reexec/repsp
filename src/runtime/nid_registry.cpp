@@ -1,5 +1,6 @@
 #include "repsp/runtime/nid_registry.h"
 #include "repsp/platform/guarded_run.h"
+#include "repsp/runtime/exec_history.h"
 #include "repsp/runtime/log.h"
 #include "repsp/runtime/nid_names.h"
 #include "repsp/runtime/scheduler.h"
@@ -75,23 +76,26 @@ bool NidRegistry::Invoke(uint32_t nid)
         const bool should_trace = trace_enabled_ && (trace_limit_ == 0 || trace_count_ < trace_limit_);
         uint32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
         const auto* ops = GetScheduler().GetCpuOps();
-        if (should_trace && ops != nullptr && ops->get_gpr != nullptr)
+        if (ops != nullptr && ops->get_gpr != nullptr)
         {
             a0 = ops->get_gpr(4);
             a1 = ops->get_gpr(5);
             a2 = ops->get_gpr(6);
             a3 = ops->get_gpr(7);
         }
+        NoteHleCallBegin(nid, entry->function_name.c_str(), a0, a1, a2, a3);
 
         if (entry->handler)
         {
             entry->handler();
         }
 
+        const uint32_t v0 = (ops != nullptr && ops->get_gpr != nullptr) ? ops->get_gpr(2) : 0;
+        NoteHleCallEnd(v0);
+
         if (should_trace)
         {
             ++trace_count_;
-            uint32_t v0 = (ops != nullptr && ops->get_gpr != nullptr) ? ops->get_gpr(2) : 0;
             Log(LogLevel::kInfo, "[HLE_TRACE] %s:%s(0x%08X, 0x%08X, 0x%08X, 0x%08X) = 0x%08X",
                 entry->module_name.c_str(), entry->function_name.c_str(), a0, a1, a2, a3, v0);
         }
