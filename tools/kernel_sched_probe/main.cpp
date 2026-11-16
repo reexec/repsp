@@ -90,6 +90,7 @@ constexpr uint32_t kAddrIntrNest  = 0x0880C020u;
 constexpr uint32_t kAddrIntrWaitMain = 0x0880C030u;
 constexpr uint32_t kAddrIntrWaitIsr  = 0x0880C040u;
 constexpr uint32_t kAddrDeepStack    = 0x0880E000u;
+constexpr uint32_t kAddrStackOverflow = 0x0880E010u;
 
 volatile uintptr_t g_deep_stack_span = 0;
 volatile uint64_t g_deep_stack_committed = 0;
@@ -436,6 +437,11 @@ void FakeCallGuest(uint32_t addr)
         g_cpu.gpr[2] = DeepStackTouch(600);
         break;
     }
+    case kAddrStackOverflow:
+    {
+        g_cpu.gpr[2] = DeepStackTouch(3000);
+        break;
+    }
     default:
         TEST_ASSERT(false);
     }
@@ -574,11 +580,11 @@ int main()
     TEST_ASSERT(intr_guard.stopped);
     TEST_ASSERT(intr_guard.stop_reason.find("interrupt") != std::string::npos);
 
-    // 13. Explicit 64 MiB reserved host stack for guest threads and per-thread high-water stats
+    // 13. Explicit 8 MiB reserved host stack for guest threads and per-thread high-water stats
     TEST_ASSERT(GetScheduler().GetGuestHostStackReserveBytes() ==
                 repsp::runtime::Scheduler::kDefaultGuestHostStackReserveBytes);
-    GetScheduler().SetGuestHostStackReserveBytes(8ull * 1024ull * 1024ull);
-    TEST_ASSERT(GetScheduler().GetGuestHostStackReserveBytes() == 8ull * 1024ull * 1024ull);
+    GetScheduler().SetGuestHostStackReserveBytes(16ull * 1024ull * 1024ull);
+    TEST_ASSERT(GetScheduler().GetGuestHostStackReserveBytes() == 16ull * 1024ull * 1024ull);
     GetScheduler().SetGuestHostStackReserveBytes(
         repsp::runtime::Scheduler::kDefaultGuestHostStackReserveBytes);
 
@@ -608,6 +614,19 @@ int main()
         TEST_ASSERT(stats.find("deep_stack") != std::string::npos);
         TEST_ASSERT(stats.find("high_water=") != std::string::npos);
     }
+
+#if defined(_WIN32)
+    // 14. Stack overflow past the 8 MiB default reservation is still caught as a stop report
+    kernel::Register(kernel::KernelConfig{});
+    int32_t t_ovf = GetScheduler().CreateThread("stack_ovf", kAddrStackOverflow, 0x20, 0x4000, 0, 0);
+    auto ovf_guard = repsp::platform::GuardedRun([&]()
+    {
+        GetScheduler().Run(t_ovf);
+    });
+    TEST_ASSERT(!ovf_guard.succeeded);
+    TEST_ASSERT(ovf_guard.stopped);
+    TEST_ASSERT(ovf_guard.stop_reason.find("Stack overflow") != std::string::npos);
+#endif
 
     GetScheduler().Reset();
     std::printf("kernel_sched_probe passed.\n");

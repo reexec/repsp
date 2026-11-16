@@ -119,7 +119,11 @@ public:
     static constexpr uint32_t kInterruptStackBase = 0x08010000u;
     static constexpr uint32_t kInterruptStackSize = 16u * 1024u;
     static constexpr uint32_t kInterruptStackTop = kInterruptStackBase + kInterruptStackSize - 16u;
-    static constexpr size_t kDefaultGuestHostStackReserveBytes = 64ull * 1024ull * 1024ull;
+    // Default per-guest-thread host stack reservation (8 MiB, matching the
+    // typical Linux main-thread default). Assumes an execution model where host
+    // calls nest only as deep as guest calls (e.g. tail-call trampolines).
+    // Configurable via SetGuestHostStackReserveBytes(); 0 selects the platform default.
+    static constexpr size_t kDefaultGuestHostStackReserveBytes = 8ull * 1024ull * 1024ull;
 
     struct PendingInterrupt
     {
