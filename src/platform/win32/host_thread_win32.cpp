@@ -19,17 +19,29 @@ uint64_t FileTimeToNs(const FILETIME& ft)
     return li.QuadPart * 100ULL;
 }
 
+// Stack kept back for handlers after an overflow on a thread with an explicit
+// reservation (guest threads).
+constexpr ULONG kStackOverflowGuaranteeBytes = 64u * 1024u;
+
 } // namespace
 
 struct HostThread::Impl
 {
     HANDLE handle = nullptr;
     std::function<void()> entry;
+    ULONG stack_guarantee_bytes = 0;
     bool joined = false;
 
     static DWORD WINAPI ThreadProc(LPVOID param)
     {
         auto* impl = static_cast<Impl*>(param);
+        if (impl->stack_guarantee_bytes > 0)
+        {
+            // Room for exception filters and the crash handler after a stack
+            // overflow, which otherwise run in the few KiB left past the guard page.
+            ULONG guarantee = impl->stack_guarantee_bytes;
+            SetThreadStackGuarantee(&guarantee);
+        }
         if (impl->entry)
         {
             impl->entry();
@@ -47,6 +59,7 @@ HostThread::HostThread(std::string name, std::function<void()> entry, const Host
     : impl_(std::make_unique<Impl>()), name_(std::move(name))
 {
     impl_->entry = std::move(entry);
+    impl_->stack_guarantee_bytes = (options.stack_reserve_bytes > 0) ? kStackOverflowGuaranteeBytes : 0;
     const DWORD flags = (options.stack_reserve_bytes > 0) ? STACK_SIZE_PARAM_IS_A_RESERVATION : 0;
     impl_->handle = CreateThread(
         nullptr,
