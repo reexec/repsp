@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -129,6 +130,8 @@ struct SasGlobalState
     uint32_t primary_core = 0;
     uint64_t core_calls = 0;
     uint64_t frames_synthesized = 0;
+    uint64_t core_time_ns = 0;
+    uint64_t core_max_ns = 0;
     uint64_t key_ons = 0;
     uint64_t key_offs = 0;
     uint64_t voices_set = 0;
@@ -321,11 +324,13 @@ bool DecodeNextVagBlock(int32_t voice_idx, VoiceState& v, runtime::GuestMemory& 
         return false;
     }
 
-    std::array<uint8_t, kVagBlockBytes> block{};
-    for (size_t i = 0; i < kVagBlockBytes; ++i)
+    const uint8_t* block_ptr = mem.Translate(addr);
+    if (block_ptr == nullptr)
     {
-        block[i] = mem.ReadU8(addr + static_cast<uint32_t>(i));
+        return false;
     }
+    std::array<uint8_t, kVagBlockBytes> block{};
+    std::memcpy(block.data(), block_ptr, kVagBlockBytes);
 
     const uint8_t predict_shift = block[0];
     uint32_t shift = predict_shift & 0x0Fu;
@@ -633,6 +638,7 @@ void HleSasCore()
     }
 
     const int32_t grain = inst.grain;
+    const auto t0 = std::chrono::steady_clock::now();
     std::vector<int16_t> dump_pcm;
     if (g_sas.dump_enabled)
     {
@@ -656,15 +662,13 @@ void HleSasCore()
         }
         if (inst.out_mode == kSasOutputModeRaw)
         {
-            mem.WriteU16(sas_out + static_cast<uint32_t>(f * 2), static_cast<uint16_t>(s_left));
-            mem.WriteU16(sas_out + static_cast<uint32_t>((grain + f) * 2),
-                         static_cast<uint16_t>(s_right));
+            WriteLe16Buf(dst_bytes + static_cast<size_t>(f) * 2u, static_cast<uint16_t>(s_left));
+            WriteLe16Buf(dst_bytes + static_cast<size_t>(grain + f) * 2u, static_cast<uint16_t>(s_right));
         }
         else
         {
-            mem.WriteU16(sas_out + static_cast<uint32_t>(f * 4), static_cast<uint16_t>(s_left));
-            mem.WriteU16(sas_out + static_cast<uint32_t>(f * 4 + 2),
-                         static_cast<uint16_t>(s_right));
+            WriteLe16Buf(dst_bytes + static_cast<size_t>(f) * 4u, static_cast<uint16_t>(s_left));
+            WriteLe16Buf(dst_bytes + static_cast<size_t>(f) * 4u + 2u, static_cast<uint16_t>(s_right));
         }
     }
     if (g_sas.dump_enabled)
@@ -672,8 +676,16 @@ void HleSasCore()
         WriteSasDumpLocked(dump_pcm, inst.sample_rate);
     }
 
+    const auto t1 = std::chrono::steady_clock::now();
+    const uint64_t elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
     g_sas.core_calls += 1;
     g_sas.frames_synthesized += static_cast<uint64_t>(grain);
+    g_sas.core_time_ns += elapsed_ns;
+    if (elapsed_ns > g_sas.core_max_ns)
+    {
+        g_sas.core_max_ns = elapsed_ns;
+    }
     recomp::Return(int32_t{ 0 });
 }
 
@@ -1139,6 +1151,8 @@ void Register()
     g_sas.primary_core = 0;
     g_sas.core_calls = 0;
     g_sas.frames_synthesized = 0;
+    g_sas.core_time_ns = 0;
+    g_sas.core_max_ns = 0;
     g_sas.key_ons = 0;
     g_sas.key_offs = 0;
     g_sas.voices_set = 0;
@@ -1213,14 +1227,21 @@ SasStats GetStats()
 std::string FormatStats()
 {
     const SasStats s = GetStats();
+    std::lock_guard<std::mutex> lock(g_sas.mutex);
+    const double avg_us = (g_sas.core_calls > 0)
+        ? (static_cast<double>(g_sas.core_time_ns) / (1000.0 * static_cast<double>(g_sas.core_calls)))
+        : 0.0;
+    const double max_us = static_cast<double>(g_sas.core_max_ns) / 1000.0;
     char buf[256];
     std::snprintf(buf,
                   sizeof(buf),
-                  "SAS: instances=%u calls=%llu frames=%llu keyOn=%llu keyOff=%llu "
+                  "SAS: instances=%u calls=%llu frames=%llu avg_us=%.2f max_us=%.2f keyOn=%llu keyOff=%llu "
                   "activeVoices=%u revType=%d reverb=dry only (not mixed)",
                   s.instances,
                   static_cast<unsigned long long>(s.core_calls),
                   static_cast<unsigned long long>(s.frames_synthesized),
+                  avg_us,
+                  max_us,
                   static_cast<unsigned long long>(s.key_ons),
                   static_cast<unsigned long long>(s.key_offs),
                   s.active_voices,
