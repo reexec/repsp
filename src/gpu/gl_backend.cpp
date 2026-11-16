@@ -2,11 +2,13 @@
 #include "repsp/platform/platform.h"
 #include "repsp/runtime/guest_memory.h"
 #include "repsp/runtime/log.h"
+#include "repsp/runtime/scheduler.h"
 #include "gl_functions.h"
 #include "texture_decode.h"
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1440,7 +1442,10 @@ bool PresentGlTarget(uint32_t addr)
             CheckCpuWriteOverlapLocked(git->second);
         }
     }
-    display->WaitRenderIdle();
+    {
+        runtime::Scheduler::ScopedHostWait host_wait(runtime::GetScheduler());
+        display->WaitRenderIdle();
+    }
 
     uint32_t tex_id = 0;
     int w = 0;
@@ -1456,7 +1461,10 @@ bool PresentGlTarget(uint32_t addr)
         w = kScreenWidth * it->second.scale;
         h = kScreenHeight * it->second.scale;
     }
-    display->PresentGlTexture(tex_id, w, h);
+    {
+        runtime::Scheduler::ScopedHostWait host_wait(runtime::GetScheduler());
+        display->PresentGlTexture(tex_id, w, h);
+    }
     return true;
 }
 
