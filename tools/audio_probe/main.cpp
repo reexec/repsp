@@ -21,7 +21,8 @@
         if (!(cond))                                                                   \
         {                                                                              \
             std::fprintf(stderr, "FAIL: %s (%s:%d)\n", #cond, __FILE__, __LINE__);     \
-            return 1;                                                                  \
+            std::fflush(nullptr);                                                      \
+            std::_Exit(1);                                                             \
         }                                                                              \
     } while (false)
 
@@ -281,8 +282,157 @@ int main()
         repsp::runtime::GetScheduler().Reset();
     }
 
+    // 7. Clock thread holds off mixing silence for a temporarily late active channel
+    //    while the intermediate buffer still has headroom.
+    {
+        class ProbeAudioBackend2 final : public repsp::platform::AudioBackend
+        {
+        public:
+            bool Initialize(const repsp::platform::AudioConfig&) override { return true; }
+            void Shutdown() override { cb_ = nullptr; }
+            void SetPullCallback(repsp::platform::AudioPullCallback cb) override { cb_ = std::move(cb); }
+            bool QueueAudio(const int16_t*, size_t) override { return true; }
+            void Pull(size_t frames, std::vector<int16_t>& out)
+            {
+                out.assign(frames * 2u, 0);
+                if (cb_) cb_(out.data(), frames);
+            }
+        private:
+            repsp::platform::AudioPullCallback cb_;
+        };
+
+        ProbeAudioBackend2 mock_backend;
+        AudioHleConfig lat_cfg{};
+        lat_cfg.auto_attach_platform = false;
+        lat_cfg.target_latency_ms = 20; // 882 frames
+        lat_cfg.auto_start_clock_for_test = false;
+        Register(lat_cfg);
+        SetBackend(&mock_backend);
+
+        TEST_ASSERT(CallNid(kNidChReserve, 0u, 256u, kAudioFormatStereo) == 0);
+        TEST_ASSERT(CallNid(kNidChReserve, 1u, 256u, kAudioFormatStereo) == 1);
+        for (int i = 0; i < 256; ++i)
+        {
+            mem.WriteU16(kGuestBuf0 + static_cast<uint32_t>(i * 4), 1000);
+            mem.WriteU16(kGuestBuf0 + static_cast<uint32_t>(i * 4 + 2), 1000);
+            mem.WriteU16(kGuestBuf1 + static_cast<uint32_t>(i * 4), 500);
+            mem.WriteU16(kGuestBuf1 + static_cast<uint32_t>(i * 4 + 2), 500);
+        }
+
+        for (int b = 0; b < 4; ++b)
+        {
+            TEST_ASSERT(CallNid(kNidOutputBlocking, 0u, 0x8000u, kGuestBuf0) == 256);
+            TEST_ASSERT(CallNid(kNidOutputBlocking, 1u, 0x8000u, kGuestBuf1) == 256);
+            while (StepMixClockForTest()) {}
+        }
+
+        // Pull 256 frames: recent_pull becomes 256, low_headroom becomes 384,
+        // and intermediate buffer depth drops from 896 to 640 (> 384).
+        std::vector<int16_t> out;
+        mock_backend.Pull(256u, out);
+        TEST_ASSERT(out[0] == 1500 && out[511] == 1500);
+
+        // Drain the remaining 128 frames on ch0/ch1 (depth -> 768) and reset stats.
+        while (StepMixClockForTest()) {}
+        TEST_ASSERT(CallNid(kNidGetRestLength, 0u) == 0);
+        TEST_ASSERT(CallNid(kNidGetRestLength, 1u) == 0);
+        ResetStatsForTest();
+
+        // Feed ch0 only; with depth 768 > low_headroom 384, the clock must hold off.
+        TEST_ASSERT(CallNid(kNidOutputBlocking, 0u, 0x8000u, kGuestBuf0) == 256);
+        TEST_ASSERT(!StepMixClockForTest());
+
+        // Feed ch1; now both active channels are ready and mix up to target_buffer_frames (896 >= 882).
+        TEST_ASSERT(CallNid(kNidOutputBlocking, 1u, 0x8000u, kGuestBuf1) == 256);
+        TEST_ASSERT(StepMixClockForTest());
+        TEST_ASSERT(CallNid(kNidGetRestLength, 1u) == 128);
+        mock_backend.Pull(256u, out);
+        while (StepMixClockForTest()) {}
+        TEST_ASSERT(CallNid(kNidGetRestLength, 1u) == 0);
+
+        const AudioStats s7 = GetStats();
+        TEST_ASSERT(s7.channels[0].underruns == 0u);
+        TEST_ASSERT(s7.channels[1].underruns == 0u);
+        TEST_ASSERT(s7.underruns == 0u);
+
+        Shutdown();
+        repsp::runtime::GetScheduler().Reset();
+    }
+
+    // 8. Device pull size raises the low-headroom floor (recent_pull + quantum) so
+    //    host_underruns stays 0 even when an active channel is late below that floor.
+    {
+        class ProbeAudioBackend3 final : public repsp::platform::AudioBackend
+        {
+        public:
+            bool Initialize(const repsp::platform::AudioConfig&) override { return true; }
+            void Shutdown() override { cb_ = nullptr; }
+            void SetPullCallback(repsp::platform::AudioPullCallback cb) override { cb_ = std::move(cb); }
+            bool QueueAudio(const int16_t*, size_t) override { return true; }
+            void Pull(size_t frames, std::vector<int16_t>& out)
+            {
+                out.assign(frames * 2u, 0);
+                if (cb_) cb_(out.data(), frames);
+            }
+        private:
+            repsp::platform::AudioPullCallback cb_;
+        };
+
+        ProbeAudioBackend3 mock_backend;
+        AudioHleConfig lat_cfg{};
+        lat_cfg.auto_attach_platform = false;
+        lat_cfg.target_latency_ms = 20; // 882 frames
+        lat_cfg.auto_start_clock_for_test = false;
+        Register(lat_cfg);
+        SetBackend(&mock_backend);
+
+        TEST_ASSERT(CallNid(kNidChReserve, 0u, 256u, kAudioFormatStereo) == 0);
+        TEST_ASSERT(CallNid(kNidChReserve, 1u, 256u, kAudioFormatStereo) == 1);
+        for (int i = 0; i < 256; ++i)
+        {
+            mem.WriteU16(kGuestBuf0 + static_cast<uint32_t>(i * 4), 1000);
+            mem.WriteU16(kGuestBuf0 + static_cast<uint32_t>(i * 4 + 2), 1000);
+            mem.WriteU16(kGuestBuf1 + static_cast<uint32_t>(i * 4), 500);
+            mem.WriteU16(kGuestBuf1 + static_cast<uint32_t>(i * 4 + 2), 500);
+        }
+
+        for (int b = 0; b < 4; ++b)
+        {
+            TEST_ASSERT(CallNid(kNidOutputBlocking, 0u, 0x8000u, kGuestBuf0) == 256);
+            TEST_ASSERT(CallNid(kNidOutputBlocking, 1u, 0x8000u, kGuestBuf1) == 256);
+            while (StepMixClockForTest()) {}
+        }
+
+        // Pull 512 frames: recent_pull becomes 512, low_headroom becomes 512 + 128 = 640,
+        // and intermediate buffer depth drops from 896 to 384 (<= 640).
+        std::vector<int16_t> out;
+        mock_backend.Pull(512u, out);
+        TEST_ASSERT(out[1022] == 1500 && out[1023] == 1500);
+
+        // Drain the remaining 128 frames on ch0/ch1 (depth -> 512 <= 640) and reset stats.
+        while (StepMixClockForTest()) {}
+        TEST_ASSERT(CallNid(kNidGetRestLength, 0u) == 0);
+        TEST_ASSERT(CallNid(kNidGetRestLength, 1u) == 0);
+        ResetStatsForTest();
+
+        // Feed only ch0 (leaving ch1 empty). Because depth (512) <= low_headroom (640),
+        // the clock steps immediately rather than waiting, so a second 512-frame pull
+        // succeeds with 0 host underruns while ch1 records the forced channel underrun.
+        TEST_ASSERT(CallNid(kNidOutputBlocking, 0u, 0x8000u, kGuestBuf0) == 256);
+        TEST_ASSERT(StepMixClockForTest());
+        TEST_ASSERT(StepMixClockForTest());
+        TEST_ASSERT(CallNid(kNidGetRestLength, 0u) == 0);
+        mock_backend.Pull(512u, out);
+        const AudioStats s8 = GetStats();
+        TEST_ASSERT(s8.host_underruns == 0u);
+        TEST_ASSERT(s8.channels[1].underruns > 0u);
+
+        Shutdown();
+        repsp::runtime::GetScheduler().Reset();
+    }
+
     mem.Shutdown();
 
-    std::printf("[PASS] audio_probe: 6/6 checks passed\n");
+    std::printf("[PASS] audio_probe: 8/8 checks passed\n");
     return 0;
 }

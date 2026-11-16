@@ -75,6 +75,7 @@ uint64_t g_shortfall_frames = 0;
 uint64_t g_pull_calls = 0;
 uint64_t g_pull_size_min = 0;
 uint64_t g_pull_size_max = 0;
+size_t g_recent_pull_frames = 0;
 std::array<uint64_t, 5> g_pull_size_hist{};
 uint32_t g_target_latency_ms = 20;
 uint32_t g_target_buffer_frames = 0;
@@ -91,6 +92,8 @@ std::thread g_clock_thread;
 bool g_clock_stop = false;
 bool g_dump_enabled = false;
 std::string g_dump_base_path;
+WavDumpStream g_mix_dump{};
+uint64_t g_mix_frames_total = 0;
 
 void WriteLe16Buf(uint8_t* dst, uint16_t v)
 {
@@ -118,6 +121,60 @@ std::string MakeChannelDumpPath(const std::string& base, int32_t channel)
         }
     }
     return base + suffix;
+}
+
+std::string MakeMixDumpPath(const std::string& base)
+{
+    const std::string suffix = ".mix.wav";
+    if (base.size() >= 4)
+    {
+        const std::string ext = base.substr(base.size() - 4);
+        if (ext == ".wav" || ext == ".WAV")
+        {
+            return base.substr(0, base.size() - 4) + suffix;
+        }
+    }
+    return base + suffix;
+}
+
+void WriteMixDumpLocked(const int16_t* stereo_pcm, size_t frame_count)
+{
+    if (!g_dump_enabled || stereo_pcm == nullptr || frame_count == 0)
+    {
+        return;
+    }
+    if (!g_mix_dump.open_attempted)
+    {
+        g_mix_dump.open_attempted = true;
+        const std::string path = MakeMixDumpPath(g_dump_base_path);
+        g_mix_dump.file.open(path, std::ios::binary | std::ios::trunc);
+        if (g_mix_dump.file.is_open())
+        {
+            uint8_t header[44]{};
+            std::memcpy(header + 0, "RIFF", 4);
+            WriteLe32Buf(header + 4, 36);
+            std::memcpy(header + 8, "WAVE", 4);
+            std::memcpy(header + 12, "fmt ", 4);
+            WriteLe32Buf(header + 16, 16);
+            WriteLe16Buf(header + 20, 1);
+            WriteLe16Buf(header + 22, 2);
+            WriteLe32Buf(header + 24, static_cast<uint32_t>(kAudioSampleRate));
+            WriteLe32Buf(header + 28, static_cast<uint32_t>(kAudioSampleRate) * 4u);
+            WriteLe16Buf(header + 32, 4);
+            WriteLe16Buf(header + 34, 16);
+            std::memcpy(header + 36, "data", 4);
+            WriteLe32Buf(header + 40, 0);
+            g_mix_dump.file.write(reinterpret_cast<const char*>(header), sizeof(header));
+            g_mix_dump.bytes_written = 0;
+        }
+    }
+    if (!g_mix_dump.file.is_open())
+    {
+        return;
+    }
+    const size_t bytes = frame_count * 2u * sizeof(int16_t);
+    g_mix_dump.file.write(reinterpret_cast<const char*>(stereo_pcm), static_cast<std::streamsize>(bytes));
+    g_mix_dump.bytes_written += static_cast<uint32_t>(bytes);
 }
 
 void WriteChannelDumpLocked(AudioChannelState& ch, int32_t channel, const std::vector<int16_t>& stereo_pcm)
@@ -160,22 +217,27 @@ void WriteChannelDumpLocked(AudioChannelState& ch, int32_t channel, const std::v
     ch.dump.bytes_written += static_cast<uint32_t>(bytes);
 }
 
-void CloseChannelDumpLocked(AudioChannelState& ch)
+void CloseWavDumpLocked(WavDumpStream& dump)
 {
-    if (ch.dump.file.is_open())
+    if (dump.file.is_open())
     {
         uint8_t riff_size[4];
         uint8_t data_size[4];
-        WriteLe32Buf(riff_size, 36u + ch.dump.bytes_written);
-        WriteLe32Buf(data_size, ch.dump.bytes_written);
-        ch.dump.file.seekp(4, std::ios::beg);
-        ch.dump.file.write(reinterpret_cast<const char*>(riff_size), 4);
-        ch.dump.file.seekp(40, std::ios::beg);
-        ch.dump.file.write(reinterpret_cast<const char*>(data_size), 4);
-        ch.dump.file.close();
+        WriteLe32Buf(riff_size, 36u + dump.bytes_written);
+        WriteLe32Buf(data_size, dump.bytes_written);
+        dump.file.seekp(4, std::ios::beg);
+        dump.file.write(reinterpret_cast<const char*>(riff_size), 4);
+        dump.file.seekp(40, std::ios::beg);
+        dump.file.write(reinterpret_cast<const char*>(data_size), 4);
+        dump.file.close();
     }
-    ch.dump.bytes_written = 0;
-    ch.dump.open_attempted = false;
+    dump.bytes_written = 0;
+    dump.open_attempted = false;
+}
+
+void CloseChannelDumpLocked(AudioChannelState& ch)
+{
+    CloseWavDumpLocked(ch.dump);
 }
 
 bool IsValidSampleCount(int32_t sample_count)
@@ -606,6 +668,14 @@ void MixFromChannelsLocked(
             ++ch.underruns;
             g_shortfall_frames += shortfall;
             ch.shortfall_frames += shortfall;
+            if (g_dump_enabled)
+            {
+                runtime::Log(runtime::LogLevel::kInfo,
+                             "[AUDIO_UR] frame=%llu ch=%zu shortfall=%llu",
+                             static_cast<unsigned long long>(g_mix_frames_total),
+                             c,
+                             static_cast<unsigned long long>(shortfall));
+            }
             if (initial_depth[c] == 0)
             {
                 ++g_empty_underruns;
@@ -625,6 +695,11 @@ void MixFromChannelsLocked(
             any_to_wake = true;
         }
     }
+    if (g_dump_enabled)
+    {
+        WriteMixDumpLocked(stereo_out, frame_count);
+    }
+    g_mix_frames_total += static_cast<uint64_t>(frame_count);
 }
 
 void WakeAudioWaiters(const std::array<bool, kAudioMaxChannels>& to_wake, bool any_to_wake)
@@ -646,6 +721,64 @@ void WakeAudioWaiters(const std::array<bool, kAudioMaxChannels>& to_wake, bool a
     }
 }
 
+bool AllActiveChannelsReadyLocked(size_t chunk_frames)
+{
+    for (const auto& ch : g_channels)
+    {
+        if (ch.reserved && ch.active_audio && !ch.flushing_null && ch.queue.size() < chunk_frames)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+size_t ComputeLowHeadroomFramesLocked()
+{
+    // Wait only while the intermediate buffer holds more than one device pull
+    // plus one mixing quantum (or a conservative 512 + quantum before the first pull).
+    // If that threshold meets or exceeds the target buffer, never hold off mixing.
+    const size_t base_pull = (g_recent_pull_frames > 0) ? g_recent_pull_frames : size_t{512};
+    return base_pull + kClockQuantumFrames;
+}
+
+bool ShouldWaitForActiveChannelsLocked()
+{
+    const size_t low_headroom_frames = ComputeLowHeadroomFramesLocked();
+    if (low_headroom_frames >= static_cast<size_t>(g_target_buffer_frames))
+    {
+        return false;
+    }
+    if (g_intermediate_buf.size() <= low_headroom_frames)
+    {
+        return false;
+    }
+    return !AllActiveChannelsReadyLocked(kClockQuantumFrames);
+}
+
+bool TryMixOneQuantumLocked(std::array<int16_t, kClockQuantumFrames * 2u>& chunk_buf,
+                            std::array<bool, kAudioMaxChannels>& to_wake,
+                            bool& any_to_wake)
+{
+    if (!g_initialized || g_target_buffer_frames == 0 ||
+        g_intermediate_buf.size() >= g_target_buffer_frames ||
+        !AnyChannelHasDataLocked() ||
+        ShouldWaitForActiveChannelsLocked())
+    {
+        return false;
+    }
+    const size_t chunk = kClockQuantumFrames;
+    std::fill_n(chunk_buf.data(), chunk * 2u, int16_t{0});
+    MixFromChannelsLocked(chunk_buf.data(), chunk, to_wake, any_to_wake);
+    for (size_t f = 0; f < chunk; ++f)
+    {
+        g_intermediate_buf.push_back(StereoFrame{ chunk_buf[f * 2u], chunk_buf[f * 2u + 1u] });
+    }
+    return true;
+}
+
+bool g_auto_start_clock = true;
+
 void ClockThreadMain()
 {
     std::array<int16_t, kClockQuantumFrames * 2u> chunk_buf{};
@@ -657,25 +790,23 @@ void ClockThreadMain()
             std::unique_lock<std::mutex> lock(g_audio_mutex);
             g_clock_cv.wait(lock, []()
             {
-                return g_clock_stop ||
-                    (g_initialized && g_target_buffer_frames > 0 &&
-                     g_intermediate_buf.size() < g_target_buffer_frames &&
-                     AnyChannelHasDataLocked());
+                if (g_clock_stop)
+                {
+                    return true;
+                }
+                if (!g_initialized || g_target_buffer_frames == 0 ||
+                    g_intermediate_buf.size() >= g_target_buffer_frames ||
+                    !AnyChannelHasDataLocked())
+                {
+                    return false;
+                }
+                return !ShouldWaitForActiveChannelsLocked();
             });
             if (g_clock_stop)
             {
                 break;
             }
-            const size_t chunk = kClockQuantumFrames;
-            if (g_intermediate_buf.size() < g_target_buffer_frames)
-            {
-                std::fill_n(chunk_buf.data(), chunk * 2u, int16_t{0});
-                MixFromChannelsLocked(chunk_buf.data(), chunk, to_wake, any_to_wake);
-                for (size_t f = 0; f < chunk; ++f)
-                {
-                    g_intermediate_buf.push_back(StereoFrame{ chunk_buf[f * 2u], chunk_buf[f * 2u + 1u] });
-                }
-            }
+            TryMixOneQuantumLocked(chunk_buf, to_wake, any_to_wake);
         }
         WakeAudioWaiters(to_wake, any_to_wake);
     }
@@ -700,7 +831,7 @@ void StopClockThread()
 
 void EnsureClockThreadStarted()
 {
-    if (g_target_buffer_frames == 0 || g_backend == nullptr)
+    if (!g_auto_start_clock || g_target_buffer_frames == 0 || g_backend == nullptr)
     {
         return;
     }
@@ -743,6 +874,7 @@ void MixPull(int16_t* stereo_out, size_t frame_count)
         {
             g_pull_size_max = fc;
         }
+        g_recent_pull_frames = frame_count;
         size_t hist_idx = 4;
         if (fc <= 256u) hist_idx = 0;
         else if (fc <= 512u) hist_idx = 1;
@@ -827,6 +959,7 @@ void Register(const AudioHleConfig& config)
         g_pull_calls = 0;
         g_pull_size_min = 0;
         g_pull_size_max = 0;
+        g_recent_pull_frames = 0;
         g_pull_size_hist.fill(0);
         g_target_latency_ms = latency_ms;
         g_target_buffer_frames = (latency_ms * static_cast<uint32_t>(kAudioSampleRate)) / 1000u;
@@ -839,8 +972,12 @@ void Register(const AudioHleConfig& config)
         g_host_underruns = 0;
         g_host_shortfall_frames = 0;
         g_backend = backend;
+        g_auto_start_clock = config.auto_start_clock_for_test;
         g_dump_enabled = (dump_env != nullptr && *dump_env != '\0');
         g_dump_base_path = g_dump_enabled ? dump_env : "";
+        CloseWavDumpLocked(g_mix_dump);
+        g_mix_dump = WavDumpStream{};
+        g_mix_frames_total = 0;
         g_initialized = true;
     }
 
@@ -871,6 +1008,9 @@ void Shutdown()
         g_intermediate_buf.clear();
         g_dump_enabled = false;
         g_dump_base_path.clear();
+        CloseWavDumpLocked(g_mix_dump);
+        g_mix_dump = WavDumpStream{};
+        g_mix_frames_total = 0;
         for (auto& ch : g_channels)
         {
             CloseChannelDumpLocked(ch);
@@ -998,6 +1138,52 @@ std::string FormatStats()
         }
     }
     return oss.str();
+}
+
+bool StepMixClockForTest()
+{
+    std::array<int16_t, kClockQuantumFrames * 2u> chunk_buf{};
+    std::array<bool, kAudioMaxChannels> to_wake{};
+    bool any_to_wake = false;
+    bool mixed = false;
+    {
+        std::lock_guard<std::mutex> lock(g_audio_mutex);
+        mixed = TryMixOneQuantumLocked(chunk_buf, to_wake, any_to_wake);
+    }
+    if (mixed)
+    {
+        WakeAudioWaiters(to_wake, any_to_wake);
+    }
+    return mixed;
+}
+
+void ResetStatsForTest()
+{
+    std::lock_guard<std::mutex> lock(g_audio_mutex);
+    g_total_output_calls = 0;
+    g_total_frames_written = 0;
+    g_total_frames_pulled = 0;
+    g_underruns = 0;
+    g_empty_underruns = 0;
+    g_partial_underruns = 0;
+    g_shortfall_frames = 0;
+    g_pull_calls = 0;
+    g_pull_size_min = 0;
+    g_pull_size_max = 0;
+    g_pull_size_hist.fill(0);
+    g_buffer_depth_min = g_intermediate_buf.size();
+    g_buffer_depth_max = g_intermediate_buf.size();
+    g_buffer_depth_sum = 0;
+    g_buffer_depth_samples = 0;
+    g_host_underruns = 0;
+    g_host_shortfall_frames = 0;
+    for (auto& ch : g_channels)
+    {
+        ch.output_calls = 0;
+        ch.frames_written = 0;
+        ch.underruns = 0;
+        ch.shortfall_frames = 0;
+    }
 }
 
 } // namespace repsp::hle::audio

@@ -24,6 +24,7 @@ struct AudioHleConfig
 {
     bool auto_attach_platform = true;
     uint32_t target_latency_ms = 20;
+    bool auto_start_clock_for_test = true;
 };
 
 struct ChannelStats
@@ -75,6 +76,11 @@ void MixPull(int16_t* stereo_out, size_t frame_count);
 
 AudioStats GetStats();
 std::string FormatStats();
+
+// Test-only hooks for deterministic mixing-clock stepping (used when
+// AudioHleConfig::auto_start_clock_for_test is false).
+bool StepMixClockForTest();
+void ResetStatsForTest();
 
 } // namespace repsp::hle::audio
 
