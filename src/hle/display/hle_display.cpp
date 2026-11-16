@@ -109,25 +109,28 @@ void WriteBmp(const std::filesystem::path& path, const uint8_t* rgba, int width,
     std::fclose(f);
 }
 
-void PresentActiveLocked()
+void PresentActive(std::unique_lock<std::mutex>& lock)
 {
+    const FrameBufferConfig fb = g_active_fb;
     const bool need_dump = !g_config.frame_dump_dir.empty() &&
                            (g_config.frame_dump_limit == 0 || g_frames_dumped < g_config.frame_dump_limit);
     const bool is_gl = (gpu::GetRenderBackend() == &gpu::kOpenGlBackend) &&
-                       gpu::HasGlTargetForAddress(g_active_fb.topaddr);
+                       gpu::HasGlTargetForAddress(fb.topaddr);
     if (is_gl)
     {
-        gpu::PresentGlTarget(g_active_fb.topaddr);
         ++g_frames_presented;
+        lock.unlock();
+        gpu::PresentGlTarget(fb.topaddr);
 
         if (need_dump)
         {
             std::vector<uint8_t> rgba;
             int w = 0;
             int h = 0;
-            if (gpu::ReadGlTargetRgba8(g_active_fb.topaddr, 1, rgba, w, h) &&
+            if (gpu::ReadGlTargetRgba8(fb.topaddr, 1, rgba, w, h) &&
                 w == kScreenWidth && h == kScreenHeight)
             {
+                lock.lock();
                 std::error_code ec;
                 std::filesystem::create_directories(g_config.frame_dump_dir, ec);
                 char name[32];
@@ -136,39 +139,53 @@ void PresentActiveLocked()
                 WriteBmp(std::filesystem::path(g_config.frame_dump_dir) / name,
                          rgba.data(), kScreenWidth, kScreenHeight);
                 ++g_frames_dumped;
+                return;
             }
         }
+        lock.lock();
         return;
     }
 
     g_rgba_scratch.resize(static_cast<size_t>(kScreenWidth) * static_cast<size_t>(kScreenHeight) * 4u);
-    ConvertFrameBufferToRgba8(g_active_fb.topaddr, g_active_fb.bufferwidth,
-                               g_active_fb.pixelformat, g_rgba_scratch.data());
-
-    if (g_backend)
+    ConvertFrameBufferToRgba8(fb.topaddr, fb.bufferwidth,
+                               fb.pixelformat, g_rgba_scratch.data());
+    std::vector<uint8_t> rgba_copy;
+    auto* backend = g_backend;
+    if (backend || need_dump)
     {
-        g_backend->PresentRgba8(g_rgba_scratch.data(), kScreenWidth, kScreenHeight, kScreenWidth * 4);
+        rgba_copy = g_rgba_scratch;
     }
     ++g_frames_presented;
+    lock.unlock();
+
+    if (backend)
+    {
+        runtime::Scheduler::ScopedHostWait host_wait(runtime::GetScheduler());
+        backend->PresentRgba8(rgba_copy.data(), kScreenWidth, kScreenHeight, kScreenWidth * 4);
+    }
 
     if (need_dump)
     {
+        lock.lock();
         std::error_code ec;
         std::filesystem::create_directories(g_config.frame_dump_dir, ec);
         char name[32];
         std::snprintf(name, sizeof(name), "frame_%04llu.bmp",
                       static_cast<unsigned long long>(g_frames_dumped));
         WriteBmp(std::filesystem::path(g_config.frame_dump_dir) / name,
-                 g_rgba_scratch.data(), kScreenWidth, kScreenHeight);
+                 rgba_copy.data(), kScreenWidth, kScreenHeight);
         ++g_frames_dumped;
+        return;
     }
+    lock.lock();
 }
 
 void OnVblankTick()
 {
     bool close_requested = false;
+    platform::DisplayBackend* backend = nullptr;
     {
-        std::lock_guard<std::mutex> lock(g_disp_mutex);
+        std::unique_lock<std::mutex> lock(g_disp_mutex);
         if (!g_initialized)
         {
             return;
@@ -177,12 +194,14 @@ void OnVblankTick()
         {
             g_active_fb = g_pending_fb;
             g_has_pending_fb = false;
-            PresentActiveLocked();
+            PresentActive(lock);
         }
-        if (g_backend && !g_backend->PollEvents())
-        {
-            close_requested = true;
-        }
+        backend = g_backend;
+    }
+
+    if (backend && !backend->PollEvents())
+    {
+        close_requested = true;
     }
 
     if (close_requested)
@@ -212,13 +231,13 @@ void HleSetFrameBuf()
     const int32_t pixelformat = static_cast<int32_t>(recomp::Arg<uint32_t>(2));
     const int32_t sync = static_cast<int32_t>(recomp::Arg<uint32_t>(3));
 
-    std::lock_guard<std::mutex> lock(g_disp_mutex);
+    std::unique_lock<std::mutex> lock(g_disp_mutex);
     const FrameBufferConfig fb{topaddr, bufferwidth, pixelformat};
     if (sync == 0)
     {
         g_active_fb = fb;
         g_has_pending_fb = false;
-        PresentActiveLocked();
+        PresentActive(lock);
     }
     else
     {

@@ -77,6 +77,7 @@ const char* WaitTypeName(WaitType wt)
     case WaitType::kUmd: return "Umd";
     case WaitType::kAudio: return "Audio";
     case WaitType::kCustom: return "Custom";
+    case WaitType::kHostWait: return "host wait";
     default: return "Unknown";
     }
 }
@@ -442,6 +443,10 @@ void Scheduler::SwitchOutCurrentLocked(std::unique_lock<TrackedMutex>& lock, con
 
 void Scheduler::WakeWaitersLocked(WaitType type, KernelUid target_uid, int32_t result, bool wake_all)
 {
+    if (type == WaitType::kHostWait)
+    {
+        return;
+    }
     for (const auto& t : threads_)
     {
         if (t->state == ThreadState::kWaiting && t->wait_type == type && t->wait_target_uid == target_uid)
@@ -804,7 +809,8 @@ int32_t Scheduler::DeleteThread(KernelUid thread_uid)
         {
             return kErrUnknownThid;
         }
-        if (target->uid == active_thread_uid_)
+        if (target->uid == active_thread_uid_ ||
+            (target->state == ThreadState::kWaiting && target->wait_type == WaitType::kHostWait))
         {
             return kErrIllegalContext;
         }
@@ -835,7 +841,8 @@ int32_t Scheduler::TerminateThread(KernelUid thread_uid, bool delete_target)
         {
             return kErrUnknownThid;
         }
-        if (target->uid == active_thread_uid_)
+        if (target->uid == active_thread_uid_ ||
+            (target->state == ThreadState::kWaiting && target->wait_type == WaitType::kHostWait))
         {
             return kErrIllegalContext;
         }
@@ -1068,6 +1075,10 @@ int32_t Scheduler::WaitCurrentIf(
 
 bool Scheduler::WakeOneWaiter(WaitType type, KernelUid target_uid, int32_t result)
 {
+    if (type == WaitType::kHostWait)
+    {
+        return false;
+    }
     bool woke = false;
     bool should_yield = false;
     {
@@ -1101,6 +1112,10 @@ bool Scheduler::WakeOneWaiter(WaitType type, KernelUid target_uid, int32_t resul
 
 size_t Scheduler::WakeAllWaiters(WaitType type, KernelUid target_uid, int32_t result)
 {
+    if (type == WaitType::kHostWait)
+    {
+        return 0;
+    }
     size_t count = 0;
     bool should_yield = false;
     {
@@ -1138,7 +1153,7 @@ bool Scheduler::WakeThreadFromWait(KernelUid thread_uid, int32_t result)
     {
         std::lock_guard<TrackedMutex> lock(mutex_);
         auto t = FindThreadLocked(thread_uid);
-        if (t && t->state == ThreadState::kWaiting)
+        if (t && t->state == ThreadState::kWaiting && t->wait_type != WaitType::kHostWait)
         {
             t->wait_result = result;
             MakeReadyLocked(t);
@@ -1653,7 +1668,7 @@ void Scheduler::Run(KernelUid entry_thread_uid)
                 if (t->state == ThreadState::kWaiting || t->state == ThreadState::kSuspended)
                 {
                     any_alive = true;
-                    if (t->state == ThreadState::kWaiting && t->has_timeout)
+                    if (t->state == ThreadState::kWaiting && t->wait_type != WaitType::kHostWait && t->has_timeout)
                     {
                         if (!has_timeout || t->deadline < min_deadline)
                         {
@@ -1683,7 +1698,7 @@ void Scheduler::Run(KernelUid entry_thread_uid)
                 auto now = std::chrono::steady_clock::now();
                 for (const auto& t : threads_)
                 {
-                    if (t->state == ThreadState::kWaiting && t->has_timeout && now >= t->deadline)
+                    if (t->state == ThreadState::kWaiting && t->wait_type != WaitType::kHostWait && t->has_timeout && now >= t->deadline)
                     {
                         t->wait_result = kWaitTimeout;
                         MakeReadyLocked(t);
@@ -1829,6 +1844,81 @@ Scheduler& GetScheduler()
 {
     static Scheduler instance;
     return instance;
+}
+
+Scheduler::ScopedHostWait::ScopedHostWait(Scheduler& sched)
+    : sched_(sched),
+      active_(sched.BeginHostWait())
+{
+}
+
+Scheduler::ScopedHostWait::~ScopedHostWait()
+{
+    if (active_)
+    {
+        sched_.EndHostWait();
+    }
+}
+
+bool Scheduler::BeginHostWait()
+{
+    if (t_current_thread_uid == 0)
+    {
+        return false;
+    }
+    std::lock_guard<TrackedMutex> lock(mutex_);
+    if (shutdown_ || fatal_stop_ || in_interrupt_ || active_thread_uid_ != t_current_thread_uid)
+    {
+        return false;
+    }
+    auto cur = FindThreadLocked(t_current_thread_uid);
+    if (!cur || cur->state != ThreadState::kRunning)
+    {
+        return false;
+    }
+    if (ops_ != nullptr && ops_->save != nullptr && !cur->cpu_context.empty())
+    {
+        ops_->save(cur->cpu_context.data());
+    }
+    cur->state = ThreadState::kWaiting;
+    cur->wait_type = WaitType::kHostWait;
+    cur->wait_target_uid = 0;
+    cur->wait_detail = "host_wait";
+    cur->has_timeout = false;
+    active_thread_uid_ = 0;
+    ++external_wait_sources_;
+    cv_.notify_all();
+    return true;
+}
+
+void Scheduler::EndHostWait()
+{
+    std::unique_lock<TrackedMutex> lock(mutex_);
+    if (external_wait_sources_ > 0)
+    {
+        --external_wait_sources_;
+    }
+    auto cur = FindThreadLocked(t_current_thread_uid);
+    if (!cur)
+    {
+        return;
+    }
+    if (shutdown_ || fatal_stop_ || cur->state == ThreadState::kDead)
+    {
+        return;
+    }
+    MakeReadyLocked(cur);
+    cv_.notify_all();
+    cv_.wait(lock, [&]()
+    {
+        return shutdown_ || fatal_stop_ || cur->state == ThreadState::kDead ||
+               (active_thread_uid_ == cur->uid && cur->state == ThreadState::kRunning);
+    });
+    if (!shutdown_ && !fatal_stop_ && cur->state == ThreadState::kRunning &&
+        ops_ != nullptr && ops_->restore != nullptr && !cur->cpu_context.empty())
+    {
+        ops_->restore(cur->cpu_context.data());
+    }
 }
 
 } // namespace repsp::runtime

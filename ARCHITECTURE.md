@@ -177,6 +177,7 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 * 환경 변수 `REPSP_SCHED_STATS=1` 또는 `Scheduler::SetWakeLatencyProfiling(true)`로 스레드 기상 지연(`GetWakeLatencyStats()`, `FormatWakeLatencyStats()`)을 원인(`Delay`, `Audio` 등)·우선순위 구간별로 계측할 수 있습니다(비활성 시 기록 오버헤드 없음).
 * **정지·대기 시 스택·잠금 계약**: `NidRegistry::Invoke`는 핸들러 실행 중 스택에 소유 객체(`std::function`, `std::string`)를 두지 않으며, `RaiseStop`/`WaitCurrent`/`YieldIfPreempted` 경로의 바깥 프레임은 뮤텍스 잠금을 유지하지 않습니다(대기 중 강제 종료되는 스레드의 안쪽 대기 핸들러 프레임 지역 객체만 누수 범위에 남습니다).
 * **게스트 스레드 호스트 스택 예약**: 게스트 스레드는 기본적으로 스레드당 **8 MiB**(`Scheduler::kDefaultGuestHostStackReserveBytes`, Linux 주 스레드의 흔한 기본값)의 호스트 스택을 예약합니다. 이는 호스트 호출이 게스트 호출 깊이만큼만 중첩되는 실행 모델을 전제로 한 기본값이며, `SetGuestHostStackReserveBytes()`로 바꿀 수 있습니다(`0`이면 플랫폼 기본값).
+* **호스트 동기화 구간 (`Scheduler::ScopedHostWait`)**: 호스트 OS/UI/GPU 동기화 대기(`WaitType::kHostWait`) 동안 게스트 CPU 컨텍스트를 저장해 CPU 슬롯을 내려놓고 복원하며, 이 구간에서는 게스트 메모리·CPU 상태·커널 객체를 건드리지 않습니다.
 
 ### 2.9. GE·디스플레이 및 프레임 덤프 계약 (`ge.h`, `display.h`)
 
@@ -261,6 +262,7 @@ Consumers configure VFS mounts and reserve the loaded module image range via `re
 * **Interrupt delivery contract**: Queued interrupts (`Scheduler::QueueInterrupt`) are delivered at safe points using the dedicated 16 KiB kernel interrupt stack (`0x08010000`). Blocking waits or explicit yields inside an interrupt handler trigger `RaiseStop`.
 * **Thread-context guest calls**: `Scheduler::CallGuestFunction(entry, a0, a1, a2, a3)` saves/restores registers on the running guest thread, invokes a guest function (such as the `sceMpegRingbufferPut` callback) in normal thread context so blocking waits work normally, and returns `$v0`.
 * **Guest thread host stack reservation**: Guest threads reserve **8 MiB** of host stack per thread by default (`Scheduler::kDefaultGuestHostStackReserveBytes`, matching the typical Linux main-thread default). This assumes an execution model where host calls nest only as deep as guest calls, and can be overridden via `SetGuestHostStackReserveBytes()` (`0` selects the platform default).
+* **Host synchronization wait (`Scheduler::ScopedHostWait`)**: Temporarily saves guest CPU context and releases the CPU slot under `WaitType::kHostWait` across blocking host OS/UI/GPU waits; code inside this scope must not touch guest memory, guest CPU state, or kernel objects.
 
 ### 2.9. GE, Display, and Frame Dump Contract (`ge.h`, `display.h`)
 

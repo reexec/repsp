@@ -7,11 +7,15 @@
 #include "repsp/runtime/scheduler.h"
 #include "repsp/runtime/sha1.h"
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define TEST_ASSERT(cond) \
@@ -20,7 +24,8 @@
         if (!(cond)) \
         { \
             std::fprintf(stderr, "Assertion failed: %s at %s:%d\n", #cond, __FILE__, __LINE__); \
-            std::exit(1); \
+            std::fflush(nullptr); \
+            std::_Exit(1); \
         } \
     } while (0)
 
@@ -91,6 +96,15 @@ constexpr uint32_t kAddrIntrWaitMain = 0x0880C030u;
 constexpr uint32_t kAddrIntrWaitIsr  = 0x0880C040u;
 constexpr uint32_t kAddrDeepStack    = 0x0880E000u;
 constexpr uint32_t kAddrStackOverflow = 0x0880E010u;
+constexpr uint32_t kAddrHostWaitMain = 0x0880E020u;
+constexpr uint32_t kAddrHostWaitHigh = 0x0880E030u;
+
+std::mutex g_host_wait_mutex;
+std::condition_variable g_host_wait_cv;
+bool g_host_wait_high_ran = false;
+bool g_host_wait_passed = false;
+uint32_t g_host_wait_saved_s0 = 0;
+int32_t g_host_wait_main_uid = 0;
 
 volatile uintptr_t g_deep_stack_span = 0;
 volatile uint64_t g_deep_stack_committed = 0;
@@ -442,6 +456,56 @@ void FakeCallGuest(uint32_t addr)
         g_cpu.gpr[2] = DeepStackTouch(3000);
         break;
     }
+    case kAddrHostWaitMain:
+    {
+        g_cpu.gpr[16] = 0xCAFEBABEu;
+        int32_t t_high = GetScheduler().CreateThread("host_wait_high", kAddrHostWaitHigh, 18, 0x4000, 0, 0);
+        TEST_ASSERT(t_high > 0);
+        // StartThread preempts into t_high immediately; t_high blocks on WaitType::kAudio
+        // until woken from inside ScopedHostWait below.
+        TEST_ASSERT(GetScheduler().StartThread(t_high, 0, 0) == 0);
+        {
+            repsp::runtime::Scheduler::ScopedHostWait host_wait(GetScheduler());
+            std::thread waker([]()
+            {
+                GetScheduler().WakeAllWaiters(repsp::runtime::WaitType::kAudio, 0x7777u, 0);
+            });
+            std::unique_lock<std::mutex> lock(g_host_wait_mutex);
+            g_host_wait_passed = g_host_wait_cv.wait_for(
+                lock, std::chrono::milliseconds(1500), []() { return g_host_wait_high_ran; });
+            waker.join();
+        }
+        g_host_wait_saved_s0 = g_cpu.gpr[16];
+        break;
+    }
+    case kAddrHostWaitHigh:
+    {
+        TEST_ASSERT(GetScheduler().WaitCurrent(
+                        repsp::runtime::WaitType::kAudio, 0x7777u, "host_wait_probe", nullptr, false) == 0);
+        g_cpu.gpr[16] = 0xDEAD0000u;
+        const auto snap = GetScheduler().GetThreadsSnapshot();
+        bool found_host_wait = false;
+        for (const auto& info : snap)
+        {
+            if (info.uid == g_host_wait_main_uid)
+            {
+                found_host_wait = (info.state == repsp::runtime::ThreadState::kWaiting &&
+                                   info.wait_type == repsp::runtime::WaitType::kHostWait);
+            }
+        }
+        TEST_ASSERT(found_host_wait);
+        TEST_ASSERT(GetScheduler().WakeAllWaiters(repsp::runtime::WaitType::kHostWait, 0, 0) == 0);
+        TEST_ASSERT(GetScheduler().WakeAllWaiters(repsp::runtime::WaitType::kCustom, 0, 0) == 0);
+        TEST_ASSERT(!GetScheduler().WakeThreadFromWait(g_host_wait_main_uid, 0));
+        TEST_ASSERT(GetScheduler().TerminateThread(g_host_wait_main_uid, false) < 0);
+        TEST_ASSERT(GetScheduler().DeleteThread(g_host_wait_main_uid) < 0);
+        {
+            std::lock_guard<std::mutex> lock(g_host_wait_mutex);
+            g_host_wait_high_ran = true;
+        }
+        g_host_wait_cv.notify_all();
+        break;
+    }
     default:
         TEST_ASSERT(false);
     }
@@ -627,6 +691,19 @@ int main()
     TEST_ASSERT(ovf_guard.stopped);
     TEST_ASSERT(ovf_guard.stop_reason.find("Stack overflow") != std::string::npos);
 #endif
+
+    // 15. ScopedHostWait yields guest CPU during host blocking wait and preserves CPU context
+    kernel::Register(kernel::KernelConfig{});
+    g_host_wait_high_ran = false;
+    g_host_wait_passed = false;
+    g_host_wait_saved_s0 = 0;
+    int32_t t_host_wait = GetScheduler().CreateThread("host_wait_main", kAddrHostWaitMain, 32, 0x4000, 0, 0);
+    TEST_ASSERT(t_host_wait > 0);
+    g_host_wait_main_uid = t_host_wait;
+    GetScheduler().Run(t_host_wait);
+    TEST_ASSERT(g_host_wait_high_ran);
+    TEST_ASSERT(g_host_wait_passed);
+    TEST_ASSERT(g_host_wait_saved_s0 == 0xCAFEBABEu);
 
     GetScheduler().Reset();
     std::printf("kernel_sched_probe passed.\n");

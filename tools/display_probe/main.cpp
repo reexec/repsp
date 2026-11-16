@@ -20,7 +20,8 @@
         if (!(cond)) \
         { \
             std::fprintf(stderr, "Assertion failed: %s at %s:%d\n", #cond, __FILE__, __LINE__); \
-            std::exit(1); \
+            std::fflush(nullptr); \
+            std::_Exit(1); \
         } \
     } while (0)
 

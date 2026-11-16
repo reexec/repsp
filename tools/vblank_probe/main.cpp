@@ -16,7 +16,8 @@
         if (!(cond))                                                                   \
         {                                                                              \
             std::fprintf(stderr, "FAIL: %s (%s:%d)\n", #cond, __FILE__, __LINE__);     \
-            return 1;                                                                  \
+            std::fflush(nullptr);                                                      \
+            std::_Exit(1);                                                             \
         }                                                                              \
     } while (false)
 

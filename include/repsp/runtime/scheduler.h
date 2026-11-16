@@ -57,6 +57,7 @@ enum class WaitType
     kUmd,
     kAudio,
     kCustom,
+    kHostWait,
 };
 
 struct GuestThreadInfo
@@ -104,7 +105,7 @@ struct WakeLatencyStats
     uint64_t total_latency_us = 0;
     uint64_t max_latency_us = 0;
     std::array<uint64_t, 9> hist{};
-    std::array<WakeLatencyBucketStats, 10> by_wait_type{};
+    std::array<WakeLatencyBucketStats, 11> by_wait_type{};
     std::array<WakeLatencyBucketStats, 4> by_priority{}; // 0-15, 16-31, 32-63, 64+
 };
 
@@ -186,6 +187,27 @@ public:
     void YieldCurrent();
     void Poll();
 
+    // Temporarily release the guest CPU slot while the active guest thread
+    // blocks on a host OS/UI/GPU synchronization primitive.
+    // Contract:
+    // - Inside ScopedHostWait, the thread must NOT touch guest memory, guest
+    //   CPU state, or kernel objects.
+    // - The thread waits in WaitType::kHostWait and cannot be woken by
+    //   Wake* calls/timeouts or terminated/deleted until the host wait returns.
+    // - No-op on non-guest host threads or inside interrupt handlers.
+    class ScopedHostWait
+    {
+    public:
+        explicit ScopedHostWait(Scheduler& sched);
+        ~ScopedHostWait();
+        ScopedHostWait(const ScopedHostWait&) = delete;
+        ScopedHostWait& operator=(const ScopedHostWait&) = delete;
+
+    private:
+        Scheduler& sched_;
+        bool active_ = false;
+    };
+
     // External event notification (e.g. vblank or host audio clock)
     void SetExternalWaitSources(uint32_t count);
     void AddExternalWaitSource(uint32_t count = 1);
@@ -257,6 +279,8 @@ private:
     std::string FormatDeadlockReportLocked() const;
     void FreeThreadStackLocked(const std::shared_ptr<GuestThread>& t);
     void UpdateCurrentHostStackHighWaterLocked(const std::shared_ptr<GuestThread>& t);
+    bool BeginHostWait();
+    void EndHostWait();
 
     const repsp_guest_cpu_ops* ops_ = nullptr;
     size_t guest_host_stack_reserve_bytes_ = kDefaultGuestHostStackReserveBytes;
