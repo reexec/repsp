@@ -62,10 +62,10 @@ int ExceptionFilter(unsigned int code, struct _EXCEPTION_POINTERS* ep, CrashInfo
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    if (code == EXCEPTION_STACK_OVERFLOW)
-    {
-        _resetstkoflw();
-    }
+    // A stack overflow is not reset here: the filter still runs on the
+    // overflowed stack, and _resetstkoflw() must not be called from a filter
+    // (it re-arms the guard page below a stack pointer that may already be
+    // past it). RunGuardedRaw resets it in the handler, after unwinding.
 
     if (info != nullptr)
     {
@@ -96,6 +96,12 @@ bool RunGuardedRaw(void (*callback)(void*), void* user_data, CrashInfo* info)
     }
     __except (ExceptionFilter(GetExceptionCode(), GetExceptionInformation(), info))
     {
+        // The stack is unwound to this frame now, so the guard page can be
+        // restored for the next overflow on this thread.
+        if (GetExceptionCode() == EXCEPTION_STACK_OVERFLOW)
+        {
+            _resetstkoflw();
+        }
         return false;
     }
 }
