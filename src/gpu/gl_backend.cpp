@@ -184,7 +184,12 @@ struct UiFboTarget
     GLuint fbo = 0;
     GLuint color_tex = 0;
     GLuint depth_rbo = 0;
+    GLuint msaa_fbo = 0;
+    GLuint msaa_color_rbo = 0;
+    GLuint msaa_depth_rbo = 0;
     int scale = 1;
+    int samples = 1;
+    bool msaa_dirty = false;
 };
 
 struct UiTexEntry
@@ -277,6 +282,13 @@ struct GlContextState
     std::mutex mutex;
     bool initialized = false;
     int internal_scale = 1;
+    int msaa_samples = 0;
+    int max_msaa_samples = 1;
+    TextureFilterMode tex_filter_mode = TextureFilterMode::kOriginal;
+    float max_anisotropy = 1.0f;
+    bool driver_gpu_reported = false;
+    uint64_t driver_gpu_total_bytes = 0;
+    uint64_t driver_gpu_avail_bytes = 0;
 
     // Guest-thread recording state
     uint32_t current_target_addr = 0;
@@ -546,11 +558,51 @@ bool UiInitResources()
                                   reinterpret_cast<const void*>(offsetof(GlVertex, rgba)));
     g_gl.gl.glBindVertexArray(0);
     g_gl.gl.glBindBuffer(kGlArrayBuffer, 0);
+
+    GLint max_samples = 1;
+    g_gl.gl.glGetIntegerv(kGlMaxSamples, &max_samples);
+    if (g_gl.gl.glGetError() == 0 && max_samples > 1)
+    {
+        g_gl.max_msaa_samples = max_samples;
+    }
+    else
+    {
+        g_gl.max_msaa_samples = 1;
+    }
+
+    GLfloat max_aniso = 1.0f;
+    g_gl.gl.glGetFloatv(kGlMaxTextureMaxAnisotropy, &max_aniso);
+    if (g_gl.gl.glGetError() == 0 && max_aniso > 1.0f)
+    {
+        g_gl.max_anisotropy = max_aniso;
+    }
+    else
+    {
+        g_gl.max_anisotropy = 1.0f;
+    }
+
     return g_gl.vao != 0 && g_gl.vbo != 0;
 }
 
 void UiDestroyTarget(UiFboTarget& t)
 {
+    if (t.msaa_fbo != 0)
+    {
+        g_gl.gl.glDeleteFramebuffers(1, &t.msaa_fbo);
+        t.msaa_fbo = 0;
+    }
+    if (t.msaa_color_rbo != 0)
+    {
+        g_gl.gl.glDeleteRenderbuffers(1, &t.msaa_color_rbo);
+        t.msaa_color_rbo = 0;
+    }
+    if (t.msaa_depth_rbo != 0)
+    {
+        g_gl.gl.glDeleteRenderbuffers(1, &t.msaa_depth_rbo);
+        t.msaa_depth_rbo = 0;
+    }
+    t.samples = 1;
+    t.msaa_dirty = false;
     if (t.fbo != 0)
     {
         g_gl.gl.glDeleteFramebuffers(1, &t.fbo);
@@ -566,6 +618,22 @@ void UiDestroyTarget(UiFboTarget& t)
         g_gl.gl.glDeleteRenderbuffers(1, &t.depth_rbo);
         t.depth_rbo = 0;
     }
+}
+
+void UiResolveTargetIfDirty(UiFboTarget& t)
+{
+    if (t.samples <= 1 || !t.msaa_dirty || t.msaa_fbo == 0 || t.fbo == 0)
+    {
+        return;
+    }
+    const int w = kScreenWidth * t.scale;
+    const int h = kScreenHeight * t.scale;
+    g_gl.gl.glDisable(kGlScissorTest);
+    g_gl.gl.glBindFramebuffer(kGlReadFramebuffer, t.msaa_fbo);
+    g_gl.gl.glBindFramebuffer(kGlDrawFramebuffer, t.fbo);
+    g_gl.gl.glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, kGlColorBufferBit, kGlNearest);
+    g_gl.gl.glBindFramebuffer(kGlFramebuffer, 0);
+    t.msaa_dirty = false;
 }
 
 void UiShutdownResources()
@@ -620,10 +688,13 @@ void UiShutdownResources()
     }
 }
 
-UiFboTarget& UiGetOrCreateTarget(uint32_t addr, int scale)
+UiFboTarget& UiGetOrCreateTarget(uint32_t addr, int scale, int req_samples)
 {
+    const int eff_samples = (req_samples <= 1 || g_gl.max_msaa_samples <= 1)
+                                ? 1
+                                : std::min(req_samples, g_gl.max_msaa_samples);
     auto& t = g_gl.ui_targets[addr];
-    if (t.fbo != 0 && t.scale == scale)
+    if (t.fbo != 0 && t.scale == scale && t.samples == eff_samples)
     {
         return t;
     }
@@ -650,12 +721,45 @@ UiFboTarget& UiGetOrCreateTarget(uint32_t addr, int scale)
     g_gl.gl.glFramebufferTexture2D(kGlFramebuffer, kGlColorAttachment0, kGlTexture2d, t.color_tex, 0);
     g_gl.gl.glFramebufferRenderbuffer(kGlFramebuffer, kGlDepthStencilAttachment, kGlRenderbuffer, t.depth_rbo);
     t.scale = scale;
+    t.samples = 1;
+    t.msaa_dirty = false;
 
     g_gl.gl.glDisable(kGlScissorTest);
     g_gl.gl.glColorMask(kGlTrue, kGlTrue, kGlTrue, kGlTrue);
     g_gl.gl.glDepthMask(kGlTrue);
     g_gl.gl.glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     g_gl.gl.glClear(kGlColorBufferBit | kGlDepthBufferBit | kGlStencilBufferBit);
+
+    if (eff_samples > 1)
+    {
+        g_gl.gl.glGenFramebuffers(1, &t.msaa_fbo);
+        g_gl.gl.glGenRenderbuffers(1, &t.msaa_color_rbo);
+        g_gl.gl.glGenRenderbuffers(1, &t.msaa_depth_rbo);
+
+        g_gl.gl.glBindRenderbuffer(kGlRenderbuffer, t.msaa_color_rbo);
+        g_gl.gl.glRenderbufferStorageMultisample(kGlRenderbuffer, eff_samples, kGlRgba8, w, h);
+        g_gl.gl.glBindRenderbuffer(kGlRenderbuffer, t.msaa_depth_rbo);
+        g_gl.gl.glRenderbufferStorageMultisample(kGlRenderbuffer, eff_samples, kGlDepth24Stencil8, w, h);
+
+        g_gl.gl.glBindFramebuffer(kGlFramebuffer, t.msaa_fbo);
+        g_gl.gl.glFramebufferRenderbuffer(kGlFramebuffer, kGlColorAttachment0, kGlRenderbuffer, t.msaa_color_rbo);
+        g_gl.gl.glFramebufferRenderbuffer(kGlFramebuffer, kGlDepthStencilAttachment, kGlRenderbuffer, t.msaa_depth_rbo);
+        if (g_gl.gl.glCheckFramebufferStatus(kGlFramebuffer) == kGlFramebufferComplete)
+        {
+            t.samples = eff_samples;
+            g_gl.gl.glClear(kGlColorBufferBit | kGlDepthBufferBit | kGlStencilBufferBit);
+        }
+        else
+        {
+            g_gl.gl.glDeleteFramebuffers(1, &t.msaa_fbo);
+            g_gl.gl.glDeleteRenderbuffers(1, &t.msaa_color_rbo);
+            g_gl.gl.glDeleteRenderbuffers(1, &t.msaa_depth_rbo);
+            t.msaa_fbo = 0;
+            t.msaa_color_rbo = 0;
+            t.msaa_depth_rbo = 0;
+        }
+    }
+
     g_gl.gl.glBindFramebuffer(kGlFramebuffer, 0);
     return t;
 }
@@ -793,7 +897,39 @@ void ApplyBlendState(const PipelineState& s)
     g_gl.gl.glBlendFuncSeparate(src_rgb, dst_rgb, kGlOne, kGlZero);
 }
 
-void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale)
+void ApplyTextureFiltering(TextureFilterMode mode)
+{
+    const GLint gl_filter = (mode == TextureFilterMode::kOriginal)
+                                ? static_cast<GLint>(kGlNearest)
+                                : static_cast<GLint>(kGlLinear);
+    g_gl.gl.glTexParameteri(kGlTexture2d, kGlTextureMinFilter, gl_filter);
+    g_gl.gl.glTexParameteri(kGlTexture2d, kGlTextureMagFilter, gl_filter);
+    if (g_gl.max_anisotropy > 1.0f)
+    {
+        float aniso = 1.0f;
+        switch (mode)
+        {
+        case TextureFilterMode::kAniso2x:
+            aniso = 2.0f;
+            break;
+        case TextureFilterMode::kAniso4x:
+            aniso = 4.0f;
+            break;
+        case TextureFilterMode::kAniso8x:
+            aniso = 8.0f;
+            break;
+        case TextureFilterMode::kAniso16x:
+            aniso = 16.0f;
+            break;
+        default:
+            aniso = 1.0f;
+            break;
+        }
+        g_gl.gl.glTexParameterf(kGlTexture2d, kGlTextureMaxAnisotropy, std::min(aniso, g_gl.max_anisotropy));
+    }
+}
+
+void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale, int req_samples, TextureFilterMode tex_filter)
 {
     if (!payload)
     {
@@ -858,6 +994,7 @@ void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale)
     g_gl.gl.glDisable(kGlStencilTest);
 
     uint32_t bound_target = 0xFFFFFFFFu;
+    GLuint bound_draw_fbo = 0;
     for (const auto& batch : payload->batches)
     {
         const PipelineState& s = batch.state;
@@ -867,8 +1004,13 @@ void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale)
         }
         if (s.target_addr != bound_target)
         {
-            UiFboTarget& fbo = UiGetOrCreateTarget(s.target_addr, scale);
-            g_gl.gl.glBindFramebuffer(kGlFramebuffer, fbo.fbo);
+            UiFboTarget& fbo = UiGetOrCreateTarget(s.target_addr, scale, req_samples);
+            bound_draw_fbo = (fbo.samples > 1 && fbo.msaa_fbo != 0) ? fbo.msaa_fbo : fbo.fbo;
+            if (fbo.samples > 1)
+            {
+                fbo.msaa_dirty = true;
+            }
+            g_gl.gl.glBindFramebuffer(kGlFramebuffer, bound_draw_fbo);
             g_gl.gl.glViewport(0, 0, kScreenWidth * scale, kScreenHeight * scale);
             bound_target = s.target_addr;
             ++g_gl.stats.fbo_switches;
@@ -938,6 +1080,12 @@ void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale)
                 auto fit = g_gl.ui_targets.find(s.fbo_tex_addr);
                 if (fit != g_gl.ui_targets.end() && fit->second.color_tex != 0)
                 {
+                    if (fit->second.msaa_dirty)
+                    {
+                        UiResolveTargetIfDirty(fit->second);
+                        g_gl.gl.glBindFramebuffer(kGlFramebuffer, bound_draw_fbo);
+                        g_gl.gl.glEnable(kGlScissorTest);
+                    }
                     tex_id = fit->second.color_tex;
                     is_fbo = 1;
                 }
@@ -952,6 +1100,10 @@ void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale)
             }
             g_gl.gl.glActiveTexture(kGlTexture0);
             g_gl.gl.glBindTexture(kGlTexture2d, tex_id);
+            if (tex_id != 0)
+            {
+                ApplyTextureFiltering(is_fbo ? TextureFilterMode::kOriginal : tex_filter);
+            }
             g_gl.gl.glUniform1i(g_gl.u_tex_enable, (tex_id != 0) ? 1 : 0);
             g_gl.gl.glUniform1i(g_gl.u_tex, 0);
             g_gl.gl.glUniform2i(g_gl.u_tex_size, std::max(1, tex_w), std::max(1, tex_h));
@@ -1004,6 +1156,25 @@ void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale)
     g_gl.gl.glBindTexture(kGlTexture2d, 0);
     g_gl.gl.glBindFramebuffer(kGlFramebuffer, 0);
     g_gl.gl.glUseProgram(0);
+
+    for (auto& kv : g_gl.ui_targets)
+    {
+        UiResolveTargetIfDirty(kv.second);
+    }
+
+    GLint total_kb = 0;
+    GLint avail_kb = 0;
+    g_gl.gl.glGetIntegerv(kGlGpuMemInfoTotalKbNvx, &total_kb);
+    if (g_gl.gl.glGetError() == 0 && total_kb > 0)
+    {
+        g_gl.gl.glGetIntegerv(kGlGpuMemInfoAvailKbNvx, &avail_kb);
+        if (g_gl.gl.glGetError() == 0 && avail_kb >= 0)
+        {
+            g_gl.driver_gpu_reported = true;
+            g_gl.driver_gpu_total_bytes = static_cast<uint64_t>(total_kb) * 1024ull;
+            g_gl.driver_gpu_avail_bytes = static_cast<uint64_t>(avail_kb) * 1024ull;
+        }
+    }
 }
 
 void CheckCpuWriteOverlapLocked(GuestTargetTrack& track)
@@ -1179,9 +1350,11 @@ void FlushPendingLocked()
 
     auto shared_payload = std::shared_ptr<FlushPayload>(std::move(g_gl.pending_flush));
     const int scale = g_gl.internal_scale;
-    display->SubmitRenderJob([shared_payload, scale]()
+    const int req_samples = g_gl.msaa_samples;
+    const TextureFilterMode tex_filter = g_gl.tex_filter_mode;
+    display->SubmitRenderJob([shared_payload, scale, req_samples, tex_filter]()
     {
-        UiExecuteFlush(std::make_unique<FlushPayload>(std::move(*shared_payload)), scale);
+        UiExecuteFlush(std::make_unique<FlushPayload>(std::move(*shared_payload)), scale, req_samples, tex_filter);
     });
 }
 
@@ -1563,6 +1736,7 @@ bool ReadGlTargetRgba8(uint32_t addr, int output_scale, std::vector<uint8_t>& ou
             ok = false;
             return;
         }
+        UiResolveTargetIfDirty(it->second);
         const int src_w = kScreenWidth * it->second.scale;
         const int src_h = kScreenHeight * it->second.scale;
         const int dst_w = kScreenWidth * clamped_out_scale;
@@ -1631,6 +1805,98 @@ void ResetOpenGlStats()
     g_gl.warned_blend_fix_conflict = false;
     g_gl.warned_blend_abs_diff = false;
     g_gl.warned_unsupported_prim = false;
+}
+
+void SetMsaaSamples(int samples)
+{
+    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    if (samples <= 1)
+    {
+        g_gl.msaa_samples = 0;
+    }
+    else if (samples <= 2)
+    {
+        g_gl.msaa_samples = 2;
+    }
+    else if (samples <= 4)
+    {
+        g_gl.msaa_samples = 4;
+    }
+    else
+    {
+        g_gl.msaa_samples = 8;
+    }
+}
+
+int GetMsaaSamples()
+{
+    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    return g_gl.msaa_samples;
+}
+
+int GetEffectiveMsaaSamples()
+{
+    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    if (g_gl.msaa_samples <= 1 || g_gl.max_msaa_samples <= 1)
+    {
+        return 0;
+    }
+    return std::min(g_gl.msaa_samples, g_gl.max_msaa_samples);
+}
+
+int GetMaxMsaaSamples()
+{
+    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    return g_gl.max_msaa_samples;
+}
+
+void SetTextureFilterMode(TextureFilterMode mode)
+{
+    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    g_gl.tex_filter_mode = mode;
+}
+
+TextureFilterMode GetTextureFilterMode()
+{
+    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    return g_gl.tex_filter_mode;
+}
+
+float GetMaxAnisotropy()
+{
+    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    return g_gl.max_anisotropy;
+}
+
+GpuMemoryInfo GetGpuMemoryInfo()
+{
+    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    GpuMemoryInfo info;
+    info.driver_reported = g_gl.driver_gpu_reported;
+    info.total_bytes = g_gl.driver_gpu_total_bytes;
+    info.available_bytes = g_gl.driver_gpu_avail_bytes;
+    for (const auto& kv : g_gl.ui_textures)
+    {
+        if (kv.second.tex != 0 && kv.second.width > 0 && kv.second.height > 0)
+        {
+            info.hle_textures_bytes += static_cast<uint64_t>(kv.second.width) * static_cast<uint64_t>(kv.second.height) * 4ull;
+        }
+    }
+    for (const auto& kv : g_gl.ui_targets)
+    {
+        if (kv.second.fbo != 0)
+        {
+            const uint64_t px = static_cast<uint64_t>(kScreenWidth * kv.second.scale) *
+                                static_cast<uint64_t>(kScreenHeight * kv.second.scale);
+            // Color RGBA8 (4 bytes) + Depth24Stencil8 (4 bytes)
+            info.hle_targets_bytes += px * 8ull;
+            if (kv.second.samples > 1 && kv.second.msaa_fbo != 0)
+            {
+                info.hle_targets_bytes += px * 8ull * static_cast<uint64_t>(kv.second.samples);
+            }
+        }
+    }
+    return info;
 }
 
 } // namespace repsp::gpu

@@ -153,6 +153,36 @@ extern const RenderBackend kNullBackend;
 void SetInternalScale(int scale);
 int GetInternalScale();
 
+enum class TextureFilterMode
+{
+    kOriginal = 0,
+    kLinear = 1,
+    kAniso2x = 2,
+    kAniso4x = 3,
+    kAniso8x = 4,
+    kAniso16x = 5,
+};
+
+void SetMsaaSamples(int samples);
+int GetMsaaSamples();
+int GetEffectiveMsaaSamples();
+int GetMaxMsaaSamples();
+
+void SetTextureFilterMode(TextureFilterMode mode);
+TextureFilterMode GetTextureFilterMode();
+float GetMaxAnisotropy();
+
+struct GpuMemoryInfo
+{
+    bool driver_reported = false;
+    uint64_t total_bytes = 0;
+    uint64_t available_bytes = 0;
+    uint64_t hle_textures_bytes = 0;
+    uint64_t hle_targets_bytes = 0;
+};
+
+GpuMemoryInfo GetGpuMemoryInfo();
+
 bool HasGlTargetForAddress(uint32_t addr);
 bool PresentGlTarget(uint32_t addr);
 bool ReadGlTargetRgba8(uint32_t addr, int output_scale, std::vector<uint8_t>& out_rgba, int& out_w, int& out_h);
