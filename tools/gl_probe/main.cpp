@@ -282,6 +282,50 @@ int main()
     const auto stats = repsp::gpu::GetOpenGlStats();
     TEST_ASSERT(stats.draw_calls > 0);
 
+    // Verify User RAM non-CLUT texture invalidation at the same guest address
+    {
+        constexpr uint32_t kUserTexAddr = 0x08900000u;
+        auto& mem = repsp::runtime::GetGuestMemory();
+        uint32_t* tex_ptr = reinterpret_cast<uint32_t*>(mem.Translate(kUserTexAddr));
+        auto* b = repsp::gpu::GetRenderBackend();
+        TEST_ASSERT(b == &repsp::gpu::kOpenGlBackend);
+        b->set_target(kFbAddr, 512, 3);
+
+        auto draw_user_tex = [&](uint32_t abgr)
+        {
+            for (int i = 0; i < 16 * 16; ++i)
+            {
+                tex_ptr[i] = abgr;
+            }
+            repsp::gpu::DrawState st;
+            st.tex_enable = 1;
+            st.tex_addr = kUserTexAddr;
+            st.tex_bw = 16;
+            st.tex_w = 16;
+            st.tex_h = 16;
+            st.tex_fmt = 3; // ABGR8888
+            st.tex_func = 3; // REPLACE
+            repsp::gpu::Vertex v[2] = {
+                MakeVert(0, 0, 0.0f, 0, 0, 0xFFFFFFFFu),
+                MakeVert(16, 16, 0.0f, 16, 16, 0xFFFFFFFFu)
+            };
+            b->draw(repsp::gpu::kPrimSprites, v, 2, &st);
+            b->finish();
+        };
+
+        std::vector<uint8_t> tex_rgba;
+        int tw = 0;
+        int th = 0;
+        draw_user_tex(0xFF0000FFu); // Red
+        TEST_ASSERT(repsp::gpu::ReadGlTargetRgba8(kFbAddr, 1, tex_rgba, tw, th));
+        size_t idx = (8u * static_cast<size_t>(tw) + 8u) * 4u;
+        TEST_ASSERT(tex_rgba[idx + 0] >= 240 && tex_rgba[idx + 1] <= 15 && tex_rgba[idx + 2] <= 15);
+
+        draw_user_tex(0xFF00FF00u); // Green at the exact same address/format/size
+        TEST_ASSERT(repsp::gpu::ReadGlTargetRgba8(kFbAddr, 1, tex_rgba, tw, th));
+        TEST_ASSERT(tex_rgba[idx + 0] <= 15 && tex_rgba[idx + 1] >= 240 && tex_rgba[idx + 2] <= 15);
+    }
+
     TEST_ASSERT(repsp::gpu::SelectRenderBackend("software") == 0);
     repsp::platform::Shutdown();
 
