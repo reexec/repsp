@@ -160,6 +160,7 @@ private:
     const QueueSlot* FindQueue(int32_t list_id) const;
     void DrainQueue();
     void FinishSlot(QueueSlot* q);
+    static void NotifyGuestMemoryMayHaveChanged();
     void RunList(QueueSlot* q);
     void DrawPrim(uint32_t type, uint32_t count);
     bool HandleLightCmd(uint32_t cmd, uint32_t arg);

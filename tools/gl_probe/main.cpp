@@ -326,6 +326,67 @@ int main()
         TEST_ASSERT(tex_rgba[idx + 0] <= 15 && tex_rgba[idx + 1] >= 240 && tex_rgba[idx + 2] <= 15);
     }
 
+    // Verify repeated draws of the same texture within one flush do not re-hash texture RAM
+    {
+        constexpr uint32_t kLargeTexAddr = 0x08A00000u;
+        constexpr uint32_t kLargeTexBytes = 512u * 512u * 4u;
+        auto& mem = repsp::runtime::GetGuestMemory();
+        uint32_t* tex_ptr = reinterpret_cast<uint32_t*>(mem.Translate(kLargeTexAddr));
+        std::fill_n(tex_ptr, 512u * 512u, 0xFFFF0000u); // Blue
+
+        auto* b = repsp::gpu::GetRenderBackend();
+        TEST_ASSERT(b == &repsp::gpu::kOpenGlBackend);
+        b->set_target(kFbAddr, 512, 3);
+
+        repsp::gpu::DrawState st;
+        st.tex_enable = 1;
+        st.tex_addr = kLargeTexAddr;
+        st.tex_bw = 512;
+        st.tex_w = 512;
+        st.tex_h = 512;
+        st.tex_fmt = 3; // ABGR8888
+        st.tex_func = 3; // REPLACE
+        repsp::gpu::Vertex v[2] = {
+            MakeVert(0, 0, 0.0f, 0, 0, 0xFFFFFFFFu),
+            MakeVert(16, 16, 0.0f, 16, 16, 0xFFFFFFFFu)
+        };
+
+        repsp::gpu::ResetOpenGlStats();
+        for (int i = 0; i < 32; ++i)
+        {
+            b->draw(repsp::gpu::kPrimSprites, v, 2, &st);
+        }
+        b->finish();
+        const auto s1 = repsp::gpu::GetOpenGlStats();
+        TEST_ASSERT(s1.texture_bytes_hashed == kLargeTexBytes);
+        TEST_ASSERT(s1.texture_cache_hits == 31);
+
+        // Next flush must re-hash once and pick up User RAM overwrite
+        std::fill_n(tex_ptr, 512u * 512u, 0xFF0000FFu); // Red
+        b->draw(repsp::gpu::kPrimSprites, v, 2, &st);
+        b->finish();
+        const auto s2 = repsp::gpu::GetOpenGlStats();
+        TEST_ASSERT(s2.texture_bytes_hashed == kLargeTexBytes * 2u);
+
+        // Guest code running between two draws of one flush (the CPU between
+        // stalls of one list, or another guest thread at a yield) must also
+        // force a re-hash, so a texture rewritten in between is seen.
+        b->draw(repsp::gpu::kPrimSprites, v, 2, &st);
+        TEST_ASSERT(b->guest_memory_may_have_changed != nullptr);
+        b->guest_memory_may_have_changed();
+        b->draw(repsp::gpu::kPrimSprites, v, 2, &st);
+        b->finish();
+        const auto s3 = repsp::gpu::GetOpenGlStats();
+        TEST_ASSERT(s3.texture_bytes_hashed == kLargeTexBytes * 4u);
+
+        std::vector<uint8_t> tex_rgba;
+        int tw = 0;
+        int th = 0;
+        TEST_ASSERT(repsp::gpu::ReadGlTargetRgba8(kFbAddr, 1, tex_rgba, tw, th));
+        const size_t idx = (8u * static_cast<size_t>(tw) + 8u) * 4u;
+        TEST_ASSERT(tex_rgba[idx + 0] >= 240 && tex_rgba[idx + 1] <= 15 && tex_rgba[idx + 2] <= 15);
+    }
+
     TEST_ASSERT(repsp::gpu::SelectRenderBackend("software") == 0);
     repsp::platform::Shutdown();
 

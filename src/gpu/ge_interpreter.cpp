@@ -213,6 +213,15 @@ uint32_t FbVramAddr(uint32_t fbp)
     return runtime::GuestMemory::kVramAddress | (fbp & (runtime::GuestMemory::kVramSize - 1u));
 }
 
+inline constexpr uint32_t kGeAddrMask = runtime::GuestMemory::kFoldMask & ~3u;
+
+inline uint32_t FoldGeAddr(uint32_t addr)
+{
+    // Strip CPU cache/kernel segment bits so list PC and stall comparisons match
+    // hardware 29-bit physical/bus addressing.
+    return addr & kGeAddrMask;
+}
+
 inline uint32_t ResolveGeAddr(uint32_t base, uint32_t offset, uint32_t arg)
 {
     return (base | (arg & 0x00FFFFFFu)) + offset;
@@ -513,6 +522,7 @@ void GeInterpreter::DrawPrim(uint32_t type, uint32_t count)
                 if (off + cnt < n)
                 {
                     yield_cb_();
+                    NotifyGuestMemoryMayHaveChanged();
                 }
             }
         }
@@ -520,6 +530,14 @@ void GeInterpreter::DrawPrim(uint32_t type, uint32_t count)
         {
             backend->draw(static_cast<int>(type), v, static_cast<int>(n), &ds_);
         }
+    }
+}
+
+void GeInterpreter::NotifyGuestMemoryMayHaveChanged()
+{
+    if (GetRenderBackend()->guest_memory_may_have_changed)
+    {
+        GetRenderBackend()->guest_memory_may_have_changed();
     }
 }
 
@@ -584,6 +602,7 @@ void GeInterpreter::RunList(QueueSlot* q)
             last_yield_check = now;
             ++stats_.yield_points;
             yield_cb_();
+            NotifyGuestMemoryMayHaveChanged();
         }
     };
 
@@ -594,6 +613,8 @@ void GeInterpreter::RunList(QueueSlot* q)
     }
     q->stalled = false;
     q->paused = false;
+    // The CPU ran since this list last stopped (at a stall, or before it began).
+    NotifyGuestMemoryMayHaveChanged();
 
     while (budget--)
     {
@@ -631,7 +652,7 @@ void GeInterpreter::RunList(QueueSlot* q)
             ++stats_.unsupported_spline;
             break;
         case kGeJump:
-            q->list = ResolveGeAddr(q->base, q->offset, arg) & ~3u;
+            q->list = FoldGeAddr(ResolveGeAddr(q->base, q->offset, arg));
             break;
         case kGeCall:
             if (q->call_sp >= kGeCallStackSize)
@@ -640,7 +661,7 @@ void GeInterpreter::RunList(QueueSlot* q)
                 return;
             }
             q->call_stack[q->call_sp++] = q->list;
-            q->list = ResolveGeAddr(q->base, q->offset, arg) & ~3u;
+            q->list = FoldGeAddr(ResolveGeAddr(q->base, q->offset, arg));
             break;
         case kGeRet:
             if (q->call_sp <= 0)
@@ -917,8 +938,8 @@ int32_t GeInterpreter::Enqueue(uint32_t list_addr, uint32_t stall_addr, int32_t 
     QueueSlot* q = &queues_[slot_idx];
     *q = QueueSlot{};
     q->id = next_id_++;
-    q->list = list_addr & ~3u;
-    q->stall = stall_addr & ~3u;
+    q->list = FoldGeAddr(list_addr);
+    q->stall = FoldGeAddr(stall_addr);
     q->cb_id = cb_id;
     q->arg = arg;
     q->used = true;
@@ -953,7 +974,7 @@ int32_t GeInterpreter::UpdateStallAddr(int32_t list_id, uint32_t stall_addr)
         const uint32_t uid = static_cast<uint32_t>(list_id);
         return (uid >= kListIdBase && uid < next_id_) ? 0 : kErrUnknownUid;
     }
-    q->stall = stall_addr & ~3u;
+    q->stall = FoldGeAddr(stall_addr);
     if (order_count_ > 0 && &queues_[order_[0]] == q && !q->done && !q->paused)
     {
         q->stalled = false;

@@ -778,6 +778,88 @@ int main()
         TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 50, 50) == 0xFF224466u);
     }
 
+    // 8. Uncached (0x40000000) list/stall addresses must stall after JUMP/CALL
+    {
+        constexpr uint32_t kUncachedList = 0x48980000u;
+        constexpr uint32_t kPhysList = 0x08980000u;
+        constexpr uint32_t kStaleVerts = 0x08981000u;
+        constexpr uint32_t kClearVerts = 0x08981040u;
+
+        // Clear target region in VRAM to black (0xFF000000) before the test.
+        const VertexColorPos2D clear_rect[2] = {
+            { 0xFF000000u, 0, 0, 0, 0 },
+            { 0xFF000000u, 40, 40, 0, 0 },
+        };
+        const VertexColorPos2D stale_rect[2] = {
+            { 0xFF0000FFu, 0, 0, 0, 0 },
+            { 0xFF0000FFu, 40, 40, 0, 0 },
+        };
+        std::memcpy(mem.Translate(kClearVerts), clear_rect, sizeof(clear_rect));
+        std::memcpy(mem.Translate(kStaleVerts), stale_rect, sizeof(stale_rect));
+
+        // Pre-populate the list buffer with commands:
+        //   [0x00..0x0C] BASE + JUMP -> 0x08980010
+        //   [0x10..0x24] clear rect to black (stall sits at 0x48980028)
+        //   [0x28..0x38] stale red rect left over from a prior frame
+        const uint32_t kJumpTarget = kPhysList + 0x10u;
+        const uint32_t kStallAddr = kUncachedList + 0x28u;
+        const std::vector<uint32_t> cmds = {
+            GeCmd(kOpBase, (kJumpTarget >> 8) & 0x00FF0000u),
+            GeCmd(kOpJump, kJumpTarget & 0x00FFFFFFu),
+            GeCmd(0, 0),
+            GeCmd(0, 0),
+            // 0x10:
+            GeCmd(kOpFbp, kFbAddr & 0x00FFFFFFu),
+            GeCmd(kOpFbw, ((kFbAddr >> 8) & 0x00FF0000u) | kFbw),
+            GeCmd(kOpPsm, 3u),
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2)),
+            GeCmd(kOpBase, (kClearVerts >> 8) & 0x00FF0000u),
+            GeCmd(kOpVaddr, kClearVerts & 0x00FFFFFFu),
+            // 0x28 (stall point): stale leftover commands start here
+            GeCmd(kOpBase, (kStaleVerts >> 8) & 0x00FF0000u),
+            GeCmd(kOpVaddr, kStaleVerts & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u),
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kPhysList, cmds);
+
+        // Pre-fill VRAM pixel (10, 10) with black so we detect if the stale red rect runs.
+        const std::vector<uint32_t> init_clear = {
+            GeCmd(kOpFbp, kFbAddr & 0x00FFFFFFu),
+            GeCmd(kOpFbw, ((kFbAddr >> 8) & 0x00FF0000u) | kFbw),
+            GeCmd(kOpPsm, 3u),
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2)),
+            GeCmd(kOpBase, (kClearVerts >> 8) & 0x00FF0000u),
+            GeCmd(kOpVaddr, kClearVerts & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u),
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kListAddr, init_clear);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 10, 10) == 0xFF000000u);
+
+        const int32_t list_id = static_cast<int32_t>(
+            InvokeNid(nids, kNidGeListEnQueue, kUncachedList, kUncachedList, static_cast<uint32_t>(-1), 0));
+        TEST_ASSERT(list_id > 0);
+        TEST_ASSERT(InvokeNid(nids, kNidGeListUpdateStallAddr, static_cast<uint32_t>(list_id), kStallAddr) == 0);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListSync, static_cast<uint32_t>(list_id), 1)) ==
+                    repsp::gpu::kGeListStalled);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 10, 10) == 0xFF000000u);
+
+        // Overwrite the stale region with FINISH + END and advance stall to complete cleanly.
+        const std::vector<uint32_t> finish_tail = {
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kPhysList + 0x28u, finish_tail);
+        TEST_ASSERT(InvokeNid(nids, kNidGeListUpdateStallAddr,
+                              static_cast<uint32_t>(list_id), kStallAddr + 8u) == 0);
+        TEST_ASSERT(InvokeNid(nids, kNidGeListSync, static_cast<uint32_t>(list_id), 0) == 0);
+        TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 10, 10) == 0xFF000000u);
+    }
+
     std::printf("ge_probe passed.\n");
     return 0;
 }
