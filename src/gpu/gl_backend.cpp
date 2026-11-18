@@ -210,18 +210,14 @@ uint64_t HashGuestRange(uint32_t addr, uint32_t size)
         return 0;
     }
     const auto& mem = runtime::GetGuestMemory();
+    if (!mem.IsValidAddress(addr, size))
+    {
+        return 0;
+    }
     const uint8_t* ptr = mem.Translate(addr);
     if (ptr == nullptr)
     {
         return 0;
-    }
-    if (addr >= runtime::GuestMemory::kVramAddress)
-    {
-        const uint32_t off = addr - runtime::GuestMemory::kVramAddress;
-        if (off > runtime::GuestMemory::kVramSize || size > runtime::GuestMemory::kVramSize - off)
-        {
-            return 0;
-        }
     }
     return HashBytes(ptr, size);
 }
