@@ -1,6 +1,7 @@
 // re2DJ built-in post-processing shader: crt.
 // Written for rePIU (task 768) and brought to re2DJ (task 455) by the same
-// author; BSD 3-Clause License, see LICENSE.
+// author; Copyright (c) 2026, re2DJ contributors; BSD 3-Clause License,
+// see THIRD_PARTY_NOTICES.md.
 //
 // An arcade-monitor look in one pass: barrel curvature, Gaussian scanline
 // beams that widen with brightness, an aperture-grille mask, and a soft

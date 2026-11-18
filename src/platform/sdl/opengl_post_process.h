@@ -1,5 +1,5 @@
-// Adapted from re2DJ (BSD 3-Clause License).
-// Copyright (c) 2026 reexec / re2DJ contributors. All rights reserved.
+// Adapted from re2DJ (BSD 3-Clause License; see THIRD_PARTY_NOTICES.md).
+// Copyright (c) 2026, re2DJ contributors
 
 #ifndef REPSP_PLATFORM_SDL_OPENGL_POST_PROCESS_H
 #define REPSP_PLATFORM_SDL_OPENGL_POST_PROCESS_H

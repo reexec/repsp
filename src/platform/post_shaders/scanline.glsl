@@ -1,6 +1,7 @@
 // re2DJ built-in post-processing shader: scanline.
 // Written for rePIU (task 768) and brought to re2DJ (task 455) by the same
-// author; BSD 3-Clause License, see LICENSE.
+// author; Copyright (c) 2026, re2DJ contributors; BSD 3-Clause License,
+// see THIRD_PARTY_NOTICES.md.
 //
 // Darkens the second half of every logical scanline. LogicalSize carries the
 // logical resolution, so the lines follow the original 272-line output at any
