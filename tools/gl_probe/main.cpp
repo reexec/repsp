@@ -495,6 +495,27 @@ int main()
                 "scale_type0 = source\n"
                 "scale0 = 1.0\n"
                 "shader1 = p1.glsl\n";
+            // A last pass that reads the original picture, as ScaleFX's and
+            // Anime4K's last passes do.
+            std::ofstream(shader_dir / "orig.glsl") <<
+                "#if defined(VERTEX)\n"
+                "attribute vec4 VertexCoord;\n"
+                "attribute vec4 TexCoord;\n"
+                "uniform mat4 MVPMatrix;\n"
+                "varying vec2 uv;\n"
+                "void main() { gl_Position = MVPMatrix * VertexCoord; uv = TexCoord.xy; }\n"
+                "#elif defined(FRAGMENT)\n"
+                "uniform sampler2D Texture;\n"
+                "uniform sampler2D OrigTexture;\n"
+                "varying vec2 uv;\n"
+                "void main() { vec4 c = texture2D(Texture, uv); gl_FragColor = vec4(texture2D(OrigTexture, uv).rgb + c.rgb * 0.0, 1.0); }\n"
+                "#endif\n";
+            std::ofstream(shader_dir / "orig_chain.glslp") <<
+                "shaders = 2\n"
+                "shader0 = p0.glsl\n"
+                "scale_type0 = source\n"
+                "scale0 = 1.0\n"
+                "shader1 = orig.glsl\n";
             std::ofstream(shader_dir / "broken.glsl") <<
                 "#if defined(VERTEX)\n"
                 "void main() { broken_syntax_here }\n"
@@ -638,6 +659,22 @@ int main()
         const size_t top_idx = ((static_cast<size_t>(kH * 2) - 10u) * static_cast<size_t>(kW * 2) + 100u) * 4u;
         TEST_ASSERT(flip_fb[top_idx + 0] >= 120 && flip_fb[top_idx + 2] <= 20);
         TEST_ASSERT(flip_fb[bot_idx + 0] <= 20 && flip_fb[bot_idx + 2] >= 120);
+
+        // 6. A chain whose last pass reads OrigTexture keeps a `flip_y` input
+        //    right-way up too (the input is drawn upright before the chain)
+        display->SubmitRenderJob([]()
+        {
+            TEST_ASSERT(repsp::platform::GetPostShaderControl()->Select("orig_chain.glslp"));
+        });
+        display->WaitRenderIdle();
+        display->PresentRgba8(cpu_img.data(), kW, kH, kW * 4);
+        display->PresentRgba8(cpu_img.data(), kW, kH, kW * 4);
+        display->SubmitRenderJob([]() {});
+        display->WaitRenderIdle();
+        std::vector<uint8_t> orig_fb;
+        read_default_fb(orig_fb);
+        TEST_ASSERT(orig_fb[top_idx + 0] >= 120 && orig_fb[top_idx + 2] <= 20);
+        TEST_ASSERT(orig_fb[bot_idx + 0] <= 20 && orig_fb[bot_idx + 2] >= 120);
 
         TEST_ASSERT(repsp::gpu::SelectRenderBackend("software") == 0);
         repsp::platform::Shutdown();

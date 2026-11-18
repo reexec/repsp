@@ -191,6 +191,9 @@ struct OpenGlPostProcess::Impl
     std::vector<PostShaderParameter> parameters;
     std::vector<Pass> passes;
     Pass stock;
+    // A chain's copy of a top-down (flip_y) input, drawn upright, so that
+    // every pass, OrigTexture and PassPrevN included, reads one orientation.
+    Pass upright;
     std::uint32_t frames = 0;
 };
 
@@ -422,6 +425,7 @@ void ReleaseProgram(OpenGlPostProcess::Impl* gl)
     }
     gl->passes.clear();
     ReleasePass(gl, &gl->stock);
+    ReleasePass(gl, &gl->upright);
     gl->parameters.clear();
     gl->active_id = kPostShaderNoneId;
 }
@@ -711,6 +715,13 @@ bool OpenGlPostProcess::Select(std::string_view id)
         gl->stock.settings = SinglePassPreset("stock", kStockShader).passes.front();
         built = BuildPass(gl, passes.size(), &gl->stock, &parameters, &gl->last_error);
     }
+    if (built && chained)
+    {
+        gl->upright.settings = SinglePassPreset("upright", kStockShader).passes.front();
+        gl->upright.settings.to_window = false;
+        gl->upright.settings.float_framebuffer = false;
+        built = BuildPass(gl, passes.size() + 1, &gl->upright, &parameters, &gl->last_error);
+    }
     gl->passes = std::move(passes);
     if (!built)
     {
@@ -791,11 +802,47 @@ bool OpenGlPostProcess::UseForPresent(std::uint32_t source_texture,
         return true;
     }
 
-    std::vector<GLuint> outputs = {static_cast<GLuint>(source_texture)};
+    std::string error;
+    const auto fail = [&]()
+    {
+        gl->bind_framebuffer(kGlFramebuffer, 0);
+        gl->active_texture(kGlTexture0);
+        gl->bind_texture(kGlTexture2d, source_texture);
+        gl->viewport(viewport_x, viewport_y, static_cast<GLsizei>(output_width), static_cast<GLsizei>(output_height));
+        ReleaseProgram(gl);
+        gl->use_program(0);
+        while (gl->get_error() != kGlNoError)
+        {
+        }
+        gl->last_error = error;
+        return false;
+    };
+
+    // A top-down input is drawn upright first: later passes read the
+    // original (OrigTexture, PassPrevN) with their own texture coordinates,
+    // which a flip in pass 0's quad alone would leave upside down.
+    GLuint source = static_cast<GLuint>(source_texture);
+    if (flip_y && gl->upright.program != 0)
+    {
+        if (!EnsureTarget(gl, &gl->upright, input_width, input_height, &error))
+        {
+            return fail();
+        }
+        gl->active_texture(kGlTexture0);
+        SetFilter(gl, source, false);
+        SetUniforms(gl, gl->upright, input_width, input_height, logical_width, logical_height, input_width,
+                    input_height, input_width, input_height, {{input_width, input_height}});
+        gl->bind_framebuffer(kGlFramebuffer, gl->upright.framebuffer);
+        gl->viewport(0, 0, static_cast<GLsizei>(input_width), static_cast<GLsizei>(input_height));
+        DrawUnitSquareVao(gl, true);
+        source = gl->upright.color;
+        flip_y = false;
+    }
+
+    std::vector<GLuint> outputs = {source};
     std::vector<std::array<std::uint32_t, 2>> sizes = {{input_width, input_height}};
     gl->active_texture(kGlTexture0 + kOrigUnit);
     SetFilter(gl, outputs.front(), gl->passes.front().settings.filter_linear);
-    std::string error;
     const std::size_t count = gl->passes.size();
     for (std::size_t index = 0; index <= count; ++index)
     {
@@ -816,18 +863,7 @@ bool OpenGlPostProcess::UseForPresent(std::uint32_t source_texture,
                                &height);
             if (!EnsureTarget(gl, &pass, width, height, &error))
             {
-                gl->bind_framebuffer(kGlFramebuffer, 0);
-                gl->active_texture(kGlTexture0);
-                gl->bind_texture(kGlTexture2d, source_texture);
-                gl->viewport(viewport_x, viewport_y, static_cast<GLsizei>(output_width),
-                             static_cast<GLsizei>(output_height));
-                ReleaseProgram(gl);
-                gl->use_program(0);
-                while (gl->get_error() != kGlNoError)
-                {
-                }
-                gl->last_error = error;
-                return false;
+                return fail();
             }
         }
         for (std::size_t back = 1; back <= outputs.size() && back <= pass.previous.size(); ++back)
