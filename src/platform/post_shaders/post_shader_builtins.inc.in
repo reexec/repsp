@@ -1,0 +1,11 @@
+// Generated at configure time from src/platform/post_shaders/. Do not edit.
+
+struct BuiltinFile
+{
+    std::string_view name;
+    std::string_view text;
+};
+
+constexpr BuiltinFile kPostShaderBuiltinFiles[] = {
+@REPSP_POST_SHADER_BUILTIN_FILES@
+};

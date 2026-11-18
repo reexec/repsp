@@ -61,6 +61,50 @@ target_include_directories(imgui PUBLIC
 )
 target_link_libraries(imgui PRIVATE SDL3::SDL3)
 
+# Embed built-in post-processing shaders at configure time
+set(REPSP_POST_SHADER_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/post_shaders")
+set(REPSP_POST_SHADER_BUILTIN_NAMES
+    crt.glsl
+    scanline.glsl
+    fsr/fsr.glslp
+    fsr/easu.glsl
+    fsr/rcas.glsl
+    scalefx/scalefx.glslp
+    scalefx/scalefx-pass0.glsl
+    scalefx/scalefx-pass1.glsl
+    scalefx/scalefx-pass2.glsl
+    scalefx/scalefx-pass3.glsl
+    scalefx/scalefx-pass4.glsl
+    anime4k/anime4k.glslp
+    anime4k/conv0.glsl
+    anime4k/conv1.glsl
+    anime4k/conv2.glsl
+    anime4k/conv3.glsl
+    anime4k/depth-to-space.glsl
+)
+set(REPSP_POST_SHADER_BUILTIN_FILES "")
+foreach(name IN LISTS REPSP_POST_SHADER_BUILTIN_NAMES)
+    set(path "${REPSP_POST_SHADER_SOURCE_DIR}/${name}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${path}")
+    file(READ "${path}" text)
+    string(LENGTH "${text}" length)
+    set(pieces "")
+    set(offset 0)
+    while(offset LESS length)
+        string(SUBSTRING "${text}" ${offset} 12000 piece)
+        string(APPEND pieces "R\"repsp_glsl(${piece})repsp_glsl\"\n")
+        math(EXPR offset "${offset} + 12000")
+    endwhile()
+    string(APPEND REPSP_POST_SHADER_BUILTIN_FILES "    {\"${name}\",\n${pieces}    },\n")
+endforeach()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${REPSP_POST_SHADER_SOURCE_DIR}/post_shader_builtins.inc.in")
+configure_file(
+    "${REPSP_POST_SHADER_SOURCE_DIR}/post_shader_builtins.inc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/repsp/platform/post_shader_builtins.inc"
+    @ONLY
+)
+
 # Public layer targets and aliases
 
 # Layer: platform
@@ -70,6 +114,7 @@ target_include_directories(repsp_platform PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+target_include_directories(repsp_platform PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(repsp_platform PUBLIC imgui PRIVATE SDL3::SDL3)
 repsp_apply_host_flags(repsp_platform)
 

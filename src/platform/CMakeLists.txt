@@ -21,6 +21,9 @@ endif()
 
 target_sources(repsp_platform PRIVATE
     crash_handler_common.cpp
+    post_shader_catalog.cpp
+    post_shader_preset.cpp
+    post_shader_source.cpp
     sdl/overlay_sdl.cpp
     sdl/sdl_platform.cpp
 )
