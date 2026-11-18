@@ -174,6 +174,8 @@ struct GuestTexEntry
 {
     uint64_t cache_id = 0;
     uint64_t content_hash = 0;
+    uint64_t clut_hash = 0;
+    uint64_t verified_epoch = 0;
     uint64_t lru_tick = 0;
 };
 
@@ -194,12 +196,54 @@ struct UiTexEntry
 
 uint64_t HashBytes(const uint8_t* data, size_t len, uint64_t seed = 14695981039346656037ull)
 {
-    uint64_t h = seed;
-    for (size_t i = 0; i < len; ++i)
+    constexpr uint64_t kPrime1 = 11400714785074694791ull;
+    constexpr uint64_t kPrime2 = 14029467366897019727ull;
+    constexpr uint64_t kPrime3 = 1609587929392839161ull;
+    constexpr uint64_t kPrime4 = 9650029242287828579ull;
+    constexpr uint64_t kPrime5 = 2870177450012600261ull;
+
+    uint64_t h0 = seed ^ kPrime1;
+    uint64_t h1 = seed + kPrime2;
+    uint64_t h2 = seed ^ kPrime3;
+    uint64_t h3 = seed + kPrime4;
+
+    size_t i = 0;
+    while (i + 32 <= len)
     {
-        h ^= static_cast<uint64_t>(data[i]);
-        h *= 1099511628211ull;
+        uint64_t w0 = 0;
+        uint64_t w1 = 0;
+        uint64_t w2 = 0;
+        uint64_t w3 = 0;
+        std::memcpy(&w0, data + i, 8);
+        std::memcpy(&w1, data + i + 8, 8);
+        std::memcpy(&w2, data + i + 16, 8);
+        std::memcpy(&w3, data + i + 24, 8);
+        h0 = (h0 ^ w0) * kPrime1;
+        h1 = (h1 ^ w1) * kPrime2;
+        h2 = (h2 ^ w2) * kPrime3;
+        h3 = (h3 ^ w3) * kPrime4;
+        i += 32;
     }
+
+    uint64_t h = (h0 ^ (h1 << 1) ^ (h2 << 7) ^ (h3 >> 3)) + static_cast<uint64_t>(len) * kPrime5;
+    while (i + 8 <= len)
+    {
+        uint64_t w = 0;
+        std::memcpy(&w, data + i, 8);
+        h = (h ^ w) * kPrime1;
+        i += 8;
+    }
+    while (i < len)
+    {
+        h = (h ^ static_cast<uint64_t>(data[i])) * kPrime5;
+        ++i;
+    }
+
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdull;
+    h ^= h >> 33;
+    h *= 0xc4ceb9fe1a85ec53ull;
+    h ^= h >> 33;
     return h;
 }
 
@@ -242,6 +286,7 @@ struct GlContextState
 
     uint64_t next_tex_cache_id = 1;
     uint64_t tex_lru_tick = 1;
+    uint64_t flush_epoch = 1;
     std::unordered_map<TextureKey, GuestTexEntry, TextureKeyHash> guest_tex_cache;
 
     std::unique_ptr<FlushPayload> pending_flush;
@@ -1029,13 +1074,6 @@ uint64_t ResolveTextureLocked(const DrawState& st, FlushPayload& flush, uint32_t
         return 0;
     }
 
-    uint64_t content_hash = HashGuestRange(st.tex_addr, data_bytes);
-    if (st.tex_fmt >= kTpsmT4 && st.tex_fmt <= kTpsmT32 && st.clut != nullptr)
-    {
-        const size_t clut_bytes = (st.clut_fmt == 3) ? (256u * 4u) : (512u * 2u);
-        content_hash = HashBytes(st.clut, clut_bytes, content_hash);
-    }
-
     TextureKey key;
     key.addr = st.tex_addr;
     key.width = st.tex_w;
@@ -1048,9 +1086,31 @@ uint64_t ResolveTextureLocked(const DrawState& st, FlushPayload& flush, uint32_t
     key.clut_shift = st.clut_shift;
     key.clut_mask = st.clut_mask;
 
-    auto it = g_gl.guest_tex_cache.find(key);
-    if (it != g_gl.guest_tex_cache.end() && it->second.content_hash == content_hash)
+    uint64_t clut_hash = 0;
+    if (st.tex_fmt >= kTpsmT4 && st.tex_fmt <= kTpsmT32 && st.clut != nullptr)
     {
+        const size_t clut_bytes = (st.clut_fmt == 3) ? (256u * 4u) : (512u * 2u);
+        clut_hash = HashBytes(st.clut, clut_bytes);
+    }
+
+    auto it = g_gl.guest_tex_cache.find(key);
+    if (it != g_gl.guest_tex_cache.end() &&
+        it->second.verified_epoch == g_gl.flush_epoch &&
+        it->second.clut_hash == clut_hash)
+    {
+        it->second.lru_tick = ++g_gl.tex_lru_tick;
+        ++g_gl.stats.texture_cache_hits;
+        return it->second.cache_id;
+    }
+
+    const uint64_t content_hash = HashGuestRange(st.tex_addr, data_bytes);
+    g_gl.stats.texture_bytes_hashed += data_bytes;
+
+    if (it != g_gl.guest_tex_cache.end() &&
+        it->second.content_hash == content_hash &&
+        it->second.clut_hash == clut_hash)
+    {
+        it->second.verified_epoch = g_gl.flush_epoch;
         it->second.lru_tick = ++g_gl.tex_lru_tick;
         ++g_gl.stats.texture_cache_hits;
         return it->second.cache_id;
@@ -1061,6 +1121,8 @@ uint64_t ResolveTextureLocked(const DrawState& st, FlushPayload& flush, uint32_t
     {
         cache_id = it->second.cache_id;
         it->second.content_hash = content_hash;
+        it->second.clut_hash = clut_hash;
+        it->second.verified_epoch = g_gl.flush_epoch;
         it->second.lru_tick = ++g_gl.tex_lru_tick;
     }
     else
@@ -1079,7 +1141,9 @@ uint64_t ResolveTextureLocked(const DrawState& st, FlushPayload& flush, uint32_t
             g_gl.guest_tex_cache.erase(oldest);
         }
         cache_id = g_gl.next_tex_cache_id++;
-        g_gl.guest_tex_cache.emplace(key, GuestTexEntry{cache_id, content_hash, ++g_gl.tex_lru_tick});
+        g_gl.guest_tex_cache.emplace(
+            key,
+            GuestTexEntry{cache_id, content_hash, clut_hash, g_gl.flush_epoch, ++g_gl.tex_lru_tick});
     }
 
     TextureUpload up;
@@ -1094,6 +1158,11 @@ uint64_t ResolveTextureLocked(const DrawState& st, FlushPayload& flush, uint32_t
 
 void FlushPendingLocked()
 {
+    // A texture hashed in the current epoch is reused without hashing again.
+    // The epoch advances at every flush and whenever guest code may have run
+    // (GlGuestMemoryMayHaveChanged), so new contents are always seen.
+    ++g_gl.flush_epoch;
+
     auto* display = platform::GetDisplay();
     if (display == nullptr || !display->HasGlContext())
     {
@@ -1387,6 +1456,12 @@ void GlPresent()
     FlushPendingLocked();
 }
 
+void GlGuestMemoryMayHaveChanged()
+{
+    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    ++g_gl.flush_epoch;
+}
+
 } // namespace
 
 const RenderBackend kOpenGlBackend = {
@@ -1397,6 +1472,7 @@ const RenderBackend kOpenGlBackend = {
     GlDraw,
     GlFinish,
     GlPresent,
+    GlGuestMemoryMayHaveChanged,
 };
 
 void SetInternalScale(int scale)

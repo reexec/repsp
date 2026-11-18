@@ -522,6 +522,7 @@ void GeInterpreter::DrawPrim(uint32_t type, uint32_t count)
                 if (off + cnt < n)
                 {
                     yield_cb_();
+                    NotifyGuestMemoryMayHaveChanged();
                 }
             }
         }
@@ -529,6 +530,14 @@ void GeInterpreter::DrawPrim(uint32_t type, uint32_t count)
         {
             backend->draw(static_cast<int>(type), v, static_cast<int>(n), &ds_);
         }
+    }
+}
+
+void GeInterpreter::NotifyGuestMemoryMayHaveChanged()
+{
+    if (GetRenderBackend()->guest_memory_may_have_changed)
+    {
+        GetRenderBackend()->guest_memory_may_have_changed();
     }
 }
 
@@ -593,6 +602,7 @@ void GeInterpreter::RunList(QueueSlot* q)
             last_yield_check = now;
             ++stats_.yield_points;
             yield_cb_();
+            NotifyGuestMemoryMayHaveChanged();
         }
     };
 
@@ -603,6 +613,8 @@ void GeInterpreter::RunList(QueueSlot* q)
     }
     q->stalled = false;
     q->paused = false;
+    // The CPU ran since this list last stopped (at a stall, or before it began).
+    NotifyGuestMemoryMayHaveChanged();
 
     while (budget--)
     {

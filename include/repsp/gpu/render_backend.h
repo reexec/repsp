@@ -132,6 +132,11 @@ struct RenderBackend
 
     // sceDisplaySetFrameBuf -- show what has accumulated.
     void (*present)() = nullptr;
+
+    // Guest code may have run since the previous draw (the interpreter is
+    // (re)entered after the CPU ran, or yielded to another guest thread):
+    // anything cached from guest memory must be checked again before reuse.
+    void (*guest_memory_may_have_changed)() = nullptr;
 };
 
 // Select a backend by name ("software", "opengl", "null"). Returns 0 on success,
@@ -158,6 +163,7 @@ struct OpenGlStats
     uint64_t fbo_switches = 0;
     uint64_t texture_uploads = 0;
     uint64_t texture_cache_hits = 0;
+    uint64_t texture_bytes_hashed = 0;
     uint64_t cpu_write_overlaps = 0;
     uint64_t approximated_blends = 0;
     uint64_t unsupported_ops = 0;
