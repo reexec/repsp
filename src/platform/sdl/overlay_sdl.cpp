@@ -31,7 +31,10 @@ bool g_initialized = false;
 bool g_failed = false;
 
 // Keep the overlay proportional to the window: base sizes target a 960x720
-// window and scale with the smaller axis ratio, clamped to [0.25, 8.0].
+// window and scale with the smaller axis ratio, clamped to [1.0, 8.0]. The
+// floor keeps text at the font's own size in small windows (a 480x272
+// picture at 1x would otherwise shrink it to about a third); there the
+// application fits its windows to the viewport and lets them scroll.
 ImGuiStyle g_base_style;
 float g_ui_scale = 0.0f;
 
@@ -42,7 +45,7 @@ void FollowWindowSize(SDL_Window* window)
     SDL_GetWindowSizeInPixels(window, &width, &height);
     const float scale = std::clamp(
         std::min(static_cast<float>(width) / 960.0f, static_cast<float>(height) / 720.0f),
-        0.25f,
+        1.0f,
         8.0f);
     if (std::fabs(scale - g_ui_scale) < 0.001f)
     {
