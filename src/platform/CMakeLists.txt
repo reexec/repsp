@@ -24,6 +24,7 @@ target_sources(repsp_platform PRIVATE
     post_shader_catalog.cpp
     post_shader_preset.cpp
     post_shader_source.cpp
+    sdl/opengl_post_process.cpp
     sdl/overlay_sdl.cpp
     sdl/sdl_platform.cpp
 )

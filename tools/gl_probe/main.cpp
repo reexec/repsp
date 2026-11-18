@@ -2,6 +2,7 @@
 #include "repsp/gpu/render_backend.h"
 #include "repsp/hle/display.h"
 #include "repsp/platform/platform.h"
+#include "repsp/platform/post_shader.h"
 #include "repsp/runtime/guest_memory.h"
 
 #include <cmath>
@@ -9,6 +10,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <system_error>
 #include <vector>
 
 #define TEST_ASSERT(cond) \
@@ -451,6 +455,194 @@ int main()
     // After shutdown (no GL context), selecting opengl must fail and preserve current backend
     TEST_ASSERT(repsp::gpu::SelectRenderBackend("opengl") == -1);
     TEST_ASSERT(repsp::gpu::GetRenderBackend() == &repsp::gpu::kSoftwareBackend);
+
+    // Post-processing screen shaders on 2x hidden OpenGL 3.3 Core window
+    {
+        std::error_code ec;
+        const auto shader_dir = std::filesystem::temp_directory_path(ec) / "repsp_gl_post_shader_probe";
+        std::filesystem::remove_all(shader_dir, ec);
+        std::filesystem::create_directories(shader_dir, ec);
+
+        // Two-pass preset: pass 0 writes green, pass 1 swaps G->B so output is blue
+        {
+            std::ofstream(shader_dir / "p0.glsl") <<
+                "#if defined(VERTEX)\n"
+                "attribute vec4 VertexCoord;\n"
+                "attribute vec4 TexCoord;\n"
+                "uniform mat4 MVPMatrix;\n"
+                "varying vec2 uv;\n"
+                "void main() { gl_Position = MVPMatrix * VertexCoord; uv = TexCoord.xy; }\n"
+                "#elif defined(FRAGMENT)\n"
+                "uniform sampler2D Texture;\n"
+                "varying vec2 uv;\n"
+                "void main() { vec4 c = texture2D(Texture, uv); gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0); }\n"
+                "#endif\n";
+            std::ofstream(shader_dir / "p1.glsl") <<
+                "#if defined(VERTEX)\n"
+                "attribute vec4 VertexCoord;\n"
+                "attribute vec4 TexCoord;\n"
+                "uniform mat4 MVPMatrix;\n"
+                "varying vec2 uv;\n"
+                "void main() { gl_Position = MVPMatrix * VertexCoord; uv = TexCoord.xy; }\n"
+                "#elif defined(FRAGMENT)\n"
+                "uniform sampler2D Texture;\n"
+                "varying vec2 uv;\n"
+                "void main() { vec4 c = texture2D(Texture, uv); gl_FragColor = vec4(0.0, 0.0, c.g, 1.0); }\n"
+                "#endif\n";
+            std::ofstream(shader_dir / "two_pass.glslp") <<
+                "shaders = 2\n"
+                "shader0 = p0.glsl\n"
+                "scale_type0 = source\n"
+                "scale0 = 1.0\n"
+                "shader1 = p1.glsl\n";
+            std::ofstream(shader_dir / "broken.glsl") <<
+                "#if defined(VERTEX)\n"
+                "void main() { broken_syntax_here }\n"
+                "#elif defined(FRAGMENT)\n"
+                "void main() { gl_FragColor = vec4(1.0); }\n"
+                "#endif\n";
+        }
+
+        repsp::platform::SetPostShaderDirectory(shader_dir);
+        repsp::platform::SetInitialPostShader("none");
+
+        repsp::platform::PlatformConfig p2;
+        p2.headless = false;
+        p2.display.width = kW * 2;
+        p2.display.height = kH * 2;
+        p2.display.title = "gl_probe_post";
+        p2.display.dummy = false;
+        p2.display.use_opengl = true;
+        p2.display.hidden = true;
+        p2.audio.dummy = true;
+        TEST_ASSERT(repsp::platform::Initialize(p2));
+        TEST_ASSERT(repsp::gpu::SelectRenderBackend("opengl") == 0);
+        repsp::gpu::SetInternalScale(2);
+
+        auto* display = repsp::platform::GetDisplay();
+        TEST_ASSERT(display != nullptr && display->HasGlContext());
+
+        // 1. All 5 built-ins compile and link on GL 3.3 Core; broken falls back to none
+        display->SubmitRenderJob([]()
+        {
+            auto* ctrl = repsp::platform::GetPostShaderControl();
+            TEST_ASSERT(ctrl != nullptr);
+            const char* kBuiltins[] = {"crt", "scanline", "fsr", "scalefx", "anime4k"};
+            for (const char* id : kBuiltins)
+            {
+                TEST_ASSERT(ctrl->Select(id));
+                TEST_ASSERT(ctrl->active_id() == id);
+            }
+            TEST_ASSERT(!ctrl->Select("broken.glsl"));
+            TEST_ASSERT(ctrl->active_id() == "none");
+            TEST_ASSERT(!ctrl->last_error().empty());
+        });
+        display->WaitRenderIdle();
+
+        // Prepare white target at scale 2
+        auto* b = repsp::gpu::GetRenderBackend();
+        b->set_target(kFbAddr, 512, 3);
+        repsp::gpu::DrawState clear_st;
+        clear_st.clear = 1;
+        clear_st.clear_color = 1;
+        clear_st.clear_alpha = 1;
+        repsp::gpu::Vertex cv[2] = {
+            MakeVert(0, 0, 0.0f, 0, 0, 0xFFFFFFFFu),
+            MakeVert(kW, kH, 0.0f, 0, 0, 0xFFFFFFFFu)
+        };
+        b->draw(repsp::gpu::kPrimSprites, cv, 2, &clear_st);
+        b->finish();
+
+        using ReadPixelsFn = void (*)(int, int, int, int, unsigned int, unsigned int, void*);
+        using BindFbFn = void (*)(unsigned int, unsigned int);
+        auto read_default_fb = [&](std::vector<uint8_t>& out)
+        {
+            out.resize(static_cast<size_t>(kW * 2) * static_cast<size_t>(kH * 2) * 4u);
+            display->SubmitRenderJob([&]()
+            {
+                ReadPixelsFn gl_read_pixels = nullptr;
+                BindFbFn gl_bind_fb = nullptr;
+                void* p_rp = display->GetGlProcAddress("glReadPixels");
+                void* p_bf = display->GetGlProcAddress("glBindFramebuffer");
+                TEST_ASSERT(p_rp != nullptr && p_bf != nullptr);
+                std::memcpy(&gl_read_pixels, &p_rp, sizeof(gl_read_pixels));
+                std::memcpy(&gl_bind_fb, &p_bf, sizeof(gl_bind_fb));
+                gl_bind_fb(0x8CA8u /*GL_READ_FRAMEBUFFER*/, 0);
+                gl_read_pixels(0, 0, kW * 2, kH * 2, 0x1908u /*GL_RGBA*/, 0x1401u /*GL_UNSIGNED_BYTE*/, out.data());
+            });
+            display->WaitRenderIdle();
+        };
+
+        // 2. `none` produces exact white pixels matching no-shader draw
+        std::vector<uint8_t> none_fb;
+        TEST_ASSERT(repsp::gpu::PresentGlTarget(kFbAddr));
+        TEST_ASSERT(repsp::gpu::PresentGlTarget(kFbAddr));
+        read_default_fb(none_fb);
+        const size_t center = (static_cast<size_t>(kH) * static_cast<size_t>(kW * 2) + static_cast<size_t>(kW)) * 4u;
+        TEST_ASSERT(none_fb[center + 0] >= 240 && none_fb[center + 1] >= 240 && none_fb[center + 2] >= 240);
+
+        // 3. `scanline` darkens alternating rows against 272 logical lines even at internal scale 2
+        display->SubmitRenderJob([]()
+        {
+            TEST_ASSERT(repsp::platform::GetPostShaderControl()->Select("scanline"));
+        });
+        display->WaitRenderIdle();
+        TEST_ASSERT(repsp::gpu::PresentGlTarget(kFbAddr));
+        TEST_ASSERT(repsp::gpu::PresentGlTarget(kFbAddr));
+        std::vector<uint8_t> scan_fb;
+        read_default_fb(scan_fb);
+        const uint8_t row_a = scan_fb[(100u * static_cast<size_t>(kW * 2) + 100u) * 4u];
+        const uint8_t row_b = scan_fb[(101u * static_cast<size_t>(kW * 2) + 100u) * 4u];
+        TEST_ASSERT((row_a > row_b + 30) || (row_b > row_a + 30));
+
+        // 4. Two-pass preset chains (pass0 -> green, pass1 -> blue)
+        display->SubmitRenderJob([]()
+        {
+            TEST_ASSERT(repsp::platform::GetPostShaderControl()->Select("two_pass.glslp"));
+        });
+        display->WaitRenderIdle();
+        TEST_ASSERT(repsp::gpu::PresentGlTarget(kFbAddr));
+        TEST_ASSERT(repsp::gpu::PresentGlTarget(kFbAddr));
+        std::vector<uint8_t> two_fb;
+        read_default_fb(two_fb);
+        TEST_ASSERT(two_fb[center + 0] <= 15 && two_fb[center + 1] <= 15 && two_fb[center + 2] >= 240);
+
+        // 5. `flip_y` input (PresentRgba8) stays right-way up under a shader (top red, bottom blue)
+        display->SubmitRenderJob([]()
+        {
+            TEST_ASSERT(repsp::platform::GetPostShaderControl()->Select("scanline"));
+        });
+        display->WaitRenderIdle();
+        std::vector<uint8_t> cpu_img(static_cast<size_t>(kW) * static_cast<size_t>(kH) * 4u);
+        for (int y = 0; y < kH; ++y)
+        {
+            const bool top_half = (y < kH / 2);
+            for (int x = 0; x < kW; ++x)
+            {
+                const size_t o = (static_cast<size_t>(y) * static_cast<size_t>(kW) + static_cast<size_t>(x)) * 4u;
+                cpu_img[o + 0] = top_half ? 255 : 0;
+                cpu_img[o + 1] = 0;
+                cpu_img[o + 2] = top_half ? 0 : 255;
+                cpu_img[o + 3] = 255;
+            }
+        }
+        display->PresentRgba8(cpu_img.data(), kW, kH, kW * 4);
+        display->PresentRgba8(cpu_img.data(), kW, kH, kW * 4);
+        // Let UI thread process the second PresentRgba8
+        display->SubmitRenderJob([]() {});
+        display->WaitRenderIdle();
+        std::vector<uint8_t> flip_fb;
+        read_default_fb(flip_fb);
+        // GL row 0 is bottom (blue), GL row kH*2 - 10 is top (red)
+        const size_t bot_idx = (10u * static_cast<size_t>(kW * 2) + 100u) * 4u;
+        const size_t top_idx = ((static_cast<size_t>(kH * 2) - 10u) * static_cast<size_t>(kW * 2) + 100u) * 4u;
+        TEST_ASSERT(flip_fb[top_idx + 0] >= 120 && flip_fb[top_idx + 2] <= 20);
+        TEST_ASSERT(flip_fb[bot_idx + 0] <= 20 && flip_fb[bot_idx + 2] >= 120);
+
+        TEST_ASSERT(repsp::gpu::SelectRenderBackend("software") == 0);
+        repsp::platform::Shutdown();
+        std::filesystem::remove_all(shader_dir, ec);
+    }
 
     std::printf("gl_probe: PASS\n");
     return 0;

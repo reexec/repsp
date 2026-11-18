@@ -1,7 +1,9 @@
 #include "repsp/platform/platform.h"
 #include "repsp/platform/overlay.h"
+#include "repsp/platform/post_shader.h"
 
 #include "display_sdl_internal.h"
+#include "opengl_post_process.h"
 
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -87,6 +89,11 @@ std::mutex g_display_req_mutex;
 int g_req_window_scale = 0;
 int g_req_fullscreen = -1;
 int g_req_vsync = -1;
+
+std::mutex g_post_shader_mutex;
+std::filesystem::path g_post_shader_dir;
+std::string g_initial_post_shader = kPostShaderNoneId;
+std::atomic<sdl_internal::OpenGlPostProcess*> g_post_process{nullptr};
 
 constexpr int32_t kPspBaseWidth = 480;
 constexpr int32_t kPspBaseHeight = 272;
@@ -505,7 +512,8 @@ struct GlPresentHelper
     }
 
     void DrawTexture(GLuint tex, int src_w, int src_h, int win_w, int win_h, bool flip_y,
-                     AspectMode aspect, OutputFilter filter) const
+                     AspectMode aspect, OutputFilter filter,
+                     sdl_internal::OpenGlPostProcess* post_process = nullptr) const
     {
         glBindFramebuffer(kGlDrawFramebuffer, 0);
         glViewport(0, 0, win_w, win_h);
@@ -528,15 +536,34 @@ struct GlPresentHelper
                                     ? static_cast<GLint>(kGlLinear)
                                     : static_cast<GLint>(kGlNearest);
 
-        glUseProgram(program);
-        glUniform1i(u_tex, 0);
-        glUniform1i(u_flip_y, flip_y ? 1 : 0);
         glActiveTexture(kGlTexture0);
         glBindTexture(kGlTexture2d, tex);
         glTexParameteri(kGlTexture2d, kGlTextureMinFilter, gl_filter);
         glTexParameteri(kGlTexture2d, kGlTextureMagFilter, gl_filter);
         glTexParameteri(kGlTexture2d, kGlTextureWrapS, kGlClampToEdge);
         glTexParameteri(kGlTexture2d, kGlTextureWrapT, kGlClampToEdge);
+
+        if (post_process != nullptr && post_process->active() &&
+            post_process->UseForPresent(
+                tex,
+                static_cast<std::uint32_t>(src_w),
+                static_cast<std::uint32_t>(src_h),
+                static_cast<std::uint32_t>(kPspBaseWidth),
+                static_cast<std::uint32_t>(kPspBaseHeight),
+                rect.x,
+                rect.y,
+                static_cast<std::uint32_t>(rect.width),
+                static_cast<std::uint32_t>(rect.height),
+                flip_y))
+        {
+            post_process->DrawLastQuad();
+            glViewport(0, 0, win_w, win_h);
+            return;
+        }
+
+        glUseProgram(program);
+        glUniform1i(u_tex, 0);
+        glUniform1i(u_flip_y, flip_y ? 1 : 0);
         glBindVertexArray(vao);
         glDrawArrays(kGlTriangleStrip, 0, 4);
         glBindVertexArray(0);
@@ -546,7 +573,8 @@ struct GlPresentHelper
     }
 
     void DrawCpuRgba8(const uint8_t* pixels, int w, int h, int win_w, int win_h,
-                      AspectMode aspect, OutputFilter filter)
+                      AspectMode aspect, OutputFilter filter,
+                      sdl_internal::OpenGlPostProcess* post_process = nullptr)
     {
         if (cpu_tex == 0 || cpu_tex_w != w || cpu_tex_h != h)
         {
@@ -569,7 +597,7 @@ struct GlPresentHelper
             glPixelStorei(kGlUnpackAlignment, 4);
             glTexSubImage2D(kGlTexture2d, 0, 0, 0, w, h, kGlRgba, kGlUnsignedByte, pixels);
         }
-        DrawTexture(cpu_tex, w, h, win_w, win_h, true, aspect, filter);
+        DrawTexture(cpu_tex, w, h, win_w, win_h, true, aspect, filter, post_process);
     }
 };
 
@@ -806,10 +834,19 @@ private:
 
         SDL_GLContext gl_ctx = nullptr;
         GlPresentHelper gl_helper;
+        sdl_internal::OpenGlPostProcess post_process;
         SDL_Renderer* ren = nullptr;
         SDL_Texture* tex = nullptr;
         int tex_w = 0;
         int tex_h = 0;
+
+        std::filesystem::path init_shader_dir;
+        std::string init_shader_id;
+        {
+            std::lock_guard<std::mutex> lock(g_post_shader_mutex);
+            init_shader_dir = g_post_shader_dir;
+            init_shader_id = g_initial_post_shader;
+        }
 
         int gl_major = 3;
         int gl_minor = 3;
@@ -851,6 +888,24 @@ private:
                 g_gl_info.renderer = ren_str ? reinterpret_cast<const char*>(ren_str) : "";
                 g_gl_info.vendor = ven_str ? reinterpret_cast<const char*>(ven_str) : "";
             }
+            std::string post_err;
+            if (post_process.Initialize(init_shader_dir, false, &post_err))
+            {
+                g_post_process.store(&post_process);
+                if (!init_shader_id.empty() && init_shader_id != kPostShaderNoneId)
+                {
+                    if (!post_process.Select(init_shader_id))
+                    {
+                        std::fprintf(stderr, "[display] post shader '%s' not applied: %s\n",
+                                     init_shader_id.c_str(), post_process.last_error().c_str());
+                    }
+                }
+            }
+            else if (!init_shader_id.empty() && init_shader_id != kPostShaderNoneId)
+            {
+                std::fprintf(stderr, "[display] post shader '%s' not applied: %s\n",
+                             init_shader_id.c_str(), post_err.c_str());
+            }
             has_gl_context_.store(true);
             if (!config_.hidden)
             {
@@ -860,6 +915,13 @@ private:
         }
         else
         {
+            g_post_process.store(nullptr);
+            if (!init_shader_id.empty() && init_shader_id != kPostShaderNoneId)
+            {
+                std::fprintf(stderr,
+                             "[display] post shader '%s' not applied: software renderer has no OpenGL context\n",
+                             init_shader_id.c_str());
+            }
             g_aspect_mode.store(static_cast<int>(config_.aspect_mode));
             g_output_filter.store(static_cast<int>(config_.output_filter));
             g_fullscreen_state.store(config_.fullscreen && !config_.hidden);
@@ -1094,7 +1156,8 @@ private:
                     last_gl_tex = present_tex;
                     last_gl_w = present_w;
                     last_gl_h = present_h;
-                    gl_helper.DrawTexture(present_tex, present_w, present_h, win_w, win_h, false, aspect, out_filter);
+                    gl_helper.DrawTexture(present_tex, present_w, present_h, win_w, win_h, false, aspect, out_filter,
+                                          &post_process);
                     if (!config_.hidden)
                     {
                         RenderOverlay();
@@ -1109,7 +1172,7 @@ private:
                 }
                 else if (has_frame && w > 0 && h > 0)
                 {
-                    gl_helper.DrawCpuRgba8(local_buf.data(), w, h, win_w, win_h, aspect, out_filter);
+                    gl_helper.DrawCpuRgba8(local_buf.data(), w, h, win_w, win_h, aspect, out_filter, &post_process);
                     if (!config_.hidden)
                     {
                         RenderOverlay();
@@ -1118,7 +1181,8 @@ private:
                 }
                 else if (!config_.hidden && OverlayVisible() && last_gl_tex != 0)
                 {
-                    gl_helper.DrawTexture(last_gl_tex, last_gl_w, last_gl_h, win_w, win_h, false, aspect, out_filter);
+                    gl_helper.DrawTexture(last_gl_tex, last_gl_w, last_gl_h, win_w, win_h, false, aspect, out_filter,
+                                          &post_process);
                     RenderOverlay();
                     SDL_GL_SwapWindow(win);
                 }
@@ -1171,6 +1235,8 @@ private:
 
         if (gl_ctx != nullptr)
         {
+            g_post_process.store(nullptr);
+            post_process.Shutdown();
             sdl_internal::ShutdownOverlay();
             g_overlay_window = nullptr;
             g_overlay_gl_ctx = nullptr;
@@ -1777,6 +1843,29 @@ uint64_t GetProcessMemoryBytes()
     }
     return 0;
 #endif
+}
+
+void SetPostShaderDirectory(const std::filesystem::path& directory)
+{
+    std::lock_guard<std::mutex> lock(g_post_shader_mutex);
+    g_post_shader_dir = directory;
+}
+
+std::filesystem::path GetPostShaderDirectory()
+{
+    std::lock_guard<std::mutex> lock(g_post_shader_mutex);
+    return g_post_shader_dir;
+}
+
+void SetInitialPostShader(std::string id)
+{
+    std::lock_guard<std::mutex> lock(g_post_shader_mutex);
+    g_initial_post_shader = id.empty() ? std::string(kPostShaderNoneId) : std::move(id);
+}
+
+PostShaderControl* GetPostShaderControl()
+{
+    return g_post_process.load();
 }
 
 namespace sdl_internal
