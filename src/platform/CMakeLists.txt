@@ -21,5 +21,6 @@ endif()
 
 target_sources(repsp_platform PRIVATE
     crash_handler_common.cpp
+    sdl/overlay_sdl.cpp
     sdl/sdl_platform.cpp
 )

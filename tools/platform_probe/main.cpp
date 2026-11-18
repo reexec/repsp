@@ -192,6 +192,40 @@ int main()
     Shutdown();
     TEST_ASSERT(GetInput() == nullptr);
 
+    // 7. Shortcut classification and game input blocking (windowless)
+    {
+        TEST_ASSERT(ShouldBlockGameKeyboardInput(true, false, false));
+        TEST_ASSERT(ShouldBlockGameKeyboardInput(false, true, false));
+        TEST_ASSERT(ShouldBlockGameKeyboardInput(false, false, true));
+        TEST_ASSERT(!ShouldBlockGameKeyboardInput(false, false, false));
+
+        const auto tab = ClassifyShortcut(ShortcutKey::kTab, false, false, false);
+        TEST_ASSERT(tab.kind == ShortcutKind::kToggleOverlay);
+        TEST_ASSERT(ClassifyShortcut(ShortcutKey::kTab, false, false, true).kind == ShortcutKind::kNone);
+        TEST_ASSERT(ClassifyShortcut(ShortcutKey::kTab, true, false, false).kind == ShortcutKind::kNone);
+
+        const auto alt3 = ClassifyShortcut(ShortcutKey::kDigit3, true, false, false);
+        TEST_ASSERT(alt3.kind == ShortcutKind::kWindowScale && alt3.value == 3);
+        const auto alt6 = ClassifyShortcut(ShortcutKey::kDigit6, true, false, false);
+        TEST_ASSERT(alt6.kind == ShortcutKind::kWindowScale && alt6.value == 6);
+        TEST_ASSERT(ClassifyShortcut(ShortcutKey::kDigit7, true, false, false).kind == ShortcutKind::kNone);
+
+        const auto alt_enter = ClassifyShortcut(ShortcutKey::kEnter, true, false, false);
+        TEST_ASSERT(alt_enter.kind == ShortcutKind::kToggleFullscreen);
+        TEST_ASSERT(ClassifyShortcut(ShortcutKey::kEnter, false, false, false).kind == ShortcutKind::kNone);
+
+        const auto ctrl8 = ClassifyShortcut(ShortcutKey::kDigit8, false, true, false);
+        TEST_ASSERT(ctrl8.kind == ShortcutKind::kRenderScale && ctrl8.value == 8);
+
+        // Aspect ratio rect calculation
+        const auto orig = ComputeOutputRect(1280, 720, 480, 272, AspectMode::kOriginal);
+        TEST_ASSERT(orig.width > 0 && orig.height == 720 && orig.x > 0 && orig.y == 0);
+        const auto stretch = ComputeOutputRect(1280, 720, 480, 272, AspectMode::kStretch);
+        TEST_ASSERT(stretch.x == 0 && stretch.y == 0 && stretch.width == 1280 && stretch.height == 720);
+        const auto integer = ComputeOutputRect(1280, 720, 480, 272, AspectMode::kInteger);
+        TEST_ASSERT(integer.width == 960 && integer.height == 544 && integer.x == 160 && integer.y == 88);
+    }
+
     std::printf("platform_probe passed.\n");
     return 0;
 }
