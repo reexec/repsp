@@ -39,6 +39,28 @@ set(SDL_DISABLE_INSTALL ON CACHE BOOL "Disable SDL install rules" FORCE)
 
 add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
 
+# Dear ImGui (excluded from repsp strict warning flags)
+set(REPSP_IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui")
+add_library(imgui STATIC
+    "${REPSP_IMGUI_DIR}/imgui.cpp"
+    "${REPSP_IMGUI_DIR}/imgui_draw.cpp"
+    "${REPSP_IMGUI_DIR}/imgui_tables.cpp"
+    "${REPSP_IMGUI_DIR}/imgui_widgets.cpp"
+    "${REPSP_IMGUI_DIR}/backends/imgui_impl_sdl3.cpp"
+    "${REPSP_IMGUI_DIR}/backends/imgui_impl_opengl3.cpp"
+)
+add_library(repsp::imgui ALIAS imgui)
+set_target_properties(imgui PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+target_include_directories(imgui PUBLIC
+    $<BUILD_INTERFACE:${REPSP_IMGUI_DIR}>
+    $<BUILD_INTERFACE:${REPSP_IMGUI_DIR}/backends>
+)
+target_link_libraries(imgui PRIVATE SDL3::SDL3)
+
 # Public layer targets and aliases
 
 # Layer: platform
@@ -48,7 +70,7 @@ target_include_directories(repsp_platform PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(repsp_platform PRIVATE SDL3::SDL3)
+target_link_libraries(repsp_platform PUBLIC imgui PRIVATE SDL3::SDL3)
 repsp_apply_host_flags(repsp_platform)
 
 # Layer: module

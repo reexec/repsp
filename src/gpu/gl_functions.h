@@ -84,6 +84,11 @@ inline constexpr GLenum kGlTextureMagFilter = 0x2800;
 inline constexpr GLenum kGlTextureMinFilter = 0x2801;
 inline constexpr GLenum kGlTextureWrapS = 0x2802;
 inline constexpr GLenum kGlTextureWrapT = 0x2803;
+inline constexpr GLenum kGlTextureMaxAnisotropy = 0x84FE;
+inline constexpr GLenum kGlMaxTextureMaxAnisotropy = 0x84FF;
+inline constexpr GLenum kGlMaxSamples = 0x8D57;
+inline constexpr GLenum kGlGpuMemInfoTotalKbNvx = 0x9048;
+inline constexpr GLenum kGlGpuMemInfoAvailKbNvx = 0x9049;
 inline constexpr GLenum kGlRepeat = 0x2901;
 inline constexpr GLenum kGlClampToEdge = 0x812F;
 
@@ -147,6 +152,11 @@ struct GlProcs
     void (REPSP_GL_APIENTRY *glTexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*) = nullptr;
     void (REPSP_GL_APIENTRY *glTexSubImage2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void*) = nullptr;
     void (REPSP_GL_APIENTRY *glTexParameteri)(GLenum, GLenum, GLint) = nullptr;
+    void (REPSP_GL_APIENTRY *glTexParameterf)(GLenum, GLenum, GLfloat) = nullptr;
+    void (REPSP_GL_APIENTRY *glGetIntegerv)(GLenum, GLint*) = nullptr;
+    void (REPSP_GL_APIENTRY *glGetFloatv)(GLenum, GLfloat*) = nullptr;
+    GLenum (REPSP_GL_APIENTRY *glGetError)() = nullptr;
+    void (REPSP_GL_APIENTRY *glRenderbufferStorageMultisample)(GLenum, GLsizei, GLenum, GLsizei, GLsizei) = nullptr;
 
     void (REPSP_GL_APIENTRY *glGenBuffers)(GLsizei, GLuint*) = nullptr;
     void (REPSP_GL_APIENTRY *glDeleteBuffers)(GLsizei, const GLuint*) = nullptr;
@@ -222,6 +232,11 @@ struct GlProcs
                Load(display, glDeleteRenderbuffers, "glDeleteRenderbuffers") &&
                Load(display, glBindRenderbuffer, "glBindRenderbuffer") &&
                Load(display, glRenderbufferStorage, "glRenderbufferStorage") &&
+               Load(display, glRenderbufferStorageMultisample, "glRenderbufferStorageMultisample") &&
+               Load(display, glGetIntegerv, "glGetIntegerv") &&
+               Load(display, glGetFloatv, "glGetFloatv") &&
+               Load(display, glGetError, "glGetError") &&
+               Load(display, glTexParameterf, "glTexParameterf") &&
                Load(display, glGenTextures, "glGenTextures") &&
                Load(display, glDeleteTextures, "glDeleteTextures") &&
                Load(display, glActiveTexture, "glActiveTexture") &&

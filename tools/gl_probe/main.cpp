@@ -387,6 +387,64 @@ int main()
         TEST_ASSERT(tex_rgba[idx + 0] >= 240 && tex_rgba[idx + 1] <= 15 && tex_rgba[idx + 2] <= 15);
     }
 
+    // Verify MSAA render-to-texture resolve and texture filtering / GPU memory queries
+    {
+        constexpr uint32_t kRttSrcAddr = 0x04088000u;
+        // 512x272 ABGR8888 targets take 0x88000 bytes each; the two must not overlap,
+        // or which one a texture read finds depends on the target map's order.
+        constexpr uint32_t kRttDstAddr = 0x04110000u;
+        auto* b = repsp::gpu::GetRenderBackend();
+        TEST_ASSERT(b == &repsp::gpu::kOpenGlBackend);
+
+        repsp::gpu::SetInternalScale(2);
+        repsp::gpu::SetMsaaSamples(4);
+        TEST_ASSERT(repsp::gpu::GetMsaaSamples() == 4);
+        repsp::gpu::SetTextureFilterMode(repsp::gpu::TextureFilterMode::kAniso4x);
+        TEST_ASSERT(repsp::gpu::GetTextureFilterMode() == repsp::gpu::TextureFilterMode::kAniso4x);
+
+        // Draw green solid into kRttSrcAddr under MSAA, then sample it into kRttDstAddr
+        b->set_target(kRttSrcAddr, 512, 3);
+        repsp::gpu::DrawState clear_st;
+        clear_st.clear = 1;
+        clear_st.clear_color = 1;
+        clear_st.clear_alpha = 1;
+        repsp::gpu::Vertex cv[2] = {
+            MakeVert(0, 0, 0.0f, 0, 0, 0xFF00FF00u),
+            MakeVert(480, 272, 0.0f, 0, 0, 0xFF00FF00u)
+        };
+        b->draw(repsp::gpu::kPrimSprites, cv, 2, &clear_st);
+
+        b->set_target(kRttDstAddr, 512, 3);
+        repsp::gpu::DrawState rtt_st;
+        rtt_st.tex_enable = 1;
+        rtt_st.tex_addr = kRttSrcAddr;
+        rtt_st.tex_bw = 512;
+        rtt_st.tex_w = 480;
+        rtt_st.tex_h = 272;
+        rtt_st.tex_fmt = 3;
+        rtt_st.tex_func = 3; // REPLACE
+        repsp::gpu::Vertex rv[2] = {
+            MakeVert(0, 0, 0.0f, 0, 0, 0xFFFFFFFFu),
+            MakeVert(480, 272, 0.0f, 480, 272, 0xFFFFFFFFu)
+        };
+        b->draw(repsp::gpu::kPrimSprites, rv, 2, &rtt_st);
+        b->finish();
+
+        std::vector<uint8_t> dst_rgba;
+        int dw = 0;
+        int dh = 0;
+        TEST_ASSERT(repsp::gpu::ReadGlTargetRgba8(kRttDstAddr, 1, dst_rgba, dw, dh));
+        const size_t mid = (136u * static_cast<size_t>(dw) + 240u) * 4u;
+        TEST_ASSERT(dst_rgba[mid + 0] <= 15 && dst_rgba[mid + 1] >= 240 && dst_rgba[mid + 2] <= 15);
+
+        const auto mem_info = repsp::gpu::GetGpuMemoryInfo();
+        TEST_ASSERT(mem_info.hle_targets_bytes > 0);
+
+        repsp::gpu::SetMsaaSamples(0);
+        repsp::gpu::SetTextureFilterMode(repsp::gpu::TextureFilterMode::kOriginal);
+        repsp::gpu::SetInternalScale(1);
+    }
+
     TEST_ASSERT(repsp::gpu::SelectRenderBackend("software") == 0);
     repsp::platform::Shutdown();
 
