@@ -111,3 +111,43 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## 6. Screen Shaders (`src/platform/post_shaders/`, `src/platform/post_shader_*.cpp`, `src/platform/sdl/opengl_post_process.*`)
+
+* **re2DJ** (BSD 3-Clause): the screen shader loader, preset parser, source assembly and GL pass are adapted from re2DJ v0.0.75, and the built-in `crt.glsl` and `scanline.glsl` come from it (changed to read `LogicalSize`). The license text follows this list.
+* **AMD FidelityFX Super Resolution 1.0** (MIT, Copyright (c) 2021 Advanced Micro Devices, Inc.): the EASU and RCAS algorithms in `fsr/`, as ported by re2DJ. Notice in each file; [upstream license](https://github.com/GPUOpen-Effects/FidelityFX-FSR/blob/master/license.txt).
+* **ScaleFX** by Sp00kyFox (MIT, Copyright (c) 2016 Sp00kyFox): the five passes in `scalefx/`, from libretro glsl-shaders as re2DJ has them. Notice in each file; [upstream](https://github.com/libretro/glsl-shaders/tree/master/edge-smoothing/scalefx).
+* **Anime4K** by bloc97 (MIT, Copyright (c) 2019-2021 bloc97): the Upscale CNN x2 (S) weights in `anime4k/`, as converted by re2DJ. Notice in each file; [upstream license](https://github.com/bloc97/Anime4K/blob/master/LICENSE).
+
+```text
+BSD 3-Clause License
+
+Copyright (c) 2026, re2DJ contributors
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
