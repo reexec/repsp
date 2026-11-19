@@ -3,16 +3,22 @@
 #include "repsp/hle/display.h"
 #include "repsp/platform/platform.h"
 #include "repsp/platform/post_shader.h"
+#include "repsp/recomp/guest_cpu.h"
 #include "repsp/runtime/guest_memory.h"
+#include "repsp/runtime/scheduler.h"
 
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #define TEST_ASSERT(cond) \
@@ -204,11 +210,102 @@ void RunScene(const char* backend_name, int scale)
     }
 }
 
+struct LockTestCpu
+{
+    uint32_t gpr[32] = {};
+};
+
+LockTestCpu g_lock_cpu;
+constexpr uint32_t kGlLockWaiterEntry = 0x08804010u;
+constexpr uint32_t kGlLockPeerEntry = 0x08804020u;
+
+std::mutex g_lock_sync_mu;
+std::condition_variable g_lock_sync_cv;
+bool g_lock_held = false;
+bool g_lock_release = false;
+std::atomic<bool> g_lock_peer_ran{false};
+std::atomic<bool> g_lock_waiter_done{false};
+
+void LockMockSave(void* ctx) { std::memcpy(ctx, &g_lock_cpu, sizeof(g_lock_cpu)); }
+void LockMockRestore(const void* ctx) { std::memcpy(&g_lock_cpu, ctx, sizeof(g_lock_cpu)); }
+uint32_t LockMockGetGpr(int idx) { return (idx > 0 && idx < 32) ? g_lock_cpu.gpr[idx] : 0; }
+void LockMockSetGpr(int idx, uint32_t val) { if (idx > 0 && idx < 32) g_lock_cpu.gpr[idx] = val; }
+uint32_t LockMockGetFpr(int) { return 0; }
+void LockMockSetFpr(int, uint32_t) {}
+
+void LockGuestEntry(uint32_t addr)
+{
+    if (addr == kGlLockWaiterEntry)
+    {
+        // This calls LockGl() while holder_thread holds g_gl.mutex; it must enter
+        // ScopedHostWait so kGlLockPeerEntry can run on the guest CPU and release it.
+        (void)repsp::gpu::HasGlTargetForAddress(kFbAddr);
+        g_lock_waiter_done.store(true);
+    }
+    else if (addr == kGlLockPeerEntry)
+    {
+        g_lock_peer_ran.store(true);
+        {
+            std::lock_guard<std::mutex> lk(g_lock_sync_mu);
+            g_lock_release = true;
+        }
+        g_lock_sync_cv.notify_one();
+    }
+}
+
+void TestGlLockReleasesGuestCpu()
+{
+    g_lock_held = false;
+    g_lock_release = false;
+    g_lock_peer_ran.store(false);
+    g_lock_waiter_done.store(false);
+
+    const repsp_guest_cpu_ops ops{
+        sizeof(LockTestCpu), LockMockSave, LockMockRestore,
+        LockMockGetGpr, LockMockSetGpr, LockGuestEntry,
+        LockMockGetFpr, LockMockSetFpr,
+    };
+    auto& sched = repsp::runtime::GetScheduler();
+    sched.Reset();
+    sched.SetCpuOps(&ops);
+
+    std::thread holder([]()
+    {
+        repsp::gpu::LockGlMutexForTest();
+        {
+            std::lock_guard<std::mutex> lk(g_lock_sync_mu);
+            g_lock_held = true;
+        }
+        g_lock_sync_cv.notify_one();
+
+        std::unique_lock<std::mutex> lk(g_lock_sync_mu);
+        g_lock_sync_cv.wait(lk, []() { return g_lock_release; });
+        repsp::gpu::UnlockGlMutexForTest();
+    });
+
+    {
+        std::unique_lock<std::mutex> lk(g_lock_sync_mu);
+        g_lock_sync_cv.wait(lk, []() { return g_lock_held; });
+    }
+
+    const int32_t tid_waiter = sched.CreateThread("gl_waiter", kGlLockWaiterEntry, 0x20, 0x4000, 0, 0);
+    const int32_t tid_peer = sched.CreateThread("gl_peer", kGlLockPeerEntry, 0x21, 0x4000, 0, 0);
+    TEST_ASSERT(tid_waiter > 0 && tid_peer > 0);
+    TEST_ASSERT(sched.StartThread(tid_peer, 0, 0) == 0);
+    sched.Run(tid_waiter);
+
+    holder.join();
+    TEST_ASSERT(g_lock_peer_ran.load());
+    TEST_ASSERT(g_lock_waiter_done.load());
+    sched.Reset();
+}
+
 } // namespace
 
 int main()
 {
     TEST_ASSERT(repsp::runtime::GetGuestMemory().Initialize());
+    TestGlLockReleasesGuestCpu();
 
     repsp::platform::PlatformConfig pc;
     pc.headless = false;

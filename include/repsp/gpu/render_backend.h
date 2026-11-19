@@ -213,6 +213,11 @@ uint32_t ColorExpand(uint32_t px, int fmt);
 // The texel at integer coordinates (x, y), wrapped or clamped, as 0xAABBGGRR.
 uint32_t TexelFetch(const DrawState& st, int x, int y);
 
+// Test hooks: hold/release the GL backend mutex so probes can deterministically
+// verify that guest threads waiting on it yield the guest CPU via ScopedHostWait.
+void LockGlMutexForTest();
+void UnlockGlMutexForTest();
+
 } // namespace repsp::gpu
 
 #endif // REPSP_GPU_RENDER_BACKEND_H
