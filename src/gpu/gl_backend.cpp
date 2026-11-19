@@ -346,6 +346,25 @@ struct GlContextState
 
 GlContextState g_gl;
 
+// Takes g_gl.mutex. The UI thread holds it for a whole flush, which can take
+// tens of milliseconds; a guest thread that finds it held waits as a host wait,
+// so the guest CPU goes to other guest threads meanwhile (a higher-priority
+// sound thread woken by its timer, for example). On other threads the host
+// wait is a no-op and this is a plain lock.
+std::unique_lock<std::mutex> LockGl()
+{
+    std::unique_lock<std::mutex> lock(g_gl.mutex, std::try_to_lock);
+    while (!lock.owns_lock())
+    {
+        {
+            runtime::Scheduler::ScopedHostWait host_wait(runtime::GetScheduler());
+            std::lock_guard<std::mutex> wait(g_gl.mutex);
+        }
+        (void)lock.try_lock();
+    }
+    return lock;
+}
+
 GLuint CompileShader(const GlProcs& gl, GLenum type, const char* src)
 {
     GLuint shader = gl.glCreateShader(type);
@@ -642,7 +661,7 @@ void UiShutdownResources()
     {
         return;
     }
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     for (auto& kv : g_gl.ui_targets)
     {
         UiDestroyTarget(kv.second);
@@ -936,7 +955,7 @@ void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale, int req_sa
         return;
     }
 
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
 
     for (uint64_t evicted_id : payload->evicted_cache_ids)
     {
@@ -1377,7 +1396,7 @@ int GlInit(int width, int height)
     {
         return -1;
     }
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     g_gl.initialized = true;
     g_gl.pending_flush.reset();
     return 0;
@@ -1387,7 +1406,7 @@ void GlShutdown()
 {
     auto* display = platform::GetDisplay();
     {
-        std::lock_guard<std::mutex> lock(g_gl.mutex);
+        auto lock = LockGl();
         g_gl.pending_flush.reset();
         g_gl.guest_targets.clear();
         g_gl.guest_tex_cache.clear();
@@ -1405,7 +1424,7 @@ void GlShutdown()
 
 void GlTarget(uint32_t addr, uint32_t stride, int fmt)
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     g_gl.current_target_addr = addr;
     g_gl.current_target_stride = stride;
     g_gl.current_target_fmt = fmt;
@@ -1437,7 +1456,7 @@ void GlDraw(int prim, const Vertex* v, int count, const DrawState* st)
     {
         return;
     }
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     if (!g_gl.initialized || g_gl.current_target_addr == 0)
     {
         return;
@@ -1619,19 +1638,19 @@ void GlDraw(int prim, const Vertex* v, int count, const DrawState* st)
 
 void GlFinish()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     FlushPendingLocked();
 }
 
 void GlPresent()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     FlushPendingLocked();
 }
 
 void GlGuestMemoryMayHaveChanged()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     ++g_gl.flush_epoch;
 }
 
@@ -1650,13 +1669,13 @@ const RenderBackend kOpenGlBackend = {
 
 void SetInternalScale(int scale)
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     g_gl.internal_scale = std::clamp(scale, 1, 8);
 }
 
 int GetInternalScale()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     return g_gl.internal_scale;
 }
 
@@ -1666,7 +1685,7 @@ bool HasGlTargetForAddress(uint32_t addr)
     {
         return false;
     }
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     auto it = g_gl.guest_targets.find(addr);
     return it != g_gl.guest_targets.end() && it->second.has_drawn;
 }
@@ -1679,7 +1698,7 @@ bool PresentGlTarget(uint32_t addr)
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(g_gl.mutex);
+        auto lock = LockGl();
         FlushPendingLocked();
         auto git = g_gl.guest_targets.find(addr);
         if (git != g_gl.guest_targets.end())
@@ -1696,7 +1715,7 @@ bool PresentGlTarget(uint32_t addr)
     int w = 0;
     int h = 0;
     {
-        std::lock_guard<std::mutex> lock(g_gl.mutex);
+        auto lock = LockGl();
         auto it = g_gl.ui_targets.find(addr);
         if (it == g_gl.ui_targets.end() || it->second.color_tex == 0)
         {
@@ -1721,7 +1740,7 @@ bool ReadGlTargetRgba8(uint32_t addr, int output_scale, std::vector<uint8_t>& ou
         return false;
     }
     {
-        std::lock_guard<std::mutex> lock(g_gl.mutex);
+        auto lock = LockGl();
         FlushPendingLocked();
     }
 
@@ -1729,7 +1748,7 @@ bool ReadGlTargetRgba8(uint32_t addr, int output_scale, std::vector<uint8_t>& ou
     bool ok = false;
     display->SubmitRenderJob([addr, clamped_out_scale, &out_rgba, &out_w, &out_h, &ok]()
     {
-        std::lock_guard<std::mutex> lock(g_gl.mutex);
+        auto lock = LockGl();
         auto it = g_gl.ui_targets.find(addr);
         if (it == g_gl.ui_targets.end() || it->second.fbo == 0)
         {
@@ -1793,13 +1812,13 @@ bool ReadGlTargetRgba8(uint32_t addr, int output_scale, std::vector<uint8_t>& ou
 
 OpenGlStats GetOpenGlStats()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     return g_gl.stats;
 }
 
 void ResetOpenGlStats()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     g_gl.stats = OpenGlStats{};
     g_gl.warned_blend_double_alpha = false;
     g_gl.warned_blend_fix_conflict = false;
@@ -1809,7 +1828,7 @@ void ResetOpenGlStats()
 
 void SetMsaaSamples(int samples)
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     if (samples <= 1)
     {
         g_gl.msaa_samples = 0;
@@ -1830,13 +1849,13 @@ void SetMsaaSamples(int samples)
 
 int GetMsaaSamples()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     return g_gl.msaa_samples;
 }
 
 int GetEffectiveMsaaSamples()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     if (g_gl.msaa_samples <= 1 || g_gl.max_msaa_samples <= 1)
     {
         return 0;
@@ -1846,31 +1865,31 @@ int GetEffectiveMsaaSamples()
 
 int GetMaxMsaaSamples()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     return g_gl.max_msaa_samples;
 }
 
 void SetTextureFilterMode(TextureFilterMode mode)
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     g_gl.tex_filter_mode = mode;
 }
 
 TextureFilterMode GetTextureFilterMode()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     return g_gl.tex_filter_mode;
 }
 
 float GetMaxAnisotropy()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     return g_gl.max_anisotropy;
 }
 
 GpuMemoryInfo GetGpuMemoryInfo()
 {
-    std::lock_guard<std::mutex> lock(g_gl.mutex);
+    auto lock = LockGl();
     GpuMemoryInfo info;
     info.driver_reported = g_gl.driver_gpu_reported;
     info.total_bytes = g_gl.driver_gpu_total_bytes;
@@ -1897,6 +1916,16 @@ GpuMemoryInfo GetGpuMemoryInfo()
         }
     }
     return info;
+}
+
+void LockGlMutexForTest()
+{
+    g_gl.mutex.lock();
+}
+
+void UnlockGlMutexForTest()
+{
+    g_gl.mutex.unlock();
 }
 
 } // namespace repsp::gpu

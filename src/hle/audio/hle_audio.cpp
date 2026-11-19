@@ -283,8 +283,13 @@ bool WaitConditionMetLocked(const AudioChannelState& ch, bool wait_for_zero)
     {
         return ch.queue.empty();
     }
-    // Double-buffered capacity: allow one playing block plus one queued block.
-    return ch.queue.size() <= static_cast<size_t>(ch.sample_count);
+    // Release the blocking caller once the channel queue holds at most one
+    // mixing quantum (128 frames), or sample_count when smaller, instead of a
+    // full sample_count block. Keeping at most one quantum queued narrows the
+    // channel-queue latency of large-block streams (e.g. 1024-sample BGM vs
+    // 256-sample SFX) while the intermediate mixing buffer absorbs jitter.
+    const size_t threshold = std::min(kClockQuantumFrames, static_cast<size_t>(ch.sample_count));
+    return ch.queue.size() <= threshold;
 }
 
 int32_t OutputChannelCommon(int32_t channel, int32_t left_vol, int32_t right_vol, uint32_t buf_addr)

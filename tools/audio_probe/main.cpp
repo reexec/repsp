@@ -63,10 +63,17 @@ constexpr uint32_t kNidSetDataLen = 0xCB2E439Eu;
 constexpr uint32_t kGuestBuf0 = 0x08940000u;
 constexpr uint32_t kGuestBuf1 = 0x08942000u;
 constexpr uint32_t kThreadEntry = 0x08803000u;
+constexpr uint32_t kReleaseThreadA = 0x08803010u;
+constexpr uint32_t kReleaseThreadB = 0x08803020u;
 
 int32_t g_live_ch = -1;
 int32_t g_live_rest_after = -1;
 int32_t g_live_calls_ok = 0;
+
+int g_c9_stage = 0;
+int32_t g_c9_rest_at_wake = -1;
+int32_t g_c9_rest_after_drain = -1;
+int32_t g_c9_rest_small_after = -1;
 
 void GuestEntry(uint32_t addr)
 {
@@ -87,6 +94,70 @@ void GuestEntry(uint32_t addr)
         {
             g_live_rest_after = CallNid(kNidGetRestLength, static_cast<uint32_t>(g_live_ch));
         }
+    }
+    else if (addr == kReleaseThreadA)
+    {
+        using namespace repsp::hle::audio;
+        TEST_ASSERT(CallNid(kNidChReserve, 0u, 1024u, kAudioFormatStereo) == 0);
+        TEST_ASSERT(CallNid(kNidOutputBlocking, 0u, 0x8000u, kGuestBuf0) == 1024);
+        g_c9_stage = 1;
+        // Queue is 1024 > min(128, 1024); must block until queue <= 128, then append 1024 -> 1152.
+        TEST_ASSERT(CallNid(kNidOutputBlocking, 0u, 0x8000u, kGuestBuf0) == 1024);
+        g_c9_rest_at_wake = CallNid(kNidGetRestLength, 0u);
+
+        g_c9_stage = 2;
+        // Drain (buf == 0) must still wait until queue reaches 0, not 128.
+        TEST_ASSERT(CallNid(kNidOutputBlocking, 0u, 0x8000u, 0u) == 0);
+        g_c9_rest_after_drain = CallNid(kNidGetRestLength, 0u);
+        TEST_ASSERT(CallNid(kNidChRelease, 0u) == 0);
+
+        // sample_count < 128 uses sample_count (64) as the release threshold.
+        TEST_ASSERT(CallNid(kNidChReserve, 1u, 64u, kAudioFormatStereo) == 1);
+        TEST_ASSERT(CallNid(kNidOutputBlocking, 1u, 0x8000u, kGuestBuf1) == 64);
+        // Queue is 64 <= min(128, 64); returns immediately without blocking -> queue becomes 128.
+        TEST_ASSERT(CallNid(kNidOutputBlocking, 1u, 0x8000u, kGuestBuf1) == 64);
+        TEST_ASSERT(CallNid(kNidGetRestLength, 1u) == 128);
+        g_c9_stage = 3;
+        // Queue is 128 > 64; blocks until StepMixClockForTest drains 128 -> 0, then appends 64.
+        TEST_ASSERT(CallNid(kNidOutputBlocking, 1u, 0x8000u, kGuestBuf1) == 64);
+        g_c9_rest_small_after = CallNid(kNidGetRestLength, 1u);
+        TEST_ASSERT(CallNid(kNidChRelease, 1u) == 0);
+        g_c9_stage = 4;
+    }
+    else if (addr == kReleaseThreadB)
+    {
+        using namespace repsp::hle::audio;
+        auto& sched = repsp::runtime::GetScheduler();
+
+        // 1. 1024-sample channel: 6 steps (1024 -> 256) must NOT wake Thread A; 7th (256 -> 128) wakes it.
+        TEST_ASSERT(g_c9_stage == 1);
+        for (int step = 0; step < 6; ++step)
+        {
+            TEST_ASSERT(StepMixClockForTest());
+            sched.YieldCurrent();
+            TEST_ASSERT(g_c9_stage == 1);
+        }
+        TEST_ASSERT(CallNid(kNidGetRestLength, 0u) == 256);
+        TEST_ASSERT(StepMixClockForTest());
+        sched.YieldCurrent();
+
+        // 2. Drain: 8 steps (1152 -> 128) must NOT wake Thread A; 9th (128 -> 0) wakes it.
+        TEST_ASSERT(g_c9_stage == 2);
+        for (int step = 0; step < 8; ++step)
+        {
+            TEST_ASSERT(StepMixClockForTest());
+            sched.YieldCurrent();
+            TEST_ASSERT(g_c9_stage == 2);
+        }
+        TEST_ASSERT(CallNid(kNidGetRestLength, 0u) == 128);
+        TEST_ASSERT(StepMixClockForTest());
+        sched.YieldCurrent();
+
+        // 3. 64-sample channel: 1 step (128 -> 0 <= 64) wakes Thread A.
+        TEST_ASSERT(g_c9_stage == 3);
+        TEST_ASSERT(StepMixClockForTest());
+        sched.YieldCurrent();
+        TEST_ASSERT(g_c9_stage == 4);
     }
 }
 
@@ -431,8 +502,45 @@ int main()
         repsp::runtime::GetScheduler().Reset();
     }
 
+    // 9. Blocking output releases at min(kClockQuantumFrames, sample_count); drain still waits for 0.
+    {
+        class ProbeAudioBackend4 final : public repsp::platform::AudioBackend
+        {
+        public:
+            bool Initialize(const repsp::platform::AudioConfig&) override { return true; }
+            void Shutdown() override { cb_ = nullptr; }
+            void SetPullCallback(repsp::platform::AudioPullCallback cb) override { cb_ = std::move(cb); }
+            bool QueueAudio(const int16_t*, size_t) override { return true; }
+        private:
+            repsp::platform::AudioPullCallback cb_;
+        };
+
+        ProbeAudioBackend4 mock_backend;
+        AudioHleConfig lat_cfg{};
+        lat_cfg.auto_attach_platform = false;
+        lat_cfg.target_latency_ms = 200; // Large headroom so StepMixClockForTest steps deterministically.
+        lat_cfg.auto_start_clock_for_test = false;
+        Register(lat_cfg);
+        SetBackend(&mock_backend);
+
+        auto& sched = repsp::runtime::GetScheduler();
+        const int32_t tid_a = sched.CreateThread("audio_rel_a", kReleaseThreadA, 0x20, 0x4000, 0, 0);
+        const int32_t tid_b = sched.CreateThread("audio_rel_b", kReleaseThreadB, 0x21, 0x4000, 0, 0);
+        TEST_ASSERT(tid_a > 0 && tid_b > 0);
+        TEST_ASSERT(sched.StartThread(tid_b, 0, 0) == 0);
+        sched.Run(tid_a);
+
+        TEST_ASSERT(g_c9_stage == 4);
+        TEST_ASSERT(g_c9_rest_at_wake == 1152);
+        TEST_ASSERT(g_c9_rest_after_drain == 0);
+        TEST_ASSERT(g_c9_rest_small_after == 64);
+
+        Shutdown();
+        sched.Reset();
+    }
+
     mem.Shutdown();
 
-    std::printf("[PASS] audio_probe: 8/8 checks passed\n");
+    std::printf("[PASS] audio_probe: 9/9 checks passed\n");
     return 0;
 }

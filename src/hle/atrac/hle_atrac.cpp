@@ -48,11 +48,25 @@ struct AtracHandle
 
     bool all_in_memory = false;
     bool decoded_all = false;
+    bool stream_ended = false;
     int32_t loop_num = 0;
     int32_t last_internal_error = 0;
 
-    uint32_t current_sample = 0;
+    // Raw sample positions (include encoder_delay).
+    // raw_pos is the next raw sample to output from sceAtracDecodeData;
+    // decode_raw_pos is the next raw sample to append to carry_pcm.
+    uint32_t raw_pos = 0;
+    uint32_t decode_raw_pos = 0;
     uint32_t frame_index = 0;
+
+    struct CarrySegment
+    {
+        uint32_t raw_start = 0;
+        uint32_t count = 0;
+        bool is_silence_pad = false;
+    };
+    std::vector<int16_t> carry_pcm;
+    std::vector<CarrySegment> carry_segs;
 
     // Streaming ring tracking within guest [buf_addr, buf_addr + buf_size).
     uint32_t file_read_offset = 0;
@@ -78,6 +92,7 @@ struct AtracGlobalState
     uint64_t decoded_samples = 0;
     uint64_t stream_bytes_added = 0;
     uint64_t resets = 0;
+    int32_t start_offset_ms = 0;
     bool trace_enabled = false;
 };
 
@@ -292,6 +307,80 @@ int32_t ComputeRemainFrames(const AtracHandle& h)
     return static_cast<int32_t>(h.buffered_bytes / h.info.block_align);
 }
 
+bool HasActiveLoop(const AtracHandle& h)
+{
+    return h.loop_num != 0 && h.loop_start >= 0 && h.loop_end >= h.loop_start;
+}
+
+uint32_t CurrentSegmentEnd(const AtracHandle& h)
+{
+    if (HasActiveLoop(h))
+    {
+        return static_cast<uint32_t>(h.loop_end) + 1u;
+    }
+    return h.end_sample + h.encoder_delay;
+}
+
+uint32_t CarrySampleCount(const AtracHandle& h)
+{
+    if (h.info.channels == 0)
+    {
+        return 0;
+    }
+    return static_cast<uint32_t>(h.carry_pcm.size() / h.info.channels);
+}
+
+void AppendCarrySegment(AtracHandle& h, uint32_t raw_start, uint32_t count, bool is_silence_pad = false)
+{
+    if (count == 0)
+    {
+        return;
+    }
+    if (!h.carry_segs.empty())
+    {
+        auto& back = h.carry_segs.back();
+        if (back.is_silence_pad == is_silence_pad &&
+            (is_silence_pad || back.raw_start + back.count == raw_start))
+        {
+            back.count += count;
+            return;
+        }
+    }
+    h.carry_segs.push_back(AtracHandle::CarrySegment{ raw_start, count, is_silence_pad });
+}
+
+void ConsumeCarrySegments(AtracHandle& h, uint32_t count)
+{
+    uint32_t rem = count;
+    while (rem > 0 && !h.carry_segs.empty())
+    {
+        auto& front = h.carry_segs.front();
+        if (rem < front.count)
+        {
+            if (!front.is_silence_pad)
+            {
+                front.raw_start += rem;
+            }
+            front.count -= rem;
+            rem = 0;
+        }
+        else
+        {
+            rem -= front.count;
+            h.raw_pos = front.is_silence_pad ? front.raw_start : (front.raw_start + front.count);
+            h.carry_segs.erase(h.carry_segs.begin());
+        }
+    }
+    if (!h.carry_segs.empty())
+    {
+        h.raw_pos = h.carry_segs.front().raw_start;
+    }
+    else
+    {
+        h.raw_pos = h.decode_raw_pos;
+    }
+}
+
 void HleAtracSetDataAndGetId()
 {
     const uint32_t buf = recomp::Arg<uint32_t>(0);
@@ -350,6 +439,34 @@ void HleAtracSetDataAndGetId()
     parsed.active = true;
     parsed.buf_addr = buf;
     parsed.buf_size = buf_size;
+    if (g_atrac.start_offset_ms > 0)
+    {
+        const uint64_t offset_samples =
+            (static_cast<uint64_t>(g_atrac.start_offset_ms) * parsed.info.sample_rate) / 1000ull;
+        const uint64_t raw_end =
+            static_cast<uint64_t>(parsed.end_sample) + static_cast<uint64_t>(parsed.encoder_delay);
+        const uint64_t start_raw =
+            std::min<uint64_t>(static_cast<uint64_t>(parsed.encoder_delay) + offset_samples, raw_end);
+        parsed.raw_pos = static_cast<uint32_t>(start_raw);
+        parsed.decode_raw_pos = parsed.raw_pos;
+    }
+    else
+    {
+        parsed.raw_pos = parsed.encoder_delay;
+        parsed.decode_raw_pos = parsed.encoder_delay;
+        if (g_atrac.start_offset_ms < 0)
+        {
+            const uint64_t abs_ms = static_cast<uint64_t>(-static_cast<int64_t>(g_atrac.start_offset_ms));
+            const uint64_t pad_samples = (abs_ms * parsed.info.sample_rate) / 1000ull;
+            if (pad_samples > 0)
+            {
+                parsed.carry_pcm.assign(static_cast<size_t>(pad_samples) * parsed.info.channels, int16_t{ 0 });
+                AppendCarrySegment(parsed, parsed.encoder_delay, static_cast<uint32_t>(pad_samples), true);
+            }
+        }
+    }
+    parsed.frame_index = 0;
+    parsed.stream_ended = false;
     const uint32_t total_file_bytes = parsed.data_offset + parsed.data_size;
     parsed.all_in_memory = (buf_size >= total_file_bytes);
     if (parsed.all_in_memory)
@@ -381,6 +498,7 @@ void HleAtracSetDataAndGetId()
                      parsed.info.samples_per_frame,
                      parsed.data_size,
                      parsed.end_sample,
+                     parsed.encoder_delay,
                      parsed.loop_start,
                      parsed.loop_end);
     }
@@ -422,132 +540,192 @@ void HleAtracDecodeData()
     }
 
     const uint32_t spf = h->info.samples_per_frame;
-    const size_t max_pcm_elems = static_cast<size_t>(spf) * h->info.channels;
+    const uint32_t channels = h->info.channels;
+    const size_t max_pcm_elems = static_cast<size_t>(spf) * channels;
     if (out_addr == 0 || !mem.IsValidAddress(out_addr, max_pcm_elems * sizeof(int16_t)))
     {
         recomp::Return(kSceAtracErrorParamFail);
         return;
     }
 
-    if (!h->all_in_memory && h->buffered_bytes < h->info.block_align &&
-        ComputeRemainBytesToRead(*h) > 0)
-    {
-        if (out_samples_addr != 0 && mem.IsValidAddress(out_samples_addr, 4))
-        {
-            mem.WriteU32(out_samples_addr, 0);
-        }
-        if (out_end_addr != 0 && mem.IsValidAddress(out_end_addr, 4))
-        {
-            mem.WriteU32(out_end_addr, 0);
-        }
-        if (out_remain_addr != 0 && mem.IsValidAddress(out_remain_addr, 4))
-        {
-            mem.WriteU32(out_remain_addr, 0);
-        }
-        recomp::Return(int32_t{ 0 });
-        return;
-    }
-
-    uint32_t samples_this_frame = spf;
-    if (h->current_sample < h->end_sample)
-    {
-        samples_this_frame = std::min<uint32_t>(spf, h->end_sample - h->current_sample);
-    }
+    AtracDecoder* dec = (g_atrac.decoder != nullptr) ? g_atrac.decoder : &g_atrac.default_decoder;
+    EnsureCodecContext(*h, dec);
 
     std::vector<uint8_t> encoded_frame(h->info.block_align, 0);
-    if (h->all_in_memory)
+    std::vector<int16_t> frame_pcm(max_pcm_elems, 0);
+
+    // Fill carry_pcm up to one full output block (spf) or until the stream ends.
+    // Frames before decode_raw_pos (such as encoder_delay) are decoded to prime
+    // codec state and discarded; loop seams are spliced within the same block.
+    while (!h->stream_ended && CarrySampleCount(*h) < spf)
     {
-        const uint32_t byte_off = h->data_offset + h->frame_index * h->info.block_align;
-        if (byte_off < h->data_offset + h->data_size && mem.IsValidAddress(h->buf_addr + byte_off, 1))
+        const uint32_t seg_end = CurrentSegmentEnd(*h);
+        if (h->decode_raw_pos >= seg_end)
         {
-            const uint32_t avail = std::min<uint32_t>(h->info.block_align,
-                                                      (h->data_offset + h->data_size) - byte_off);
-            const uint8_t* src = mem.Translate(h->buf_addr + byte_off);
-            if (src != nullptr)
+            if (HasActiveLoop(*h))
             {
-                std::memcpy(encoded_frame.data(), src, avail);
+                if (h->loop_num > 0)
+                {
+                    h->loop_num -= 1;
+                }
+                const uint32_t target = static_cast<uint32_t>(h->loop_start);
+                h->decode_raw_pos = target;
+                h->frame_index = target / spf;
+                if (h->codec_ctx_owner != nullptr && h->codec_ctx != nullptr)
+                {
+                    h->codec_ctx_owner->ResetStreamContext(h->codec_ctx);
+                }
+                if (!h->all_in_memory)
+                {
+                    h->file_read_offset =
+                        std::min<uint32_t>(h->data_offset + h->frame_index * h->info.block_align,
+                                           h->data_offset + h->data_size);
+                    h->buffered_bytes = 0;
+                    h->write_cursor = 0;
+                }
+                continue;
+            }
+            h->stream_ended = true;
+            break;
+        }
+
+        if (!h->all_in_memory && h->buffered_bytes < h->info.block_align &&
+            ComputeRemainBytesToRead(*h) > 0)
+        {
+            // Keep any already-decoded carry samples intact until more data arrives.
+            if (out_samples_addr != 0 && mem.IsValidAddress(out_samples_addr, 4))
+            {
+                mem.WriteU32(out_samples_addr, 0);
+            }
+            if (out_end_addr != 0 && mem.IsValidAddress(out_end_addr, 4))
+            {
+                mem.WriteU32(out_end_addr, 0);
+            }
+            if (out_remain_addr != 0 && mem.IsValidAddress(out_remain_addr, 4))
+            {
+                mem.WriteU32(out_remain_addr, 0);
+            }
+            recomp::Return(int32_t{ 0 });
+            return;
+        }
+
+        std::fill(encoded_frame.begin(), encoded_frame.end(), uint8_t{ 0 });
+        if (h->all_in_memory)
+        {
+            const uint32_t byte_off = h->data_offset + h->frame_index * h->info.block_align;
+            if (byte_off < h->data_offset + h->data_size && mem.IsValidAddress(h->buf_addr + byte_off, 1))
+            {
+                const uint32_t avail = std::min<uint32_t>(h->info.block_align,
+                                                          (h->data_offset + h->data_size) - byte_off);
+                const uint8_t* src = mem.Translate(h->buf_addr + byte_off);
+                if (src != nullptr)
+                {
+                    std::memcpy(encoded_frame.data(), src, avail);
+                }
+            }
+        }
+        else
+        {
+            const uint32_t consume = std::min<uint32_t>(h->info.block_align, h->buffered_bytes);
+            const uint32_t ring_read =
+                (h->write_cursor + h->buf_size - h->buffered_bytes) % h->buf_size;
+            for (uint32_t i = 0; i < consume; ++i)
+            {
+                const uint32_t pos = (ring_read + i) % h->buf_size;
+                encoded_frame[i] = mem.ReadU8(h->buf_addr + pos);
+            }
+            h->buffered_bytes -= consume;
+        }
+
+        std::fill(frame_pcm.begin(), frame_pcm.end(), int16_t{ 0 });
+        if (!dec->DecodeFrame(h->codec_ctx,
+                              h->info,
+                              encoded_frame.data(),
+                              encoded_frame.size(),
+                              frame_pcm.data(),
+                              spf))
+        {
+            recomp::Return(kSceAtracErrorBadData);
+            return;
+        }
+
+        const uint32_t frame_start = h->frame_index * spf;
+        const uint32_t frame_end = frame_start + spf;
+        h->frame_index += 1;
+        g_atrac.decoded_frames += 1;
+
+        const uint32_t take_start = std::max(frame_start, h->decode_raw_pos);
+        const uint32_t take_end = std::min(frame_end, seg_end);
+        if (take_start < take_end)
+        {
+            const uint32_t src_off = take_start - frame_start;
+            const uint32_t count = take_end - take_start;
+            const size_t elem_off = static_cast<size_t>(src_off) * channels;
+            const size_t elem_cnt = static_cast<size_t>(count) * channels;
+            h->carry_pcm.insert(h->carry_pcm.end(),
+                                frame_pcm.begin() + static_cast<ptrdiff_t>(elem_off),
+                                frame_pcm.begin() + static_cast<ptrdiff_t>(elem_off + elem_cnt));
+            AppendCarrySegment(*h, take_start, count);
+            h->decode_raw_pos = take_end;
+        }
+
+        if (h->decode_raw_pos >= seg_end)
+        {
+            if (HasActiveLoop(*h))
+            {
+                if (h->loop_num > 0)
+                {
+                    h->loop_num -= 1;
+                }
+                const uint32_t target = static_cast<uint32_t>(h->loop_start);
+                h->decode_raw_pos = target;
+                h->frame_index = target / spf;
+                if (h->codec_ctx_owner != nullptr && h->codec_ctx != nullptr)
+                {
+                    h->codec_ctx_owner->ResetStreamContext(h->codec_ctx);
+                }
+                if (!h->all_in_memory)
+                {
+                    h->file_read_offset =
+                        std::min<uint32_t>(h->data_offset + h->frame_index * h->info.block_align,
+                                           h->data_offset + h->data_size);
+                    h->buffered_bytes = 0;
+                    h->write_cursor = 0;
+                }
+            }
+            else
+            {
+                h->stream_ended = true;
             }
         }
     }
-    else
-    {
-        const uint32_t consume = std::min<uint32_t>(h->info.block_align, h->buffered_bytes);
-        const uint32_t ring_read =
-            (h->write_cursor + h->buf_size - h->buffered_bytes) % h->buf_size;
-        for (uint32_t i = 0; i < consume; ++i)
-        {
-            const uint32_t pos = (ring_read + i) % h->buf_size;
-            encoded_frame[i] = mem.ReadU8(h->buf_addr + pos);
-        }
-        h->buffered_bytes -= consume;
-    }
 
-    std::vector<int16_t> pcm_tmp(static_cast<size_t>(samples_this_frame) * h->info.channels, 0);
-    AtracDecoder* dec = (g_atrac.decoder != nullptr) ? g_atrac.decoder : &g_atrac.default_decoder;
-    EnsureCodecContext(*h, dec);
-    if (!dec->DecodeFrame(h->codec_ctx,
-                          h->info,
-                          encoded_frame.data(),
-                          encoded_frame.size(),
-                          pcm_tmp.data(),
-                          samples_this_frame))
-    {
-        recomp::Return(kSceAtracErrorBadData);
-        return;
-    }
-
+    const uint32_t carry_avail = CarrySampleCount(*h);
+    const uint32_t samples_this_call = std::min<uint32_t>(spf, carry_avail);
     uint8_t* dst = mem.Translate(out_addr);
     if (dst == nullptr)
     {
         recomp::Return(kSceAtracErrorParamFail);
         return;
     }
-    std::memcpy(dst, pcm_tmp.data(), pcm_tmp.size() * sizeof(int16_t));
-
-    h->current_sample += samples_this_frame;
-    h->frame_index += 1;
-
-    uint32_t ended = 0;
-    const uint32_t loop_limit =
-        (h->loop_end > 0 && h->loop_start >= 0 && h->loop_num != 0)
-            ? static_cast<uint32_t>(h->loop_end)
-            : h->end_sample;
-
-    if (h->current_sample >= loop_limit)
+    if (samples_this_call > 0)
     {
-        if (h->loop_num != 0)
-        {
-            if (h->loop_num > 0)
-            {
-                h->loop_num -= 1;
-            }
-            const uint32_t target = (h->loop_start >= 0) ? static_cast<uint32_t>(h->loop_start) : 0u;
-            h->current_sample = target;
-            h->frame_index = target / spf;
-            if (h->codec_ctx_owner != nullptr && h->codec_ctx != nullptr)
-            {
-                h->codec_ctx_owner->ResetStreamContext(h->codec_ctx);
-            }
-            if (!h->all_in_memory)
-            {
-                h->file_read_offset = h->data_offset + h->frame_index * h->info.block_align;
-                if (h->loop_start < 0)
-                {
-                    h->buffered_bytes = 0;
-                    h->write_cursor = 0;
-                }
-            }
-        }
-        else
-        {
-            ended = 1;
-            h->decoded_all = true;
-        }
+        const size_t copy_elems = static_cast<size_t>(samples_this_call) * channels;
+        std::memcpy(dst, h->carry_pcm.data(), copy_elems * sizeof(int16_t));
+        h->carry_pcm.erase(h->carry_pcm.begin(),
+                           h->carry_pcm.begin() + static_cast<ptrdiff_t>(copy_elems));
+        ConsumeCarrySegments(*h, samples_this_call);
+    }
+
+    const uint32_t ended = (h->stream_ended && CarrySampleCount(*h) == 0) ? 1u : 0u;
+    if (ended != 0)
+    {
+        h->decoded_all = true;
     }
 
     if (out_samples_addr != 0 && mem.IsValidAddress(out_samples_addr, 4))
     {
-        mem.WriteU32(out_samples_addr, samples_this_frame);
+        mem.WriteU32(out_samples_addr, samples_this_call);
     }
     if (out_end_addr != 0 && mem.IsValidAddress(out_end_addr, 4))
     {
@@ -559,17 +737,16 @@ void HleAtracDecodeData()
     }
 
     g_atrac.decode_calls += 1;
-    g_atrac.decoded_frames += 1;
-    g_atrac.decoded_samples += samples_this_frame;
+    g_atrac.decoded_samples += samples_this_call;
     if (g_atrac.trace_enabled)
     {
         runtime::Log(runtime::LogLevel::kInfo,
-                     "[ATRAC_TRACE] Decode id=%d call=%llu frame=%u cur=%u samples=%u end=%u remain=%d ret=0",
+                     "[ATRAC_TRACE] Decode id=%d call=%llu frame=%u raw_pos=%u samples=%u end=%u remain=%d ret=0",
                      id,
                      static_cast<unsigned long long>(g_atrac.decode_calls),
                      h->frame_index,
-                     h->current_sample,
-                     samples_this_frame,
+                     h->raw_pos,
+                     samples_this_call,
                      ended,
                      ComputeRemainFrames(*h));
     }
@@ -735,13 +912,18 @@ void HleAtracGetSoundSample()
     {
         mem.WriteU32(end_sample_addr, h->end_sample);
     }
+    const int32_t delay = static_cast<int32_t>(h->encoder_delay);
+    const int32_t audible_loop_start =
+        (h->loop_start >= 0) ? std::max<int32_t>(0, h->loop_start - delay) : -1;
+    const int32_t audible_loop_end =
+        (h->loop_end >= 0) ? std::max<int32_t>(0, h->loop_end - delay) : -1;
     if (loop_start_addr != 0 && mem.IsValidAddress(loop_start_addr, 4))
     {
-        mem.WriteU32(loop_start_addr, static_cast<uint32_t>(h->loop_start));
+        mem.WriteU32(loop_start_addr, static_cast<uint32_t>(audible_loop_start));
     }
     if (loop_end_addr != 0 && mem.IsValidAddress(loop_end_addr, 4))
     {
-        mem.WriteU32(loop_end_addr, static_cast<uint32_t>(h->loop_end));
+        mem.WriteU32(loop_end_addr, static_cast<uint32_t>(audible_loop_end));
     }
 
     recomp::Return(int32_t{ 0 });
@@ -775,7 +957,8 @@ void HleAtracGetBufferInfoForReseting()
     // PspBufferInfo layout (32 bytes):
     // +0: pucWriteDataFirstBuf, +4: uiWritableByteFirstBuf, +8: uiMinWriteByteFirstBuf,
     // +12: uiReadPositionFirstBuf, +16..+28: second buffer fields.
-    const uint32_t target_frame = sample / h->info.samples_per_frame;
+    const uint32_t raw_target = sample + h->encoder_delay;
+    const uint32_t target_frame = raw_target / h->info.samples_per_frame;
     const uint32_t target_file_off =
         std::min<uint32_t>(h->data_offset + target_frame * h->info.block_align,
                            h->data_offset + h->data_size);
@@ -829,8 +1012,13 @@ void HleAtracResetPlayPosition()
         return;
     }
 
-    h->current_sample = sample;
-    h->frame_index = sample / h->info.samples_per_frame;
+    const uint32_t raw_target = sample + h->encoder_delay;
+    h->raw_pos = raw_target;
+    h->decode_raw_pos = raw_target;
+    h->frame_index = raw_target / h->info.samples_per_frame;
+    h->carry_pcm.clear();
+    h->carry_segs.clear();
+    h->stream_ended = false;
     h->decoded_all = false;
     if (h->codec_ctx_owner != nullptr && h->codec_ctx != nullptr)
     {
@@ -926,6 +1114,7 @@ void Shutdown()
         h = AtracHandle{};
     }
     g_atrac.decoder = &g_atrac.default_decoder;
+    g_atrac.start_offset_ms = 0;
     g_atrac.registered = false;
 }
 
@@ -937,6 +1126,18 @@ void SetDecoder(AtracDecoder* decoder)
         DestroyCodecContext(h);
     }
     g_atrac.decoder = (decoder != nullptr) ? decoder : &g_atrac.default_decoder;
+}
+
+void SetStartOffsetMs(int32_t ms)
+{
+    std::lock_guard<std::mutex> lock(g_atrac.mutex);
+    g_atrac.start_offset_ms = ms;
+}
+
+int32_t GetStartOffsetMs()
+{
+    std::lock_guard<std::mutex> lock(g_atrac.mutex);
+    return g_atrac.start_offset_ms;
 }
 
 AtracStats GetStats()

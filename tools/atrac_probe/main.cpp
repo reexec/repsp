@@ -91,7 +91,8 @@ std::vector<uint8_t> BuildSyntheticAt3(uint16_t block_align,
                                        uint32_t end_sample,
                                        int32_t loop_start,
                                        int32_t loop_end,
-                                       bool atrac3plus)
+                                       bool atrac3plus,
+                                       uint32_t encoder_delay = 0)
 {
     std::vector<uint8_t> out;
     PushFourCc(out, "RIFF");
@@ -137,7 +138,7 @@ std::vector<uint8_t> BuildSyntheticAt3(uint16_t block_align,
     PushFourCc(out, "fact");
     PushU32(out, 8);
     PushU32(out, end_sample);
-    PushU32(out, 69);
+    PushU32(out, encoder_delay);
 
     if (loop_start >= 0 && loop_end >= loop_start)
     {
@@ -157,13 +158,27 @@ std::vector<uint8_t> BuildSyntheticAt3(uint16_t block_align,
         PushU32(out, 0);
     }
 
-    // data chunk
+    // data chunk: tag each frame's first 2 bytes with its LE frame index for test decoders.
     const uint32_t data_bytes = block_align * num_frames;
     PushFourCc(out, "data");
     PushU32(out, data_bytes);
-    for (uint32_t i = 0; i < data_bytes; ++i)
+    for (uint32_t f = 0; f < num_frames; ++f)
     {
-        out.push_back(static_cast<uint8_t>((i * 37u) & 0xFFu));
+        for (uint32_t b = 0; b < block_align; ++b)
+        {
+            if (b == 0)
+            {
+                out.push_back(static_cast<uint8_t>(f & 0xFFu));
+            }
+            else if (b == 1)
+            {
+                out.push_back(static_cast<uint8_t>((f >> 8) & 0xFFu));
+            }
+            else
+            {
+                out.push_back(static_cast<uint8_t>(((f * block_align + b) * 37u) & 0xFFu));
+            }
+        }
     }
 
     const uint32_t riff_sz = static_cast<uint32_t>(out.size() - 8);
@@ -189,6 +204,38 @@ public:
         return true;
     }
     const char* Name() const override { return "mock"; }
+};
+
+class IndexedFrameDecoder final : public repsp::hle::atrac::AtracDecoder
+{
+public:
+    bool DecodeFrame(const repsp::hle::atrac::AtracFrameInfo& info,
+                     const uint8_t* frame_bytes,
+                     size_t frame_size,
+                     int16_t* pcm_out,
+                     size_t out_samples) override
+    {
+        if (frame_size < 2 || info.channels != 2)
+        {
+            return false;
+        }
+        const uint16_t frame_idx =
+            static_cast<uint16_t>(frame_bytes[0]) | (static_cast<uint16_t>(frame_bytes[1]) << 8);
+        for (size_t i = 0; i < out_samples; ++i)
+        {
+            pcm_out[i * 2u] = static_cast<int16_t>(frame_idx);
+            pcm_out[i * 2u + 1u] = static_cast<int16_t>(i);
+        }
+        decoded_frames += 1;
+        return true;
+    }
+    void* CreateStreamContext() override { return this; }
+    void ResetStreamContext(void*) override { resets += 1; }
+    void DestroyStreamContext(void*) override {}
+    const char* Name() const override { return "indexed"; }
+
+    uint32_t decoded_frames = 0;
+    uint32_t resets = 0;
 };
 
 } // namespace
@@ -222,7 +269,7 @@ int main()
     TEST_ASSERT(CallNid5(kNidGetRemainFrame, static_cast<uint32_t>(-1), kVars) ==
                 kSceAtracErrorBadAtracId);
 
-    const std::vector<uint8_t> at3_data = BuildSyntheticAt3(192, 3, 3072, 1024, 2048, false);
+    const std::vector<uint8_t> at3_data = BuildSyntheticAt3(192, 3, 3072, 1024, 2047, false, 0);
     std::memcpy(mem.Translate(kAt3Buf), at3_data.data(), at3_data.size());
 
     std::array<int32_t, kAtracMaxIds> ids{};
@@ -249,7 +296,7 @@ int main()
     TEST_ASSERT(CallNid5(kNidGetSoundSample, id, kVars, kVars + 4u, kVars + 8u) == 0);
     TEST_ASSERT(mem.ReadU32(kVars) == 3072u);
     TEST_ASSERT(static_cast<int32_t>(mem.ReadU32(kVars + 4u)) == 1024);
-    TEST_ASSERT(static_cast<int32_t>(mem.ReadU32(kVars + 8u)) == 2048);
+    TEST_ASSERT(static_cast<int32_t>(mem.ReadU32(kVars + 8u)) == 2047);
 
     TEST_ASSERT(CallNid5(kNidGetInternalErrorInfo, id, kVars) == 0);
     TEST_ASSERT(mem.ReadU32(kVars) == 0u);
@@ -333,9 +380,308 @@ int main()
     SetDecoder(nullptr);
     TEST_ASSERT(FormatStats().find("ATRAC decode: silent") != std::string::npos);
 
+    // Helper to read raw sample index encoded by IndexedFrameDecoder (L=frame, R=sample_in_frame).
+    auto read_raw_sample = [&](uint32_t pcm_addr, uint32_t sample_idx, uint32_t spf) -> uint32_t
+    {
+        const uint32_t frame_idx = mem.ReadU16(pcm_addr + sample_idx * 4u);
+        const uint32_t in_frame = mem.ReadU16(pcm_addr + sample_idx * 4u + 2u);
+        return frame_idx * spf + in_frame;
+    };
+
+    // 5. Encoder delay skipping (delay=1561, spf=1024, endSample=2500) + exact end and short final block.
+    {
+        IndexedFrameDecoder idx_dec;
+        SetDecoder(&idx_dec);
+
+        constexpr uint32_t kDelay = 1561u;
+        constexpr uint32_t kEndSample = 2500u;
+        constexpr uint32_t kSpf = 1024u;
+        const std::vector<uint8_t> delayed_data =
+            BuildSyntheticAt3(192, 5, kEndSample, -1, -1, false, kDelay);
+        std::memcpy(mem.Translate(kAt3Buf), delayed_data.data(), delayed_data.size());
+
+        const int32_t did =
+            CallNid5(kNidSetDataAndGetId, kAt3Buf, static_cast<uint32_t>(delayed_data.size()));
+        TEST_ASSERT(did >= 0);
+        const uint32_t duid = static_cast<uint32_t>(did);
+
+        TEST_ASSERT(CallNid5(kNidGetSoundSample, duid, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == kEndSample);
+        TEST_ASSERT(static_cast<int32_t>(mem.ReadU32(kVars + 4u)) == -1);
+        TEST_ASSERT(static_cast<int32_t>(mem.ReadU32(kVars + 8u)) == -1);
+
+        // Call 1: 1024 samples covering raw [1561..2584]; frames 0, 1, 2 decoded.
+        TEST_ASSERT(CallNid5(kNidDecodeData, duid, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(mem.ReadU32(kVars + 4u) == 0u);
+        TEST_ASSERT(idx_dec.decoded_frames == 3u);
+        for (uint32_t i = 0; i < 1024u; ++i)
+        {
+            TEST_ASSERT(read_raw_sample(kPcmOut, i, kSpf) == kDelay + i);
+        }
+
+        // Call 2: 1024 samples covering raw [2585..3608], continuous without gap.
+        TEST_ASSERT(CallNid5(kNidDecodeData, duid, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(mem.ReadU32(kVars + 4u) == 0u);
+        for (uint32_t i = 0; i < 1024u; ++i)
+        {
+            TEST_ASSERT(read_raw_sample(kPcmOut, i, kSpf) == kDelay + 1024u + i);
+        }
+
+        // Call 3: short final block of 452 samples covering raw [3609..4060], end == 1.
+        TEST_ASSERT(CallNid5(kNidDecodeData, duid, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 452u);
+        TEST_ASSERT(mem.ReadU32(kVars + 4u) == 1u);
+        for (uint32_t i = 0; i < 452u; ++i)
+        {
+            TEST_ASSERT(read_raw_sample(kPcmOut, i, kSpf) == kDelay + 2048u + i);
+        }
+        TEST_ASSERT(CallNid5(kNidDecodeData, duid, kPcmOut, kVars, kVars + 4u, kVars + 8u) ==
+                    kSceAtracErrorAllDataWasDecoded);
+        TEST_ASSERT(CallNid5(kNidReleaseAtracId, duid) == 0);
+    }
+
+    // 6. Infinite loop (-1) with delay=1561: loop seam spliced inside a 1024-sample block.
+    {
+        IndexedFrameDecoder idx_dec;
+        SetDecoder(&idx_dec);
+
+        constexpr uint32_t kDelay = 1561u;
+        constexpr uint32_t kEndSample = 2500u;
+        constexpr uint32_t kSpf = 1024u;
+        constexpr int32_t kLoopStart = 1561;
+        constexpr int32_t kLoopEnd = 4060; // endSample + delay - 1
+        const std::vector<uint8_t> loop_data =
+            BuildSyntheticAt3(192, 5, kEndSample, kLoopStart, kLoopEnd, false, kDelay);
+        std::memcpy(mem.Translate(kAt3Buf), loop_data.data(), loop_data.size());
+
+        const int32_t lid =
+            CallNid5(kNidSetDataAndGetId, kAt3Buf, static_cast<uint32_t>(loop_data.size()));
+        TEST_ASSERT(lid >= 0);
+        const uint32_t luid = static_cast<uint32_t>(lid);
+
+        TEST_ASSERT(CallNid5(kNidGetSoundSample, luid, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == kEndSample);
+        TEST_ASSERT(static_cast<int32_t>(mem.ReadU32(kVars + 4u)) == 0);
+        TEST_ASSERT(static_cast<int32_t>(mem.ReadU32(kVars + 8u)) == 2499);
+        TEST_ASSERT(CallNid5(kNidSetLoopNum, luid, static_cast<uint32_t>(-1)) == 0);
+
+        // Calls 1..2: [1561..2584], [2585..3608]
+        for (uint32_t call = 0; call < 2u; ++call)
+        {
+            TEST_ASSERT(CallNid5(kNidDecodeData, luid, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+            TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+            TEST_ASSERT(mem.ReadU32(kVars + 4u) == 0u);
+        }
+
+        // Call 3: 452 samples [3609..4060] followed immediately by 572 samples [1561..2132].
+        TEST_ASSERT(CallNid5(kNidDecodeData, luid, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(mem.ReadU32(kVars + 4u) == 0u);
+        TEST_ASSERT(idx_dec.resets >= 1u);
+        for (uint32_t i = 0; i < 452u; ++i)
+        {
+            TEST_ASSERT(read_raw_sample(kPcmOut, i, kSpf) == 3609u + i);
+        }
+        for (uint32_t i = 0; i < 572u; ++i)
+        {
+            TEST_ASSERT(read_raw_sample(kPcmOut, 452u + i, kSpf) == static_cast<uint32_t>(kLoopStart) + i);
+        }
+
+        // Call 4: continues seamlessly at [2133..3156].
+        TEST_ASSERT(CallNid5(kNidDecodeData, luid, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(mem.ReadU32(kVars + 4u) == 0u);
+        for (uint32_t i = 0; i < 1024u; ++i)
+        {
+            TEST_ASSERT(read_raw_sample(kPcmOut, i, kSpf) == 2133u + i);
+        }
+        TEST_ASSERT(CallNid5(kNidReleaseAtracId, luid) == 0);
+    }
+
+    // 7. Streaming with delay=1561: shortage returns 0 samples without losing carry samples.
+    {
+        IndexedFrameDecoder idx_dec;
+        SetDecoder(&idx_dec);
+
+        constexpr uint32_t kDelay = 1561u;
+        constexpr uint32_t kEndSample = 2500u;
+        constexpr uint32_t kSpf = 1024u;
+        constexpr uint16_t kBlockAlign = 192u;
+        const std::vector<uint8_t> st_data =
+            BuildSyntheticAt3(kBlockAlign, 5, kEndSample, -1, -1, false, kDelay);
+        const uint32_t data_bytes = kBlockAlign * 5u;
+        const uint32_t data_off = static_cast<uint32_t>(st_data.size()) - data_bytes;
+        // Initially buffer only frames 0 and 1 (not enough to complete the first 1024-sample output).
+        const uint32_t init_len = data_off + kBlockAlign * 2u;
+        std::memcpy(mem.Translate(kStreamBuf), st_data.data(), init_len);
+
+        const int32_t sid2 = CallNid5(kNidSetDataAndGetId, kStreamBuf, init_len);
+        TEST_ASSERT(sid2 >= 0);
+        const uint32_t suid2 = static_cast<uint32_t>(sid2);
+
+        // Call 1: decodes frames 0 & 1 (487 carry samples), stalls on missing frame 2 -> returns 0 samples.
+        TEST_ASSERT(CallNid5(kNidDecodeData, suid2, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 0u);
+        TEST_ASSERT(mem.ReadU32(kVars + 4u) == 0u);
+        TEST_ASSERT(mem.ReadU32(kVars + 8u) == 0u);
+
+        // Add frame 2 (192 bytes) and decode: must start from carry sample 1561 without losing anything.
+        TEST_ASSERT(CallNid5(kNidGetStreamDataInfo, suid2, kVars, kVars + 4u, kVars + 8u) == 0);
+        uint32_t wptr = mem.ReadU32(kVars);
+        uint32_t wavail = mem.ReadU32(kVars + 4u);
+        uint32_t roff = mem.ReadU32(kVars + 8u);
+        TEST_ASSERT(wavail >= kBlockAlign);
+        std::memcpy(mem.Translate(wptr), st_data.data() + roff, kBlockAlign);
+        TEST_ASSERT(CallNid5(kNidAddStreamData, suid2, kBlockAlign) == 0);
+
+        TEST_ASSERT(CallNid5(kNidDecodeData, suid2, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(mem.ReadU32(kVars + 4u) == 0u);
+        for (uint32_t i = 0; i < 1024u; ++i)
+        {
+            TEST_ASSERT(read_raw_sample(kPcmOut, i, kSpf) == kDelay + i);
+        }
+
+        // Next call stalls again (carry has 487 samples [2585..3071], needs frame 3).
+        TEST_ASSERT(CallNid5(kNidDecodeData, suid2, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 0u);
+        TEST_ASSERT(mem.ReadU32(kVars + 4u) == 0u);
+
+        // Add remaining frames (frames 3 & 4) respecting ring wrap-around, and finish cleanly.
+        uint32_t to_feed = kBlockAlign * 2u;
+        while (to_feed > 0)
+        {
+            TEST_ASSERT(CallNid5(kNidGetStreamDataInfo, suid2, kVars, kVars + 4u, kVars + 8u) == 0);
+            wptr = mem.ReadU32(kVars);
+            wavail = mem.ReadU32(kVars + 4u);
+            roff = mem.ReadU32(kVars + 8u);
+            TEST_ASSERT(wavail > 0);
+            const uint32_t chunk = (wavail < to_feed) ? wavail : to_feed;
+            std::memcpy(mem.Translate(wptr), st_data.data() + roff, chunk);
+            TEST_ASSERT(CallNid5(kNidAddStreamData, suid2, chunk) == 0);
+            to_feed -= chunk;
+        }
+
+        TEST_ASSERT(CallNid5(kNidDecodeData, suid2, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(mem.ReadU32(kVars + 4u) == 0u);
+        for (uint32_t i = 0; i < 1024u; ++i)
+        {
+            TEST_ASSERT(read_raw_sample(kPcmOut, i, kSpf) == kDelay + 1024u + i);
+        }
+
+        TEST_ASSERT(CallNid5(kNidDecodeData, suid2, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 452u);
+        TEST_ASSERT(mem.ReadU32(kVars + 4u) == 1u);
+        for (uint32_t i = 0; i < 452u; ++i)
+        {
+            TEST_ASSERT(read_raw_sample(kPcmOut, i, kSpf) == kDelay + 2048u + i);
+        }
+        TEST_ASSERT(CallNid5(kNidReleaseAtracId, suid2) == 0);
+    }
+
+    // 8. SetStartOffsetMs(0 / 1000): skips on open, does not apply to loops or ResetPlayPosition.
+    {
+        IndexedFrameDecoder idx_dec;
+        SetDecoder(&idx_dec);
+
+        constexpr uint32_t kDelay = 1561u;
+        constexpr uint32_t kEndSample = 46000u; // > 44100 (1000 ms at 44.1 kHz)
+        constexpr uint32_t kSpf = 1024u;
+        constexpr uint32_t kFrames = 50u;       // 51200 raw samples
+        constexpr int32_t kLoopStart = 1561;
+        constexpr int32_t kLoopEnd = static_cast<int32_t>(kEndSample + kDelay - 1u); // 47560
+        const std::vector<uint8_t> off_data =
+            BuildSyntheticAt3(192, kFrames, kEndSample, kLoopStart, kLoopEnd, false, kDelay);
+        std::memcpy(mem.Translate(kAt3Buf), off_data.data(), off_data.size());
+
+        // Offset 0 ms -> first sample is delay (1561).
+        SetStartOffsetMs(0);
+        TEST_ASSERT(GetStartOffsetMs() == 0);
+        const int32_t id0 =
+            CallNid5(kNidSetDataAndGetId, kAt3Buf, static_cast<uint32_t>(off_data.size()));
+        TEST_ASSERT(id0 >= 0);
+        TEST_ASSERT(CallNid5(kNidDecodeData, static_cast<uint32_t>(id0), kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(read_raw_sample(kPcmOut, 0, kSpf) == kDelay);
+        TEST_ASSERT(CallNid5(kNidReleaseAtracId, static_cast<uint32_t>(id0)) == 0);
+
+        // Offset +1000 ms (44100 samples at 44100 Hz) -> first sample is 1561 + 44100 = 45661.
+        SetStartOffsetMs(1000);
+        TEST_ASSERT(GetStartOffsetMs() == 1000);
+        const int32_t id1 =
+            CallNid5(kNidSetDataAndGetId, kAt3Buf, static_cast<uint32_t>(off_data.size()));
+        TEST_ASSERT(id1 >= 0);
+        const uint32_t uid1 = static_cast<uint32_t>(id1);
+        TEST_ASSERT(CallNid5(kNidSetLoopNum, uid1, static_cast<uint32_t>(-1)) == 0);
+
+        // Call 1: raw [45661..46684]
+        TEST_ASSERT(CallNid5(kNidDecodeData, uid1, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(read_raw_sample(kPcmOut, 0, kSpf) == kDelay + 44100u);
+
+        // Call 2: remaining 876 samples [46685..47560] then loop to kLoopStart (1561) with NO offset!
+        TEST_ASSERT(CallNid5(kNidDecodeData, uid1, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(read_raw_sample(kPcmOut, 0, kSpf) == 46685u);
+        TEST_ASSERT(read_raw_sample(kPcmOut, 875u, kSpf) == 47560u);
+        TEST_ASSERT(read_raw_sample(kPcmOut, 876u, kSpf) == static_cast<uint32_t>(kLoopStart));
+
+        // ResetPlayPosition(0) also ignores start_offset_ms -> resumes at delay (1561).
+        TEST_ASSERT(CallNid5(kNidResetPlayPosition, uid1, 0u, 0u, 0u) == 0);
+        TEST_ASSERT(CallNid5(kNidDecodeData, uid1, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(read_raw_sample(kPcmOut, 0, kSpf) == kDelay);
+
+        TEST_ASSERT(CallNid5(kNidReleaseAtracId, uid1) == 0);
+
+        // Offset -1000 ms (44100 leading silence samples at 44100 Hz), block size 1024 kept.
+        SetStartOffsetMs(-1000);
+        TEST_ASSERT(GetStartOffsetMs() == -1000);
+        const int32_t id2 =
+            CallNid5(kNidSetDataAndGetId, kAt3Buf, static_cast<uint32_t>(off_data.size()));
+        TEST_ASSERT(id2 >= 0);
+        const uint32_t uid2 = static_cast<uint32_t>(id2);
+
+        // First 43 blocks (43 * 1024 = 44032 samples) are all silence (0).
+        for (uint32_t blk = 0; blk < 43u; ++blk)
+        {
+            TEST_ASSERT(CallNid5(kNidDecodeData, uid2, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+            TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+            TEST_ASSERT(mem.ReadU32(kVars + 4u) == 0u);
+            for (uint32_t i = 0; i < 1024u * 2u; ++i)
+            {
+                TEST_ASSERT(mem.ReadU16(kPcmOut + i * 2u) == 0u);
+            }
+        }
+        // Block 44: 68 silence samples (44100 - 44032), then raw [1561..2516] (956 samples).
+        TEST_ASSERT(CallNid5(kNidDecodeData, uid2, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(mem.ReadU32(kVars + 4u) == 0u);
+        for (uint32_t i = 0; i < 68u * 2u; ++i)
+        {
+            TEST_ASSERT(mem.ReadU16(kPcmOut + i * 2u) == 0u);
+        }
+        for (uint32_t i = 0; i < 956u; ++i)
+        {
+            TEST_ASSERT(read_raw_sample(kPcmOut, 68u + i, kSpf) == kDelay + i);
+        }
+        // ResetPlayPosition(0) with negative offset ignores offset -> immediately starts at delay (1561).
+        TEST_ASSERT(CallNid5(kNidResetPlayPosition, uid2, 0u, 0u, 0u) == 0);
+        TEST_ASSERT(CallNid5(kNidDecodeData, uid2, kPcmOut, kVars, kVars + 4u, kVars + 8u) == 0);
+        TEST_ASSERT(mem.ReadU32(kVars) == 1024u);
+        TEST_ASSERT(read_raw_sample(kPcmOut, 0, kSpf) == kDelay);
+
+        TEST_ASSERT(CallNid5(kNidReleaseAtracId, uid2) == 0);
+        SetStartOffsetMs(0);
+    }
+
+    SetDecoder(nullptr);
     Shutdown();
     mem.Shutdown();
 
-    std::printf("[PASS] atrac_probe: 4/4 checks passed\n");
+    std::printf("[PASS] atrac_probe: 8/8 checks passed\n");
     return 0;
 }
