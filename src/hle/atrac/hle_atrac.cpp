@@ -63,6 +63,7 @@ struct AtracHandle
     {
         uint32_t raw_start = 0;
         uint32_t count = 0;
+        bool is_silence_pad = false;
     };
     std::vector<int16_t> carry_pcm;
     std::vector<CarrySegment> carry_segs;
@@ -91,6 +92,7 @@ struct AtracGlobalState
     uint64_t decoded_samples = 0;
     uint64_t stream_bytes_added = 0;
     uint64_t resets = 0;
+    int32_t start_offset_ms = 0;
     bool trace_enabled = false;
 };
 
@@ -328,7 +330,7 @@ uint32_t CarrySampleCount(const AtracHandle& h)
     return static_cast<uint32_t>(h.carry_pcm.size() / h.info.channels);
 }
 
-void AppendCarrySegment(AtracHandle& h, uint32_t raw_start, uint32_t count)
+void AppendCarrySegment(AtracHandle& h, uint32_t raw_start, uint32_t count, bool is_silence_pad = false)
 {
     if (count == 0)
     {
@@ -337,13 +339,14 @@ void AppendCarrySegment(AtracHandle& h, uint32_t raw_start, uint32_t count)
     if (!h.carry_segs.empty())
     {
         auto& back = h.carry_segs.back();
-        if (back.raw_start + back.count == raw_start)
+        if (back.is_silence_pad == is_silence_pad &&
+            (is_silence_pad || back.raw_start + back.count == raw_start))
         {
             back.count += count;
             return;
         }
     }
-    h.carry_segs.push_back(AtracHandle::CarrySegment{ raw_start, count });
+    h.carry_segs.push_back(AtracHandle::CarrySegment{ raw_start, count, is_silence_pad });
 }
 
 void ConsumeCarrySegments(AtracHandle& h, uint32_t count)
@@ -354,14 +357,17 @@ void ConsumeCarrySegments(AtracHandle& h, uint32_t count)
         auto& front = h.carry_segs.front();
         if (rem < front.count)
         {
-            front.raw_start += rem;
+            if (!front.is_silence_pad)
+            {
+                front.raw_start += rem;
+            }
             front.count -= rem;
             rem = 0;
         }
         else
         {
             rem -= front.count;
-            h.raw_pos = front.raw_start + front.count;
+            h.raw_pos = front.is_silence_pad ? front.raw_start : (front.raw_start + front.count);
             h.carry_segs.erase(h.carry_segs.begin());
         }
     }
@@ -433,8 +439,32 @@ void HleAtracSetDataAndGetId()
     parsed.active = true;
     parsed.buf_addr = buf;
     parsed.buf_size = buf_size;
-    parsed.raw_pos = parsed.encoder_delay;
-    parsed.decode_raw_pos = parsed.encoder_delay;
+    if (g_atrac.start_offset_ms > 0)
+    {
+        const uint64_t offset_samples =
+            (static_cast<uint64_t>(g_atrac.start_offset_ms) * parsed.info.sample_rate) / 1000ull;
+        const uint64_t raw_end =
+            static_cast<uint64_t>(parsed.end_sample) + static_cast<uint64_t>(parsed.encoder_delay);
+        const uint64_t start_raw =
+            std::min<uint64_t>(static_cast<uint64_t>(parsed.encoder_delay) + offset_samples, raw_end);
+        parsed.raw_pos = static_cast<uint32_t>(start_raw);
+        parsed.decode_raw_pos = parsed.raw_pos;
+    }
+    else
+    {
+        parsed.raw_pos = parsed.encoder_delay;
+        parsed.decode_raw_pos = parsed.encoder_delay;
+        if (g_atrac.start_offset_ms < 0)
+        {
+            const uint64_t abs_ms = static_cast<uint64_t>(-static_cast<int64_t>(g_atrac.start_offset_ms));
+            const uint64_t pad_samples = (abs_ms * parsed.info.sample_rate) / 1000ull;
+            if (pad_samples > 0)
+            {
+                parsed.carry_pcm.assign(static_cast<size_t>(pad_samples) * parsed.info.channels, int16_t{ 0 });
+                AppendCarrySegment(parsed, parsed.encoder_delay, static_cast<uint32_t>(pad_samples), true);
+            }
+        }
+    }
     parsed.frame_index = 0;
     parsed.stream_ended = false;
     const uint32_t total_file_bytes = parsed.data_offset + parsed.data_size;
@@ -1084,6 +1114,7 @@ void Shutdown()
         h = AtracHandle{};
     }
     g_atrac.decoder = &g_atrac.default_decoder;
+    g_atrac.start_offset_ms = 0;
     g_atrac.registered = false;
 }
 
@@ -1095,6 +1126,18 @@ void SetDecoder(AtracDecoder* decoder)
         DestroyCodecContext(h);
     }
     g_atrac.decoder = (decoder != nullptr) ? decoder : &g_atrac.default_decoder;
+}
+
+void SetStartOffsetMs(int32_t ms)
+{
+    std::lock_guard<std::mutex> lock(g_atrac.mutex);
+    g_atrac.start_offset_ms = ms;
+}
+
+int32_t GetStartOffsetMs()
+{
+    std::lock_guard<std::mutex> lock(g_atrac.mutex);
+    return g_atrac.start_offset_ms;
 }
 
 AtracStats GetStats()

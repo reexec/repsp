@@ -41,6 +41,11 @@ void Shutdown();
 // Override the frame decoder implementation (nullptr restores SilentDecoder).
 void SetDecoder(AtracDecoder* decoder);
 
+// Offset newly opened tracks in milliseconds (positive skips ahead, capped at
+// the track end; negative prepends silence; loops and resets ignore it).
+void SetStartOffsetMs(int32_t ms);
+int32_t GetStartOffsetMs();
+
 AtracStats GetStats();
 std::string FormatStats();
 
