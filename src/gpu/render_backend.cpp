@@ -7,6 +7,8 @@
 #include "repsp/runtime/log.h"
 #include "texture_decode.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace repsp::gpu
@@ -249,7 +251,45 @@ bool DepthPass(int func, int z, int d)
     }
 }
 
-void Fragment(const DrawState& st, int x, int y, uint32_t c, float u, float v, float zf)
+uint32_t TexelSampleBilinear(const DrawState& st, float u, float v)
+{
+    const float px = u - 0.5f;
+    const float py = v - 0.5f;
+    const int x0 = static_cast<int>(std::floor(px));
+    const int y0 = static_cast<int>(std::floor(py));
+    const float fx = px - static_cast<float>(x0);
+    const float fy = py - static_cast<float>(y0);
+
+    const uint32_t c00 = TexelFetch(st, x0, y0);
+    const uint32_t c10 = TexelFetch(st, x0 + 1, y0);
+    const uint32_t c01 = TexelFetch(st, x0, y0 + 1);
+    const uint32_t c11 = TexelFetch(st, x0 + 1, y0 + 1);
+
+    const float w00 = (1.0f - fx) * (1.0f - fy);
+    const float w10 = fx * (1.0f - fy);
+    const float w01 = (1.0f - fx) * fy;
+    const float w11 = fx * fy;
+
+    const int r = static_cast<int>(static_cast<float>(ChannelR(c00)) * w00 +
+                                   static_cast<float>(ChannelR(c10)) * w10 +
+                                   static_cast<float>(ChannelR(c01)) * w01 +
+                                   static_cast<float>(ChannelR(c11)) * w11 + 0.5f);
+    const int g = static_cast<int>(static_cast<float>(ChannelG(c00)) * w00 +
+                                   static_cast<float>(ChannelG(c10)) * w10 +
+                                   static_cast<float>(ChannelG(c01)) * w01 +
+                                   static_cast<float>(ChannelG(c11)) * w11 + 0.5f);
+    const int b = static_cast<int>(static_cast<float>(ChannelB(c00)) * w00 +
+                                   static_cast<float>(ChannelB(c10)) * w10 +
+                                   static_cast<float>(ChannelB(c01)) * w01 +
+                                   static_cast<float>(ChannelB(c11)) * w11 + 0.5f);
+    const int a = static_cast<int>(static_cast<float>(ChannelA(c00)) * w00 +
+                                   static_cast<float>(ChannelA(c10)) * w10 +
+                                   static_cast<float>(ChannelA(c01)) * w01 +
+                                   static_cast<float>(ChannelA(c11)) * w11 + 0.5f);
+    return PackRgba(r, g, b, a);
+}
+
+void Fragment(const DrawState& st, int x, int y, uint32_t c, float u, float v, float zf, bool tex_linear)
 {
     if (!g_fb_addr || !g_fb_stride) return;
     if (x < 0 || y < 0 || x >= 480 || y >= 272) return;
@@ -295,11 +335,18 @@ void Fragment(const DrawState& st, int x, int y, uint32_t c, float u, float v, f
     {
         if (st.tex_enable)
         {
-            int tx = static_cast<int>(u);
-            int ty = static_cast<int>(v);
-            if (u < 0.0f && static_cast<float>(tx) != u) --tx;
-            if (v < 0.0f && static_cast<float>(ty) != v) --ty;
-            c = TexCombine(st, TexelFetch(st, tx, ty), c);
+            uint32_t t = 0;
+            if (tex_linear)
+            {
+                t = TexelSampleBilinear(st, u, v);
+            }
+            else
+            {
+                const int tx = static_cast<int>(std::floor(u));
+                const int ty = static_cast<int>(std::floor(v));
+                t = TexelFetch(st, tx, ty);
+            }
+            c = TexCombine(st, t, c);
         }
         if (st.ctest && !ColorPass(st, c)) return;
         if (st.atest && !AlphaPass(st, c)) return;
@@ -378,6 +425,21 @@ void SwTri(const Vertex& a_in, const Vertex& b_in, const Vertex& c_in, const Dra
     const int c1 = (c.x - b.x) - (c.y - b.y);
     const int c2 = (a.x - c.x) - (a.y - c.y);
 
+    const float inv_area = 1.0f / static_cast<float>(area);
+    const float dla_dx = static_cast<float>(b.y - c.y) * inv_area;
+    const float dlb_dx = static_cast<float>(c.y - a.y) * inv_area;
+    const float dlc_dx = static_cast<float>(a.y - b.y) * inv_area;
+    const float dla_dy = static_cast<float>(c.x - b.x) * inv_area;
+    const float dlb_dy = static_cast<float>(a.x - c.x) * inv_area;
+    const float dlc_dy = static_cast<float>(b.x - a.x) * inv_area;
+    const float du_dx = a.u * dla_dx + b.u * dlb_dx + c.u * dlc_dx;
+    const float dv_dx = a.v * dla_dx + b.v * dlb_dx + c.v * dlc_dx;
+    const float du_dy = a.u * dla_dy + b.u * dlb_dy + c.u * dlc_dy;
+    const float dv_dy = a.v * dla_dy + b.v * dlb_dy + c.v * dlc_dy;
+    const float max_step = std::max(std::hypot(du_dx, dv_dx), std::hypot(du_dy, dv_dy));
+    const bool tri_tex_linear = (max_step <= 1.0f) ? ((st.tex_mag_filter & 1) != 0)
+                                                   : ((st.tex_min_filter & 1) != 0);
+
     for (int y = miny; y <= maxy; ++y)
     {
         for (int x = minx; x <= maxx; ++x)
@@ -404,7 +466,8 @@ void SwTri(const Vertex& a_in, const Vertex& b_in, const Vertex& c_in, const Dra
             Fragment(st, x, y, col,
                      a.u * la + b.u * lb + c.u * lc,
                      a.v * la + b.v * lb + c.v * lc,
-                     a.z * la + b.z * lb + c.z * lc);
+                     a.z * la + b.z * lb + c.z * lc,
+                     tri_tex_linear);
         }
     }
 }
@@ -419,6 +482,9 @@ void SwSprite(const Vertex& a, const Vertex& b, const DrawState& st)
 
     const float du = (b.u - a.u) / static_cast<float>(b.x - a.x);
     const float dv = (b.v - a.v) / static_cast<float>(b.y - a.y);
+    const bool is_mag = (std::fabs(du) <= 1.0f && std::fabs(dv) <= 1.0f);
+    const bool sprite_tex_linear = is_mag ? ((st.tex_mag_filter & 1) != 0)
+                                          : ((st.tex_min_filter & 1) != 0);
     for (int y = y0; y < y1; ++y)
     {
         for (int x = x0; x < x1; ++x)
@@ -426,7 +492,8 @@ void SwSprite(const Vertex& a, const Vertex& b, const DrawState& st)
             Fragment(st, x, y, b.rgba,
                      a.u + (static_cast<float>(x - a.x) + 0.5f) * du,
                      a.v + (static_cast<float>(y - a.y) + 0.5f) * dv,
-                     b.z);
+                     b.z,
+                     sprite_tex_linear);
         }
     }
 }
