@@ -1056,7 +1056,8 @@ int32_t Scheduler::WaitCurrentIf(
     if (timeout_us != nullptr)
     {
         cur->has_timeout = true;
-        cur->deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(*timeout_us);
+        cur->wait_start = std::chrono::steady_clock::now();
+        cur->deadline = cur->wait_start + std::chrono::microseconds(*timeout_us);
     }
     else
     {
@@ -1838,6 +1839,34 @@ std::vector<GuestThreadInfo> Scheduler::GetThreadsSnapshot() const
         out.push_back(std::move(info));
     }
     return out;
+}
+
+bool Scheduler::GetThreadWaitDeadlineForTest(KernelUid thread_uid, bool* has_timeout, int64_t* duration_us) const
+{
+    std::lock_guard<TrackedMutex> lock(mutex_);
+    for (const auto& t : threads_)
+    {
+        if (t->uid == thread_uid)
+        {
+            if (t->state != ThreadState::kWaiting)
+            {
+                return false;
+            }
+            if (has_timeout != nullptr)
+            {
+                *has_timeout = t->has_timeout;
+            }
+            if (duration_us != nullptr)
+            {
+                *duration_us = t->has_timeout
+                                   ? std::chrono::duration_cast<std::chrono::microseconds>(t->deadline - t->wait_start)
+                                         .count()
+                                   : 0;
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 Scheduler& GetScheduler()
