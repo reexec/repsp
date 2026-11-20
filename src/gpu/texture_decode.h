@@ -14,7 +14,9 @@ int WrapCoord(int c, int size, int clamp);
 uint32_t TexelFetchWithCounter(const DrawState& st, int x, int y, uint64_t* bad_texels);
 
 void DecodeTextureRgba8(const DrawState& st, uint8_t* out_rgba8, uint64_t* bad_texels = nullptr);
+void DecodeTextureLevelRgba8(const DrawState& st, int level, uint8_t* out_rgba8, uint64_t* bad_texels = nullptr);
 
 uint32_t ComputeTextureDataSizeBytes(const DrawState& st);
+uint32_t ComputeTextureLevelDataSizeBytes(const DrawState& st, int level);
 
 } // namespace repsp::gpu

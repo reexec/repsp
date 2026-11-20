@@ -7,6 +7,7 @@
 #include "texture_decode.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -46,6 +47,11 @@ struct TextureKey
     int bw = 0;
     int fmt = 0;
     int swizzle = 0;
+    int max_level = 0;
+    std::array<uint32_t, DrawState::kMaxTexLevels> level_addr = {};
+    std::array<int, DrawState::kMaxTexLevels> level_bw = {};
+    std::array<int, DrawState::kMaxTexLevels> level_w = {};
+    std::array<int, DrawState::kMaxTexLevels> level_h = {};
     int clut_fmt = 0;
     int clut_start = 0;
     int clut_shift = 0;
@@ -54,9 +60,11 @@ struct TextureKey
     bool operator==(const TextureKey& o) const
     {
         return addr == o.addr && width == o.width && height == o.height && bw == o.bw &&
-               fmt == o.fmt && swizzle == o.swizzle && clut_fmt == o.clut_fmt &&
-               clut_start == o.clut_start && clut_shift == o.clut_shift &&
-               clut_mask == o.clut_mask;
+               fmt == o.fmt && swizzle == o.swizzle && max_level == o.max_level &&
+               level_addr == o.level_addr && level_bw == o.level_bw &&
+               level_w == o.level_w && level_h == o.level_h &&
+               clut_fmt == o.clut_fmt && clut_start == o.clut_start &&
+               clut_shift == o.clut_shift && clut_mask == o.clut_mask;
     }
 };
 
@@ -76,10 +84,52 @@ struct TextureKeyHash
         mix(static_cast<uint64_t>(k.bw));
         mix(static_cast<uint64_t>(k.fmt));
         mix(static_cast<uint64_t>(k.swizzle));
+        mix(static_cast<uint64_t>(k.max_level));
+        for (int i = 1; i <= k.max_level && i < DrawState::kMaxTexLevels; ++i)
+        {
+            mix(k.level_addr[static_cast<size_t>(i)]);
+            mix(static_cast<uint64_t>(k.level_bw[static_cast<size_t>(i)]));
+            mix(static_cast<uint64_t>(k.level_w[static_cast<size_t>(i)]));
+            mix(static_cast<uint64_t>(k.level_h[static_cast<size_t>(i)]));
+        }
         mix(static_cast<uint64_t>(k.clut_fmt));
         mix(static_cast<uint64_t>(k.clut_start));
         mix(static_cast<uint64_t>(k.clut_shift));
         mix(static_cast<uint64_t>(k.clut_mask));
+        return static_cast<size_t>(h);
+    }
+};
+
+struct SamplerKey
+{
+    GLenum min_filter = kGlNearest;
+    GLenum mag_filter = kGlNearest;
+    GLenum wrap_s = kGlRepeat;
+    GLenum wrap_t = kGlRepeat;
+    int aniso_int = 1;
+
+    bool operator==(const SamplerKey& o) const
+    {
+        return min_filter == o.min_filter && mag_filter == o.mag_filter &&
+               wrap_s == o.wrap_s && wrap_t == o.wrap_t && aniso_int == o.aniso_int;
+    }
+};
+
+struct SamplerKeyHash
+{
+    size_t operator()(const SamplerKey& k) const
+    {
+        uint64_t h = 14695981039346656037ull;
+        auto mix = [&h](uint64_t v)
+        {
+            h ^= v;
+            h *= 1099511628211ull;
+        };
+        mix(k.min_filter);
+        mix(k.mag_filter);
+        mix(k.wrap_s);
+        mix(k.wrap_t);
+        mix(static_cast<uint64_t>(k.aniso_int));
         return static_cast<size_t>(h);
     }
 };
@@ -101,6 +151,10 @@ struct PipelineState
     int tex_h = 0;
     int tex_clamp_u = 0;
     int tex_clamp_v = 0;
+    int tex_min_filter = 0;
+    int tex_mag_filter = 0;
+    int tex_level_mode = 0;
+    float tex_lod_bias = 0.0f;
     int tex_func = 0;
     int tex_alpha = 1;
     int tex_double = 0;
@@ -134,7 +188,25 @@ struct PipelineState
 
     bool operator==(const PipelineState& o) const
     {
-        return std::memcmp(this, &o, sizeof(PipelineState)) == 0;
+        return target_addr == o.target_addr && gl_prim == o.gl_prim &&
+               clear == o.clear && clear_color == o.clear_color &&
+               clear_alpha == o.clear_alpha && clear_depth == o.clear_depth &&
+               tex_enable == o.tex_enable && tex_cache_id == o.tex_cache_id &&
+               fbo_tex_addr == o.fbo_tex_addr && tex_w == o.tex_w && tex_h == o.tex_h &&
+               tex_clamp_u == o.tex_clamp_u && tex_clamp_v == o.tex_clamp_v &&
+               tex_min_filter == o.tex_min_filter && tex_mag_filter == o.tex_mag_filter &&
+               tex_level_mode == o.tex_level_mode && tex_lod_bias == o.tex_lod_bias &&
+               tex_func == o.tex_func && tex_alpha == o.tex_alpha &&
+               tex_double == o.tex_double && tex_env == o.tex_env &&
+               ctest == o.ctest && ctest_func == o.ctest_func &&
+               ctest_ref == o.ctest_ref && ctest_mask == o.ctest_mask &&
+               atest == o.atest && atest_func == o.atest_func &&
+               atest_ref == o.atest_ref && atest_mask == o.atest_mask &&
+               sc_x0 == o.sc_x0 && sc_y0 == o.sc_y0 && sc_x1 == o.sc_x1 && sc_y1 == o.sc_y1 &&
+               ztest == o.ztest && zfunc == o.zfunc && zwrite == o.zwrite &&
+               blend == o.blend && blend_op == o.blend_op &&
+               blend_src == o.blend_src && blend_dst == o.blend_dst &&
+               blend_sfix == o.blend_sfix && blend_dfix == o.blend_dfix;
     }
 };
 
@@ -145,12 +217,17 @@ struct DrawBatch
     uint32_t vertex_count = 0;
 };
 
-struct TextureUpload
+struct MipLevelUpload
 {
-    uint64_t cache_id = 0;
     int width = 0;
     int height = 0;
     std::vector<uint8_t> rgba;
+};
+
+struct TextureUpload
+{
+    uint64_t cache_id = 0;
+    std::vector<MipLevelUpload> levels;
 };
 
 struct FlushPayload
@@ -197,6 +274,11 @@ struct UiTexEntry
     GLuint tex = 0;
     int width = 0;
     int height = 0;
+    int supplied_max_level = 0;
+    int uploaded_max_level = 0;
+    int generated_max_level = 0;
+    bool has_generated_mips = false;
+    uint64_t gpu_bytes = 0;
 };
 
 uint64_t HashBytes(const uint8_t* data, size_t len, uint64_t seed = 14695981039346656037ull)
@@ -324,6 +406,9 @@ struct GlContextState
     GLint u_tex_double = -1;
     GLint u_tex_env = -1;
     GLint u_tex_is_fbo = -1;
+    GLint u_tex_fbo_linear = -1;
+    GLint u_tex_level_mode = -1;
+    GLint u_tex_lod_bias = -1;
     GLint u_ctest = -1;
     GLint u_ctest_func = -1;
     GLint u_ctest_ref = -1;
@@ -335,6 +420,8 @@ struct GlContextState
 
     std::unordered_map<uint32_t, UiFboTarget> ui_targets;
     std::unordered_map<uint64_t, UiTexEntry> ui_textures;
+    std::unordered_map<SamplerKey, GLuint, SamplerKeyHash> ui_samplers;
+    float last_applied_anisotropy = 1.0f;
 
     // Diagnostics & stats
     OpenGlStats stats;
@@ -433,6 +520,9 @@ bool UiInitResources()
         "uniform int uTexDouble;\n"
         "uniform vec4 uTexEnv;\n"
         "uniform int uTexIsFbo;\n"
+        "uniform int uTexFboLinear;\n"
+        "uniform int uTexLevelMode;\n"
+        "uniform float uTexLodBias;\n"
         "uniform int uCtest;\n"
         "uniform int uCtestFunc;\n"
         "uniform uvec3 uCtestRef;\n"
@@ -451,6 +541,13 @@ bool UiInitResources()
         "    int m = c % sz;\n"
         "    return (m < 0) ? (m + sz) : m;\n"
         "}\n"
+        "vec4 sampleFboTexel(int tx, int ty, ivec2 fboSize, int fboScale) {\n"
+        "    int wx = wrapCoord(tx, uTexSize.x, uTexClampU);\n"
+        "    int wy = wrapCoord(ty, uTexSize.y, uTexClampV);\n"
+        "    int fx = clamp(wx * fboScale + (fboScale / 2), 0, fboSize.x - 1);\n"
+        "    int fy = clamp(fboSize.y - 1 - (wy * fboScale + (fboScale / 2)), 0, fboSize.y - 1);\n"
+        "    return texelFetch(uTex, ivec2(fx, fy), 0);\n"
+        "}\n"
         "void main() {\n"
         "    vec4 c = vColor;\n"
         "    if (uClear != 0) {\n"
@@ -458,12 +555,33 @@ bool UiInitResources()
         "        return;\n"
         "    }\n"
         "    if (uTexEnable != 0) {\n"
-        "        int tx = wrapCoord(int(floor(vUv.x)), uTexSize.x, uTexClampU);\n"
-        "        int ty = wrapCoord(int(floor(vUv.y)), uTexSize.y, uTexClampV);\n"
+        "        vec4 t;\n"
         "        if (uTexIsFbo != 0) {\n"
-        "            ty = uTexSize.y - 1 - ty;\n"
+        "            ivec2 fboSize = textureSize(uTex, 0);\n"
+        "            int fboScale = max(1, fboSize.x / 480);\n"
+        "            if (uTexFboLinear != 0) {\n"
+        "                vec2 p = vUv - vec2(0.5);\n"
+        "                vec2 f = fract(p);\n"
+        "                int x0 = int(floor(p.x));\n"
+        "                int y0 = int(floor(p.y));\n"
+        "                vec4 c00 = sampleFboTexel(x0,     y0,     fboSize, fboScale);\n"
+        "                vec4 c10 = sampleFboTexel(x0 + 1, y0,     fboSize, fboScale);\n"
+        "                vec4 c01 = sampleFboTexel(x0,     y0 + 1, fboSize, fboScale);\n"
+        "                vec4 c11 = sampleFboTexel(x0 + 1, y0 + 1, fboSize, fboScale);\n"
+        "                t = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);\n"
+        "            } else {\n"
+        "                t = sampleFboTexel(int(floor(vUv.x)), int(floor(vUv.y)), fboSize, fboScale);\n"
+        "            }\n"
+        "        } else {\n"
+        "            vec2 uv = vUv / vec2(uTexSize);\n"
+        "            if (uTexLevelMode == 1) {\n"
+        "                t = textureLod(uTex, uv, max(uTexLodBias, 0.0));\n"
+        "            } else if (uTexLodBias != 0.0) {\n"
+        "                t = texture(uTex, uv, uTexLodBias);\n"
+        "            } else {\n"
+        "                t = texture(uTex, uv);\n"
+        "            }\n"
         "        }\n"
-        "        vec4 t = texelFetch(uTex, ivec2(tx, ty), 0);\n"
         "        if (uTexFunc == 0) {\n"
         "            c.rgb = t.rgb * c.rgb;\n"
         "            c.a = (uTexAlpha != 0) ? (t.a * c.a) : c.a;\n"
@@ -553,6 +671,9 @@ bool UiInitResources()
     g_gl.u_tex_double = g_gl.gl.glGetUniformLocation(g_gl.program, "uTexDouble");
     g_gl.u_tex_env = g_gl.gl.glGetUniformLocation(g_gl.program, "uTexEnv");
     g_gl.u_tex_is_fbo = g_gl.gl.glGetUniformLocation(g_gl.program, "uTexIsFbo");
+    g_gl.u_tex_fbo_linear = g_gl.gl.glGetUniformLocation(g_gl.program, "uTexFboLinear");
+    g_gl.u_tex_level_mode = g_gl.gl.glGetUniformLocation(g_gl.program, "uTexLevelMode");
+    g_gl.u_tex_lod_bias = g_gl.gl.glGetUniformLocation(g_gl.program, "uTexLodBias");
     g_gl.u_ctest = g_gl.gl.glGetUniformLocation(g_gl.program, "uCtest");
     g_gl.u_ctest_func = g_gl.gl.glGetUniformLocation(g_gl.program, "uCtestFunc");
     g_gl.u_ctest_ref = g_gl.gl.glGetUniformLocation(g_gl.program, "uCtestRef");
@@ -676,6 +797,15 @@ void UiShutdownResources()
         }
     }
     g_gl.ui_textures.clear();
+
+    for (auto& kv : g_gl.ui_samplers)
+    {
+        if (kv.second != 0)
+        {
+            g_gl.gl.glDeleteSamplers(1, &kv.second);
+        }
+    }
+    g_gl.ui_samplers.clear();
 
     if (g_gl.readback_fbo != 0)
     {
@@ -916,36 +1046,88 @@ void ApplyBlendState(const PipelineState& s)
     g_gl.gl.glBlendFuncSeparate(src_rgb, dst_rgb, kGlOne, kGlZero);
 }
 
-void ApplyTextureFiltering(TextureFilterMode mode)
+int ComputeFullMipLevels(int w, int h)
 {
-    const GLint gl_filter = (mode == TextureFilterMode::kOriginal)
-                                ? static_cast<GLint>(kGlNearest)
-                                : static_cast<GLint>(kGlLinear);
-    g_gl.gl.glTexParameteri(kGlTexture2d, kGlTextureMinFilter, gl_filter);
-    g_gl.gl.glTexParameteri(kGlTexture2d, kGlTextureMagFilter, gl_filter);
+    int m = std::max(w, h);
+    int levels = 0;
+    while (m > 1)
+    {
+        m >>= 1;
+        ++levels;
+    }
+    return levels;
+}
+
+uint64_t ComputeMipChainBytes(int w, int h, int max_level)
+{
+    uint64_t total = 0;
+    for (int lvl = 0; lvl <= max_level; ++lvl)
+    {
+        const int lw = std::max(1, w >> lvl);
+        const int lh = std::max(1, h >> lvl);
+        total += static_cast<uint64_t>(lw) * static_cast<uint64_t>(lh) * 4ull;
+    }
+    return total;
+}
+
+GLenum MapOriginalMinFilter(int tflt_min, bool has_mips)
+{
+    if (!has_mips)
+    {
+        return (tflt_min & 1) ? kGlLinear : kGlNearest;
+    }
+    switch (tflt_min & 7)
+    {
+    case 0: return kGlNearest;
+    case 1: return kGlLinear;
+    case 4: return kGlNearestMipmapNearest;
+    case 5: return kGlLinearMipmapNearest;
+    case 6: return kGlNearestMipmapLinear;
+    case 7: return kGlLinearMipmapLinear;
+    default: return (tflt_min & 1) ? kGlLinear : kGlNearest;
+    }
+}
+
+bool IsAnisotropicMode(TextureFilterMode mode)
+{
+    return mode == TextureFilterMode::kAniso2x ||
+           mode == TextureFilterMode::kAniso4x ||
+           mode == TextureFilterMode::kAniso8x ||
+           mode == TextureFilterMode::kAniso16x;
+}
+
+float RequestedAnisotropy(TextureFilterMode mode)
+{
+    switch (mode)
+    {
+    case TextureFilterMode::kAniso2x: return 2.0f;
+    case TextureFilterMode::kAniso4x: return 4.0f;
+    case TextureFilterMode::kAniso8x: return 8.0f;
+    case TextureFilterMode::kAniso16x: return 16.0f;
+    default: return 1.0f;
+    }
+}
+
+GLuint UiGetOrCreateSampler(const SamplerKey& key)
+{
+    auto it = g_gl.ui_samplers.find(key);
+    if (it != g_gl.ui_samplers.end())
+    {
+        return it->second;
+    }
+    GLuint sampler = 0;
+    g_gl.gl.glGenSamplers(1, &sampler);
+    g_gl.gl.glSamplerParameteri(sampler, kGlTextureMinFilter, static_cast<GLint>(key.min_filter));
+    g_gl.gl.glSamplerParameteri(sampler, kGlTextureMagFilter, static_cast<GLint>(key.mag_filter));
+    g_gl.gl.glSamplerParameteri(sampler, kGlTextureWrapS, static_cast<GLint>(key.wrap_s));
+    g_gl.gl.glSamplerParameteri(sampler, kGlTextureWrapT, static_cast<GLint>(key.wrap_t));
     if (g_gl.max_anisotropy > 1.0f)
     {
-        float aniso = 1.0f;
-        switch (mode)
-        {
-        case TextureFilterMode::kAniso2x:
-            aniso = 2.0f;
-            break;
-        case TextureFilterMode::kAniso4x:
-            aniso = 4.0f;
-            break;
-        case TextureFilterMode::kAniso8x:
-            aniso = 8.0f;
-            break;
-        case TextureFilterMode::kAniso16x:
-            aniso = 16.0f;
-            break;
-        default:
-            aniso = 1.0f;
-            break;
-        }
-        g_gl.gl.glTexParameterf(kGlTexture2d, kGlTextureMaxAnisotropy, std::min(aniso, g_gl.max_anisotropy));
+        const float aniso = std::min(static_cast<float>(key.aniso_int), g_gl.max_anisotropy);
+        g_gl.gl.glSamplerParameterf(sampler, kGlTextureMaxAnisotropy, aniso);
     }
+    g_gl.ui_samplers.emplace(key, sampler);
+    return sampler;
 }
 
 void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale, int req_samples, TextureFilterMode tex_filter)
@@ -972,28 +1154,48 @@ void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale, int req_sa
 
     for (const auto& up : payload->uploads)
     {
+        if (up.levels.empty())
+        {
+            continue;
+        }
         auto& entry = g_gl.ui_textures[up.cache_id];
         if (entry.tex == 0)
         {
             g_gl.gl.glGenTextures(1, &entry.tex);
         }
+        const int lvl0_w = up.levels[0].width;
+        const int lvl0_h = up.levels[0].height;
+        const int supplied_max = static_cast<int>(up.levels.size()) - 1;
+
         g_gl.gl.glActiveTexture(kGlTexture0);
         g_gl.gl.glBindTexture(kGlTexture2d, entry.tex);
         g_gl.gl.glPixelStorei(kGlUnpackAlignment, 4);
-        g_gl.gl.glTexParameteri(kGlTexture2d, kGlTextureMinFilter, kGlNearest);
-        g_gl.gl.glTexParameteri(kGlTexture2d, kGlTextureMagFilter, kGlNearest);
-        if (entry.width != up.width || entry.height != up.height)
+        const bool same_shape = (entry.width == lvl0_w && entry.height == lvl0_h &&
+                                 entry.supplied_max_level == supplied_max);
+        for (int lvl = 0; lvl <= supplied_max; ++lvl)
         {
-            g_gl.gl.glTexImage2D(kGlTexture2d, 0, static_cast<GLint>(kGlRgba8),
-                                 up.width, up.height, 0, kGlRgba, kGlUnsignedByte, up.rgba.data());
-            entry.width = up.width;
-            entry.height = up.height;
+            const auto& md = up.levels[static_cast<size_t>(lvl)];
+            if (!same_shape)
+            {
+                g_gl.gl.glTexImage2D(kGlTexture2d, lvl, static_cast<GLint>(kGlRgba8),
+                                     md.width, md.height, 0, kGlRgba, kGlUnsignedByte, md.rgba.data());
+            }
+            else
+            {
+                g_gl.gl.glTexSubImage2D(kGlTexture2d, lvl, 0, 0, md.width, md.height,
+                                        kGlRgba, kGlUnsignedByte, md.rgba.data());
+            }
         }
-        else
-        {
-            g_gl.gl.glTexSubImage2D(kGlTexture2d, 0, 0, 0, up.width, up.height,
-                                    kGlRgba, kGlUnsignedByte, up.rgba.data());
-        }
+        g_gl.gl.glTexParameteri(kGlTexture2d, kGlTextureBaseLevel, 0);
+        g_gl.gl.glTexParameteri(kGlTexture2d, kGlTextureMaxLevel, supplied_max);
+
+        entry.width = lvl0_w;
+        entry.height = lvl0_h;
+        entry.supplied_max_level = supplied_max;
+        entry.uploaded_max_level = supplied_max;
+        entry.generated_max_level = 0;
+        entry.has_generated_mips = false;
+        entry.gpu_bytes = ComputeMipChainBytes(lvl0_w, lvl0_h, supplied_max);
         ++g_gl.stats.texture_uploads;
     }
 
@@ -1094,6 +1296,7 @@ void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale, int req_sa
             int tex_w = s.tex_w;
             int tex_h = s.tex_h;
             int is_fbo = 0;
+            UiTexEntry* tex_entry = nullptr;
             if (s.fbo_tex_addr != 0)
             {
                 auto fit = g_gl.ui_targets.find(s.fbo_tex_addr);
@@ -1115,14 +1318,98 @@ void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale, int req_sa
                 if (tit != g_gl.ui_textures.end())
                 {
                     tex_id = tit->second.tex;
+                    tex_entry = &tit->second;
                 }
             }
             g_gl.gl.glActiveTexture(kGlTexture0);
             g_gl.gl.glBindTexture(kGlTexture2d, tex_id);
-            if (tex_id != 0)
+
+            int fbo_linear = 0;
+            if (tex_id != 0 && is_fbo != 0)
             {
-                ApplyTextureFiltering(is_fbo ? TextureFilterMode::kOriginal : tex_filter);
+                g_gl.gl.glBindSampler(0, 0);
+                if (tex_filter != TextureFilterMode::kOriginal)
+                {
+                    fbo_linear = 1;
+                }
+                else
+                {
+                    fbo_linear = ((s.tex_mag_filter & 1) != 0 || (s.tex_min_filter & 1) != 0) ? 1 : 0;
+                }
             }
+            else if (tex_id != 0 && tex_entry != nullptr)
+            {
+                const bool is_aniso = IsAnisotropicMode(tex_filter);
+                bool has_mips = false;
+                if (tex_entry->supplied_max_level >= 1)
+                {
+                    has_mips = true;
+                }
+                else if (is_aniso)
+                {
+                    const int full_max = ComputeFullMipLevels(tex_entry->width, tex_entry->height);
+                    if (full_max >= 1)
+                    {
+                        if (!tex_entry->has_generated_mips)
+                        {
+                            g_gl.gl.glTexParameteri(kGlTexture2d, kGlTextureMaxLevel, full_max);
+                            g_gl.gl.glGenerateMipmap(kGlTexture2d);
+                            tex_entry->has_generated_mips = true;
+                            tex_entry->generated_max_level = full_max;
+                            tex_entry->uploaded_max_level = full_max;
+                            tex_entry->gpu_bytes = ComputeMipChainBytes(tex_entry->width, tex_entry->height, full_max);
+                        }
+                        else if (tex_entry->uploaded_max_level != tex_entry->generated_max_level)
+                        {
+                            g_gl.gl.glTexParameteri(kGlTexture2d, kGlTextureMaxLevel, tex_entry->generated_max_level);
+                            tex_entry->uploaded_max_level = tex_entry->generated_max_level;
+                        }
+                        has_mips = true;
+                    }
+                }
+                else if (tex_entry->uploaded_max_level != 0)
+                {
+                    g_gl.gl.glTexParameteri(kGlTexture2d, kGlTextureMaxLevel, 0);
+                    tex_entry->uploaded_max_level = 0;
+                }
+
+                SamplerKey sk;
+                sk.wrap_s = s.tex_clamp_u ? kGlClampToEdge : kGlRepeat;
+                sk.wrap_t = s.tex_clamp_v ? kGlClampToEdge : kGlRepeat;
+                if (tex_filter == TextureFilterMode::kOriginal)
+                {
+                    sk.mag_filter = (s.tex_mag_filter & 1) ? kGlLinear : kGlNearest;
+                    sk.min_filter = MapOriginalMinFilter(s.tex_min_filter, has_mips);
+                    sk.aniso_int = 1;
+                }
+                else
+                {
+                    sk.mag_filter = kGlLinear;
+                    sk.min_filter = has_mips ? kGlLinearMipmapLinear : kGlLinear;
+                    const float req_aniso = is_aniso ? RequestedAnisotropy(tex_filter) : 1.0f;
+                    const float eff_aniso = (g_gl.max_anisotropy > 1.0f)
+                                                ? std::min(req_aniso, g_gl.max_anisotropy)
+                                                : 1.0f;
+                    sk.aniso_int = std::max(1, static_cast<int>(std::round(eff_aniso)));
+                }
+                const GLuint sampler = UiGetOrCreateSampler(sk);
+                g_gl.gl.glBindSampler(0, sampler);
+                if (g_gl.max_anisotropy > 1.0f)
+                {
+                    GLfloat applied = 1.0f;
+                    g_gl.gl.glGetSamplerParameterfv(sampler, kGlTextureMaxAnisotropy, &applied);
+                    g_gl.last_applied_anisotropy = applied;
+                }
+                else
+                {
+                    g_gl.last_applied_anisotropy = 1.0f;
+                }
+            }
+            else
+            {
+                g_gl.gl.glBindSampler(0, 0);
+            }
+
             g_gl.gl.glUniform1i(g_gl.u_tex_enable, (tex_id != 0) ? 1 : 0);
             g_gl.gl.glUniform1i(g_gl.u_tex, 0);
             g_gl.gl.glUniform2i(g_gl.u_tex_size, std::max(1, tex_w), std::max(1, tex_h));
@@ -1137,9 +1424,13 @@ void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale, int req_sa
                                 static_cast<float>((s.tex_env >> 16) & 0xFFu) / 255.0f,
                                 static_cast<float>((s.tex_env >> 24) & 0xFFu) / 255.0f);
             g_gl.gl.glUniform1i(g_gl.u_tex_is_fbo, is_fbo);
+            g_gl.gl.glUniform1i(g_gl.u_tex_fbo_linear, fbo_linear);
+            g_gl.gl.glUniform1i(g_gl.u_tex_level_mode, s.tex_level_mode);
+            g_gl.gl.glUniform1f(g_gl.u_tex_lod_bias, s.tex_lod_bias);
         }
         else
         {
+            g_gl.gl.glBindSampler(0, 0);
             g_gl.gl.glUniform1i(g_gl.u_tex_enable, 0);
         }
 
@@ -1172,6 +1463,7 @@ void UiExecuteFlush(std::unique_ptr<FlushPayload> payload, int scale, int req_sa
     g_gl.gl.glDepthMask(kGlTrue);
     g_gl.gl.glBindVertexArray(0);
     g_gl.gl.glBindBuffer(kGlArrayBuffer, 0);
+    g_gl.gl.glBindSampler(0, 0);
     g_gl.gl.glBindTexture(kGlTexture2d, 0);
     g_gl.gl.glBindFramebuffer(kGlFramebuffer, 0);
     g_gl.gl.glUseProgram(0);
@@ -1264,6 +1556,20 @@ uint64_t ResolveTextureLocked(const DrawState& st, FlushPayload& flush, uint32_t
         return 0;
     }
 
+    int effective_max_level = 0;
+    const int req_max_level = std::clamp(st.tex_max_level, 0, DrawState::kMaxTexLevels - 1);
+    for (int lvl = 1; lvl <= req_max_level; ++lvl)
+    {
+        const int expected_w = std::max(1, st.tex_w >> lvl);
+        const int expected_h = std::max(1, st.tex_h >> lvl);
+        if (st.tex_level_addr[lvl] == 0 || st.tex_level_bw[lvl] <= 0 ||
+            st.tex_level_w[lvl] != expected_w || st.tex_level_h[lvl] != expected_h)
+        {
+            break;
+        }
+        effective_max_level = lvl;
+    }
+
     TextureKey key;
     key.addr = st.tex_addr;
     key.width = st.tex_w;
@@ -1271,6 +1577,14 @@ uint64_t ResolveTextureLocked(const DrawState& st, FlushPayload& flush, uint32_t
     key.bw = st.tex_bw;
     key.fmt = st.tex_fmt;
     key.swizzle = st.tex_swizzle;
+    key.max_level = effective_max_level;
+    for (int lvl = 1; lvl <= effective_max_level; ++lvl)
+    {
+        key.level_addr[static_cast<size_t>(lvl)] = st.tex_level_addr[lvl];
+        key.level_bw[static_cast<size_t>(lvl)] = st.tex_level_bw[lvl];
+        key.level_w[static_cast<size_t>(lvl)] = st.tex_level_w[lvl];
+        key.level_h[static_cast<size_t>(lvl)] = st.tex_level_h[lvl];
+    }
     key.clut_fmt = st.clut_fmt;
     key.clut_start = st.clut_start;
     key.clut_shift = st.clut_shift;
@@ -1293,8 +1607,15 @@ uint64_t ResolveTextureLocked(const DrawState& st, FlushPayload& flush, uint32_t
         return it->second.cache_id;
     }
 
-    const uint64_t content_hash = HashGuestRange(st.tex_addr, data_bytes);
+    uint64_t content_hash = HashGuestRange(st.tex_addr, data_bytes);
     g_gl.stats.texture_bytes_hashed += data_bytes;
+    for (int lvl = 1; lvl <= effective_max_level; ++lvl)
+    {
+        const uint32_t lvl_bytes = ComputeTextureLevelDataSizeBytes(st, lvl);
+        const uint64_t lvl_hash = HashGuestRange(st.tex_level_addr[lvl], lvl_bytes);
+        content_hash ^= lvl_hash + 0x9e3779b97f4a7c15ull + (content_hash << 6) + (content_hash >> 2);
+        g_gl.stats.texture_bytes_hashed += lvl_bytes;
+    }
 
     if (it != g_gl.guest_tex_cache.end() &&
         it->second.content_hash == content_hash &&
@@ -1338,10 +1659,17 @@ uint64_t ResolveTextureLocked(const DrawState& st, FlushPayload& flush, uint32_t
 
     TextureUpload up;
     up.cache_id = cache_id;
-    up.width = st.tex_w;
-    up.height = st.tex_h;
-    up.rgba.resize(static_cast<size_t>(st.tex_w) * static_cast<size_t>(st.tex_h) * 4u);
-    DecodeTextureRgba8(st, up.rgba.data(), nullptr);
+    up.levels.resize(static_cast<size_t>(effective_max_level + 1));
+    for (int lvl = 0; lvl <= effective_max_level; ++lvl)
+    {
+        const int lw = (lvl == 0) ? st.tex_w : st.tex_level_w[lvl];
+        const int lh = (lvl == 0) ? st.tex_h : st.tex_level_h[lvl];
+        auto& md = up.levels[static_cast<size_t>(lvl)];
+        md.width = lw;
+        md.height = lh;
+        md.rgba.resize(static_cast<size_t>(lw) * static_cast<size_t>(lh) * 4u);
+        DecodeTextureLevelRgba8(st, lvl, md.rgba.data(), nullptr);
+    }
     flush.uploads.push_back(std::move(up));
     return cache_id;
 }
@@ -1488,6 +1816,10 @@ void GlDraw(int prim, const Vertex* v, int count, const DrawState* st)
         ps.tex_h = st->tex_h;
         ps.tex_clamp_u = st->tex_clamp_u;
         ps.tex_clamp_v = st->tex_clamp_v;
+        ps.tex_min_filter = st->tex_min_filter;
+        ps.tex_mag_filter = st->tex_mag_filter;
+        ps.tex_level_mode = st->tex_level_mode;
+        ps.tex_lod_bias = st->tex_lod_bias;
         ps.tex_func = st->tex_func;
         ps.tex_alpha = st->tex_alpha;
         ps.tex_double = st->tex_double;
@@ -1898,7 +2230,7 @@ GpuMemoryInfo GetGpuMemoryInfo()
     {
         if (kv.second.tex != 0 && kv.second.width > 0 && kv.second.height > 0)
         {
-            info.hle_textures_bytes += static_cast<uint64_t>(kv.second.width) * static_cast<uint64_t>(kv.second.height) * 4ull;
+            info.hle_textures_bytes += kv.second.gpu_bytes;
         }
     }
     for (const auto& kv : g_gl.ui_targets)
@@ -1926,6 +2258,12 @@ void LockGlMutexForTest()
 void UnlockGlMutexForTest()
 {
     g_gl.mutex.unlock();
+}
+
+float GetLastAppliedAnisotropyForTest()
+{
+    auto lock = LockGl();
+    return g_gl.last_applied_anisotropy;
 }
 
 } // namespace repsp::gpu
