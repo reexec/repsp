@@ -64,13 +64,24 @@ struct DrawState
     int clear_depth = 0;    // CLEAR bit 10: ...to depth
     int gouraud = 0;        // SHADE
 
+    static constexpr int kMaxTexLevels = 8;
+
     int tex_enable = 0;     // TME
     uint32_t tex_addr = 0;  // TBP0 + TBW0 high byte
     int tex_bw = 0;         // TBW0: buffer width, texels
     int tex_w = 1;          // TSIZE0, as sizes not logs
     int tex_h = 1;
+    uint32_t tex_level_addr[kMaxTexLevels] = {0}; // TBP0..7 + TBW0..7 high byte
+    int tex_level_bw[kMaxTexLevels] = {0};        // TBW0..7: buffer width, texels
+    int tex_level_w[kMaxTexLevels] = {1, 1, 1, 1, 1, 1, 1, 1}; // TSIZE0..7
+    int tex_level_h[kMaxTexLevels] = {1, 1, 1, 1, 1, 1, 1, 1};
     int tex_fmt = 0;        // TPSM
     int tex_swizzle = 0;    // TMODE bit 0
+    int tex_max_level = 0;  // TMODE bits 16-18 (0..7)
+    int tex_min_filter = 0; // TFLT bits 0-2
+    int tex_mag_filter = 0; // TFLT bits 8-10 (bit 0: 0=nearest, 1=linear)
+    int tex_level_mode = 0; // TEXLEVEL bits 0-1 (0=auto, 1=const, 2=slope)
+    float tex_lod_bias = 0.0f; // TEXLEVEL bits 16-23 (signed 4.4 fixed-point)
     int tex_clamp_u = 0;    // TWRAP
     int tex_clamp_v = 0;
     int tex_func = 0;       // TFUNC bits 0-2
@@ -217,6 +228,7 @@ uint32_t TexelFetch(const DrawState& st, int x, int y);
 // verify that guest threads waiting on it yield the guest CPU via ScopedHostWait.
 void LockGlMutexForTest();
 void UnlockGlMutexForTest();
+float GetLastAppliedAnisotropyForTest();
 
 } // namespace repsp::gpu
 
