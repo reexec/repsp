@@ -74,15 +74,20 @@ constexpr uint32_t kGeFbw = 0x9D;
 constexpr uint32_t kGeZbp = 0x9E;
 constexpr uint32_t kGeZbw = 0x9F;
 constexpr uint32_t kGeTbp0 = 0xA0;
+constexpr uint32_t kGeTbp7 = 0xA7;
 constexpr uint32_t kGeTbw0 = 0xA8;
+constexpr uint32_t kGeTbw7 = 0xAF;
 constexpr uint32_t kGeCbp = 0xB0;
 constexpr uint32_t kGeCbph = 0xB1;
 constexpr uint32_t kGeTsize0 = 0xB8;
+constexpr uint32_t kGeTsize7 = 0xBF;
 constexpr uint32_t kGeTmode = 0xC2;
 constexpr uint32_t kGeTpsm = 0xC3;
 constexpr uint32_t kGeCload = 0xC4;
 constexpr uint32_t kGeCmode = 0xC5;
+constexpr uint32_t kGeTflt = 0xC6;
 constexpr uint32_t kGeTwrap = 0xC7;
+constexpr uint32_t kGeTexlevel = 0xC8;
 constexpr uint32_t kGeTfunc = 0xC9;
 constexpr uint32_t kGeTec = 0xCA;
 constexpr uint32_t kGePsm = 0xD2;
@@ -407,7 +412,9 @@ void GeInterpreter::Reset()
 
     ds_ = DrawState{};
     std::memset(clut_, 0, sizeof(clut_));
-    tbp_ = tbw_ = cbp_ = zbp_ = zbw_ = vaddr_ = iaddr_ = 0;
+    std::memset(tbp_, 0, sizeof(tbp_));
+    std::memset(tbw_, 0, sizeof(tbw_));
+    cbp_ = zbp_ = zbw_ = vaddr_ = iaddr_ = 0;
     material_ = 0xFFFFFFFFu;
     ds_.clut = clut_;
     lt_ = LightingState{};
@@ -780,23 +787,83 @@ void GeInterpreter::RunList(QueueSlot* q)
             ds_.zbw = static_cast<int>(zbw_ & 0xFFFFu);
             break;
         case kGeTbp0:
-            tbp_ = arg;
-            ds_.tex_addr = ((tbw_ & 0xFF0000u) << 8) | tbp_;
+        case kGeTbp0 + 1:
+        case kGeTbp0 + 2:
+        case kGeTbp0 + 3:
+        case kGeTbp0 + 4:
+        case kGeTbp0 + 5:
+        case kGeTbp0 + 6:
+        case kGeTbp7:
+        {
+            const int lvl = static_cast<int>(cmd - kGeTbp0);
+            tbp_[lvl] = arg;
+            const uint32_t addr = ((tbw_[lvl] & 0xFF0000u) << 8) | tbp_[lvl];
+            ds_.tex_level_addr[lvl] = addr;
+            if (lvl == 0)
+            {
+                ds_.tex_addr = addr;
+            }
             break;
+        }
         case kGeTbw0:
-            tbw_ = arg;
-            ds_.tex_bw = static_cast<int>(arg & 0xFFFFu);
-            ds_.tex_addr = ((tbw_ & 0xFF0000u) << 8) | tbp_;
+        case kGeTbw0 + 1:
+        case kGeTbw0 + 2:
+        case kGeTbw0 + 3:
+        case kGeTbw0 + 4:
+        case kGeTbw0 + 5:
+        case kGeTbw0 + 6:
+        case kGeTbw7:
+        {
+            const int lvl = static_cast<int>(cmd - kGeTbw0);
+            tbw_[lvl] = arg;
+            const int bw = static_cast<int>(arg & 0xFFFFu);
+            const uint32_t addr = ((tbw_[lvl] & 0xFF0000u) << 8) | tbp_[lvl];
+            ds_.tex_level_bw[lvl] = bw;
+            ds_.tex_level_addr[lvl] = addr;
+            if (lvl == 0)
+            {
+                ds_.tex_bw = bw;
+                ds_.tex_addr = addr;
+            }
             break;
+        }
         case kGeTsize0:
-            ds_.tex_w = 1 << (arg & 0xFu);
-            ds_.tex_h = 1 << ((arg >> 8) & 0xFu);
+        case kGeTsize0 + 1:
+        case kGeTsize0 + 2:
+        case kGeTsize0 + 3:
+        case kGeTsize0 + 4:
+        case kGeTsize0 + 5:
+        case kGeTsize0 + 6:
+        case kGeTsize7:
+        {
+            const int lvl = static_cast<int>(cmd - kGeTsize0);
+            const int w = 1 << (arg & 0xFu);
+            const int h = 1 << ((arg >> 8) & 0xFu);
+            ds_.tex_level_w[lvl] = w;
+            ds_.tex_level_h[lvl] = h;
+            if (lvl == 0)
+            {
+                ds_.tex_w = w;
+                ds_.tex_h = h;
+            }
             break;
-        case kGeTmode: ds_.tex_swizzle = arg & 1; break;
+        }
+        case kGeTmode:
+            ds_.tex_swizzle = arg & 1;
+            ds_.tex_max_level = static_cast<int>((arg >> 16) & 7u);
+            break;
         case kGeTpsm:  ds_.tex_fmt = static_cast<int>(arg & 0xFu); break;
+        case kGeTflt:
+            ds_.tex_min_filter = static_cast<int>(arg & 7u);
+            ds_.tex_mag_filter = static_cast<int>((arg >> 8) & 7u);
+            break;
         case kGeTwrap:
             ds_.tex_clamp_u = arg & 1;
             ds_.tex_clamp_v = (arg >> 8) & 1;
+            break;
+        case kGeTexlevel:
+            ds_.tex_level_mode = static_cast<int>(arg & 3u);
+            ds_.tex_lod_bias = static_cast<float>(static_cast<int8_t>((arg >> 16) & 0xFFu)) / 16.0f;
             break;
         case kGeTfunc:
             ds_.tex_func = static_cast<int>(arg & 7u);

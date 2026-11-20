@@ -260,4 +260,41 @@ uint32_t ComputeTextureDataSizeBytes(const DrawState& st)
     return rowb * h;
 }
 
+void DecodeTextureLevelRgba8(const DrawState& st, int level, uint8_t* out_rgba8, uint64_t* bad_texels)
+{
+    if (level <= 0)
+    {
+        DecodeTextureRgba8(st, out_rgba8, bad_texels);
+        return;
+    }
+    if (level >= DrawState::kMaxTexLevels)
+    {
+        return;
+    }
+    DrawState lvl_st = st;
+    lvl_st.tex_addr = st.tex_level_addr[level];
+    lvl_st.tex_bw = st.tex_level_bw[level];
+    lvl_st.tex_w = st.tex_level_w[level];
+    lvl_st.tex_h = st.tex_level_h[level];
+    DecodeTextureRgba8(lvl_st, out_rgba8, bad_texels);
+}
+
+uint32_t ComputeTextureLevelDataSizeBytes(const DrawState& st, int level)
+{
+    if (level <= 0)
+    {
+        return ComputeTextureDataSizeBytes(st);
+    }
+    if (level >= DrawState::kMaxTexLevels)
+    {
+        return 0;
+    }
+    DrawState lvl_st = st;
+    lvl_st.tex_addr = st.tex_level_addr[level];
+    lvl_st.tex_bw = st.tex_level_bw[level];
+    lvl_st.tex_w = st.tex_level_w[level];
+    lvl_st.tex_h = st.tex_level_h[level];
+    return ComputeTextureDataSizeBytes(lvl_st);
+}
+
 } // namespace repsp::gpu

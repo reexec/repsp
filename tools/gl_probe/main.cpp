@@ -546,6 +546,196 @@ int main()
         repsp::gpu::SetInternalScale(1);
     }
 
+    // Texture filtering, anisotropy, mipmaps, render-to-texture bilinear, and wrap/clamp checks.
+    {
+        auto& mem = repsp::runtime::GetGuestMemory();
+        const auto* b = repsp::gpu::GetRenderBackend();
+        constexpr uint32_t kFilterTarget = 0x04198000u;
+        constexpr uint32_t kCheckerAddr = 0x08B20000u;
+        const uint32_t checker[4] = {
+            0xFF000000u, 0xFFFFFFFFu,
+            0xFFFFFFFFu, 0xFF000000u,
+        };
+        std::memcpy(mem.Translate(kCheckerAddr), checker, sizeof(checker));
+
+        auto draw_checker_4x = [&](repsp::gpu::TextureFilterMode mode, int tflt_min, int tflt_mag,
+                                   std::vector<uint8_t>& out_rgba, int& out_w, int& out_h)
+        {
+            repsp::gpu::SetTextureFilterMode(mode);
+            b->set_target(kFilterTarget, 512, 3);
+            repsp::gpu::DrawState st;
+            st.tex_enable = 1;
+            st.tex_addr = kCheckerAddr;
+            st.tex_bw = 2;
+            st.tex_w = 2;
+            st.tex_h = 2;
+            st.tex_fmt = 3;
+            st.tex_func = 3; // REPLACE
+            st.tex_clamp_u = 1;
+            st.tex_clamp_v = 1;
+            st.tex_min_filter = tflt_min;
+            st.tex_mag_filter = tflt_mag;
+            repsp::gpu::Vertex sv[2] = {
+                MakeVert(0, 0, 0.0f, 0.0f, 0.0f, 0xFFFFFFFFu),
+                MakeVert(8, 8, 0.0f, 2.0f, 2.0f, 0xFFFFFFFFu),
+            };
+            b->draw(repsp::gpu::kPrimSprites, sv, 2, &st);
+            b->finish();
+            TEST_ASSERT(repsp::gpu::ReadGlTargetRgba8(kFilterTarget, 1, out_rgba, out_w, out_h));
+        };
+
+        std::vector<uint8_t> rgba;
+        int w = 0, h = 0;
+
+        // 1) Original + TFLT nearest -> sharp boundary (pixel (3,1) is 0, (4,1) is 255).
+        draw_checker_4x(repsp::gpu::TextureFilterMode::kOriginal, 0, 0, rgba, w, h);
+        TEST_ASSERT(rgba[(1u * static_cast<size_t>(w) + 3u) * 4u] <= 2);
+        TEST_ASSERT(rgba[(1u * static_cast<size_t>(w) + 4u) * 4u] >= 253);
+
+        // 2) Original + TFLT linear (0x000105) -> intermediate value at boundary (3,1).
+        draw_checker_4x(repsp::gpu::TextureFilterMode::kOriginal, 5, 1, rgba, w, h);
+        const uint8_t orig_lin_r = rgba[(1u * static_cast<size_t>(w) + 3u) * 4u];
+        TEST_ASSERT(orig_lin_r > 20 && orig_lin_r < 235);
+
+        // 3) Linear mode overrides TFLT nearest -> still intermediate value at boundary (3,1).
+        draw_checker_4x(repsp::gpu::TextureFilterMode::kLinear, 0, 0, rgba, w, h);
+        const uint8_t force_lin_r = rgba[(1u * static_cast<size_t>(w) + 3u) * 4u];
+        TEST_ASSERT(force_lin_r > 20 && force_lin_r < 235);
+
+        // 4) Anisotropic mode sets GL_TEXTURE_MAX_ANISOTROPY when supported.
+        const float max_aniso = repsp::gpu::GetMaxAnisotropy();
+        if (max_aniso > 1.0f)
+        {
+            draw_checker_4x(repsp::gpu::TextureFilterMode::kAniso4x, 0, 0, rgba, w, h);
+            const float expected = std::min(4.0f, max_aniso);
+            TEST_ASSERT(repsp::gpu::GetLastAppliedAnisotropyForTest() >= expected - 0.01f);
+        }
+
+        // 5) Two-level mipmap texture drawn minified selects level 1 color (green vs level 0 red).
+        constexpr uint32_t kMip0Addr = 0x08B21000u;
+        constexpr uint32_t kMip1Addr = 0x08B22000u;
+        uint32_t mip0[16];
+        for (uint32_t& px : mip0) px = 0xFF0000FFu; // red (ABGR)
+        uint32_t mip1[4];
+        for (uint32_t& px : mip1) px = 0xFF00FF00u; // green (ABGR)
+        std::memcpy(mem.Translate(kMip0Addr), mip0, sizeof(mip0));
+        std::memcpy(mem.Translate(kMip1Addr), mip1, sizeof(mip1));
+
+        repsp::gpu::SetTextureFilterMode(repsp::gpu::TextureFilterMode::kOriginal);
+        b->set_target(kFilterTarget, 512, 3);
+        repsp::gpu::DrawState mip_st;
+        mip_st.tex_enable = 1;
+        mip_st.tex_addr = kMip0Addr;
+        mip_st.tex_bw = 4;
+        mip_st.tex_w = 4;
+        mip_st.tex_h = 4;
+        mip_st.tex_level_addr[0] = kMip0Addr;
+        mip_st.tex_level_bw[0] = 4;
+        mip_st.tex_level_w[0] = 4;
+        mip_st.tex_level_h[0] = 4;
+        mip_st.tex_level_addr[1] = kMip1Addr;
+        mip_st.tex_level_bw[1] = 2;
+        mip_st.tex_level_w[1] = 2;
+        mip_st.tex_level_h[1] = 2;
+        mip_st.tex_max_level = 1;
+        mip_st.tex_fmt = 3;
+        mip_st.tex_func = 3; // REPLACE
+        mip_st.tex_min_filter = 4; // NEAREST_MIPMAP_NEAREST
+        mip_st.tex_mag_filter = 0;
+        repsp::gpu::Vertex mv[2] = {
+            MakeVert(10, 10, 0.0f, 0.0f, 0.0f, 0xFFFFFFFFu),
+            MakeVert(12, 12, 0.0f, 4.0f, 4.0f, 0xFFFFFFFFu), // 4x4 texels into 2x2 pixels => LOD 1
+        };
+        b->draw(repsp::gpu::kPrimSprites, mv, 2, &mip_st);
+        b->finish();
+        TEST_ASSERT(repsp::gpu::ReadGlTargetRgba8(kFilterTarget, 1, rgba, w, h));
+        const size_t mip_off = (10u * static_cast<size_t>(w) + 10u) * 4u;
+        TEST_ASSERT(rgba[mip_off + 0] <= 10 && rgba[mip_off + 1] >= 245 && rgba[mip_off + 2] <= 10);
+
+        // 6) Render-to-texture read linearly produces intermediate values.
+        constexpr uint32_t kRttLinSrc = 0x04088000u;
+        constexpr uint32_t kRttLinDst = 0x04110000u;
+        b->set_target(kRttLinSrc, 512, 3);
+        repsp::gpu::DrawState rtt_src_st;
+        rtt_src_st.tex_enable = 1;
+        rtt_src_st.tex_addr = kCheckerAddr;
+        rtt_src_st.tex_bw = 2;
+        rtt_src_st.tex_w = 2;
+        rtt_src_st.tex_h = 2;
+        rtt_src_st.tex_fmt = 3;
+        rtt_src_st.tex_func = 3;
+        repsp::gpu::Vertex src_v[2] = {
+            MakeVert(0, 0, 0.0f, 0.0f, 0.0f, 0xFFFFFFFFu),
+            MakeVert(2, 2, 0.0f, 2.0f, 2.0f, 0xFFFFFFFFu),
+        };
+        b->draw(repsp::gpu::kPrimSprites, src_v, 2, &rtt_src_st);
+        b->finish();
+
+        b->set_target(kRttLinDst, 512, 3);
+        repsp::gpu::DrawState rtt_lin_st;
+        rtt_lin_st.tex_enable = 1;
+        rtt_lin_st.tex_addr = kRttLinSrc;
+        rtt_lin_st.tex_bw = 512;
+        rtt_lin_st.tex_w = 480;
+        rtt_lin_st.tex_h = 272;
+        rtt_lin_st.tex_fmt = 3;
+        rtt_lin_st.tex_func = 3;
+        rtt_lin_st.tex_clamp_u = 1;
+        rtt_lin_st.tex_clamp_v = 1;
+        rtt_lin_st.tex_mag_filter = 1; // linear
+        repsp::gpu::Vertex dst_v[2] = {
+            MakeVert(0, 0, 0.0f, 0.0f, 0.0f, 0xFFFFFFFFu),
+            MakeVert(8, 8, 0.0f, 2.0f, 2.0f, 0xFFFFFFFFu),
+        };
+        b->draw(repsp::gpu::kPrimSprites, dst_v, 2, &rtt_lin_st);
+        b->finish();
+        TEST_ASSERT(repsp::gpu::ReadGlTargetRgba8(kRttLinDst, 1, rgba, w, h));
+        const uint8_t rtt_lin_r = rgba[(1u * static_cast<size_t>(w) + 3u) * 4u];
+        TEST_ASSERT(rtt_lin_r > 20 && rtt_lin_r < 235);
+
+        // 7) Wrap (repeat vs clamp) checked via edge pixels on a 2x2 RG/BW texture.
+        constexpr uint32_t kWrapTexAddr = 0x08B23000u;
+        const uint32_t wrap_tex[4] = {
+            0xFF0000FFu, 0xFF00FF00u, // row 0: red, green
+            0xFFFF0000u, 0xFFFFFFFFu, // row 1: blue, white
+        };
+        std::memcpy(mem.Translate(kWrapTexAddr), wrap_tex, sizeof(wrap_tex));
+
+        b->set_target(kFilterTarget, 512, 3);
+        repsp::gpu::DrawState wrap_st;
+        wrap_st.tex_enable = 1;
+        wrap_st.tex_addr = kWrapTexAddr;
+        wrap_st.tex_bw = 2;
+        wrap_st.tex_w = 2;
+        wrap_st.tex_h = 2;
+        wrap_st.tex_fmt = 3;
+        wrap_st.tex_func = 3;
+        wrap_st.tex_min_filter = 0;
+        wrap_st.tex_mag_filter = 0;
+        wrap_st.tex_clamp_u = 0; // REPEAT
+        wrap_st.tex_clamp_v = 0;
+        repsp::gpu::Vertex wv[2] = {
+            MakeVert(0, 0, 0.0f, 0.0f, 0.0f, 0xFFFFFFFFu),
+            MakeVert(4, 2, 0.0f, 4.0f, 2.0f, 0xFFFFFFFFu),
+        };
+        b->draw(repsp::gpu::kPrimSprites, wv, 2, &wrap_st);
+        b->finish();
+        TEST_ASSERT(repsp::gpu::ReadGlTargetRgba8(kFilterTarget, 1, rgba, w, h));
+        // x=2 repeats texel 0 (red), x=3 repeats texel 1 (green)
+        TEST_ASSERT(rgba[2u * 4u + 0] >= 245 && rgba[2u * 4u + 1] <= 10);
+        TEST_ASSERT(rgba[3u * 4u + 0] <= 10 && rgba[3u * 4u + 1] >= 245);
+
+        wrap_st.tex_clamp_u = 1; // CLAMP
+        b->draw(repsp::gpu::kPrimSprites, wv, 2, &wrap_st);
+        b->finish();
+        TEST_ASSERT(repsp::gpu::ReadGlTargetRgba8(kFilterTarget, 1, rgba, w, h));
+        // x=2 and x=3 both clamp to texel 1 (green)
+        TEST_ASSERT(rgba[2u * 4u + 0] <= 10 && rgba[2u * 4u + 1] >= 245);
+        TEST_ASSERT(rgba[3u * 4u + 0] <= 10 && rgba[3u * 4u + 1] >= 245);
+
+        repsp::gpu::SetTextureFilterMode(repsp::gpu::TextureFilterMode::kOriginal);
+    }
+
     TEST_ASSERT(repsp::gpu::SelectRenderBackend("software") == 0);
     repsp::platform::Shutdown();
 

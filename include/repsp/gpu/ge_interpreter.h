@@ -130,6 +130,7 @@ public:
     int32_t Continue();
 
     const GeStats& GetStats() const { return stats_; }
+    const DrawState& GetDrawState() const { return ds_; }
     void DumpStats(FILE* out) const;
     std::string FormatStats() const;
 
@@ -181,8 +182,8 @@ private:
     DrawState ds_;
     LightingState lt_;
     TransformState xf_;
-    uint32_t tbp_ = 0;
-    uint32_t tbw_ = 0;
+    uint32_t tbp_[DrawState::kMaxTexLevels] = {0};
+    uint32_t tbw_[DrawState::kMaxTexLevels] = {0};
     uint32_t cbp_ = 0;
     uint32_t zbp_ = 0;
     uint32_t zbw_ = 0;

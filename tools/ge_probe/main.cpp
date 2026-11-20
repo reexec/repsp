@@ -166,6 +166,8 @@ constexpr uint8_t kOpTmode = 0xC2;
 constexpr uint8_t kOpTpsm = 0xC3;
 constexpr uint8_t kOpCload = 0xC4;
 constexpr uint8_t kOpCmode = 0xC5;
+constexpr uint8_t kOpTflt = 0xC6;
+constexpr uint8_t kOpTexlevel = 0xC8;
 constexpr uint8_t kOpTfunc = 0xC9;
 constexpr uint8_t kOpPsm = 0xD2;
 constexpr uint8_t kOpClear = 0xD3;
@@ -858,6 +860,123 @@ int main()
                               static_cast<uint32_t>(list_id), kStallAddr + 8u) == 0);
         TEST_ASSERT(InvokeNid(nids, kNidGeListSync, static_cast<uint32_t>(list_id), 0) == 0);
         TEST_ASSERT(ReadVramPixel32(kFbAddr, kFbw, 10, 10) == 0xFF000000u);
+    }
+
+    // Texture filter, mipmap level, and TEXLEVEL state decoding into DrawState.
+    {
+        std::vector<uint32_t> cmds;
+        cmds.push_back(GeCmd(kOpTmode, (3u << 16) | 1u));
+        cmds.push_back(GeCmd(kOpTflt, (1u << 8) | 5u));
+        // TEXLEVEL: mode=1 (const), bias=-1.5 (-24 = 0xE8 in signed 4.4)
+        cmds.push_back(GeCmd(kOpTexlevel, (0xE8u << 16) | 1u));
+        for (uint8_t lvl = 0; lvl < 8; ++lvl)
+        {
+            const uint32_t addr = 0x04100000u + static_cast<uint32_t>(lvl) * 0x10000u;
+            const uint32_t bw = 128u >> (lvl < 4 ? lvl : 4);
+            const uint32_t w_log = 7u - (lvl < 7 ? lvl : 7);
+            const uint32_t h_log = 6u - (lvl < 6 ? lvl : 6);
+            cmds.push_back(GeCmd(static_cast<uint8_t>(kOpTbp0 + lvl), addr & 0x00FFFFFFu));
+            cmds.push_back(GeCmd(static_cast<uint8_t>(kOpTbw0 + lvl), ((addr >> 8) & 0x00FF0000u) | bw));
+            cmds.push_back(GeCmd(static_cast<uint8_t>(kOpTsize0 + lvl), (h_log << 8) | w_log));
+        }
+        cmds.push_back(GeCmd(kOpFinish, 0));
+        cmds.push_back(GeCmd(kOpEnd, 0));
+        WriteList(kListAddr, cmds);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+
+        const auto& ds = repsp::gpu::GetGeInterpreter().GetDrawState();
+        TEST_ASSERT(ds.tex_swizzle == 1);
+        TEST_ASSERT(ds.tex_max_level == 3);
+        TEST_ASSERT(ds.tex_min_filter == 5);
+        TEST_ASSERT(ds.tex_mag_filter == 1);
+        TEST_ASSERT(ds.tex_level_mode == 1);
+        TEST_ASSERT(ds.tex_lod_bias == -1.5f);
+        TEST_ASSERT(ds.tex_addr == 0x04100000u);
+        TEST_ASSERT(ds.tex_bw == 128);
+        TEST_ASSERT(ds.tex_w == 128);
+        TEST_ASSERT(ds.tex_h == 64);
+        for (int lvl = 0; lvl < 8; ++lvl)
+        {
+            const uint32_t expected_addr = 0x04100000u + static_cast<uint32_t>(lvl) * 0x10000u;
+            const int expected_bw = 128 >> (lvl < 4 ? lvl : 4);
+            const int expected_w = 1 << (7 - (lvl < 7 ? lvl : 7));
+            const int expected_h = 1 << (6 - (lvl < 6 ? lvl : 6));
+            TEST_ASSERT(ds.tex_level_addr[lvl] == expected_addr);
+            TEST_ASSERT(ds.tex_level_bw[lvl] == expected_bw);
+            TEST_ASSERT(ds.tex_level_w[lvl] == expected_w);
+            TEST_ASSERT(ds.tex_level_h[lvl] == expected_h);
+        }
+
+        // Also test positive TEXLEVEL bias (+2.25 = +36 = 0x24) and TFLT 0x000604.
+        const std::vector<uint32_t> cmds2 = {
+            GeCmd(kOpTflt, 0x000604u),
+            GeCmd(kOpTexlevel, (0x24u << 16) | 2u),
+            GeCmd(kOpFinish, 0),
+            GeCmd(kOpEnd, 0),
+        };
+        WriteList(kListAddr, cmds2);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+        TEST_ASSERT(ds.tex_min_filter == 4);
+        TEST_ASSERT(ds.tex_mag_filter == 6);
+        TEST_ASSERT(ds.tex_level_mode == 2);
+        TEST_ASSERT(ds.tex_lod_bias == 2.25f);
+    }
+
+    // Software renderer bilinear filtering on a 2x2 checker stretched 4x (8x8).
+    {
+        constexpr uint32_t kSwTexAddr = 0x08940000u;
+        const uint32_t checker[4] = {
+            0xFF000000u, 0xFFFFFFFFu,
+            0xFFFFFFFFu, 0xFF000000u,
+        };
+        std::memcpy(mem.Translate(kSwTexAddr), checker, sizeof(checker));
+
+        const VertexTexColorPos2D verts[2] = {
+            { 0, 0, 0xFFFFFFFFu, 0, 0, 0, 0 },
+            { 2, 2, 0xFFFFFFFFu, 8, 8, 0, 0 },
+        };
+        std::memcpy(mem.Translate(kVertAddr), verts, sizeof(verts));
+
+        // Nearest (TFLT = 0x000000)
+        const std::vector<uint32_t> cmds_near = {
+            GeCmd(kOpFbp, kFbAddr & 0x00FFFFFFu),
+            GeCmd(kOpFbw, ((kFbAddr >> 8) & 0x00FF0000u) | kFbw),
+            GeCmd(kOpPsm, 3u),
+            GeCmd(kOpScissor1, 0u),
+            GeCmd(kOpScissor2, (271u << 10) | 479u),
+            GeCmd(kOpTme, 1u),
+            GeCmd(kOpTpsm, 3u),
+            GeCmd(kOpTmode, 0u),
+            GeCmd(kOpTbp0, kSwTexAddr & 0x00FFFFFFu),
+            GeCmd(kOpTbw0, ((kSwTexAddr >> 8) & 0x00FF0000u) | 2u),
+            GeCmd(kOpTsize0, (1u << 8) | 1u), // 2x2
+            GeCmd(kOpTflt, 0x000000u),
+            GeCmd(kOpTfunc, 3u), // REPLACE
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2) | 2u), // THROUGH|POS16|COL8888|TEX16
+            GeCmd(kOpBase, (kVertAddr >> 8) & 0x00FF0000u),
+            GeCmd(kOpVaddr, kVertAddr & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u),
+            GeCmd(kOpFinish, 0u),
+            GeCmd(kOpEnd, 0u),
+        };
+        WriteList(kListAddr, cmds_near);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+        // At x=3, y=1 (inside left-top quadrant), nearest must be pure black (0).
+        const uint32_t near_px = ReadVramPixel32(kFbAddr, kFbw, 3, 1);
+        TEST_ASSERT((near_px & 0xFFu) == 0u);
+        // At x=4, y=1 (inside right-top quadrant), nearest must be pure white (255).
+        const uint32_t near_px2 = ReadVramPixel32(kFbAddr, kFbw, 4, 1);
+        TEST_ASSERT((near_px2 & 0xFFu) == 255u);
+
+        // Linear (TFLT = 0x000101)
+        std::vector<uint32_t> cmds_lin = cmds_near;
+        cmds_lin[11] = GeCmd(kOpTflt, 0x000101u);
+        WriteList(kListAddr, cmds_lin);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+        // At x=3, y=1 (u=0.875, v=0.375), bilinear blends texels 0 and 1 -> intermediate grey.
+        const uint32_t lin_px = ReadVramPixel32(kFbAddr, kFbw, 3, 1);
+        const uint32_t lin_r = lin_px & 0xFFu;
+        TEST_ASSERT(lin_r > 20u && lin_r < 235u);
     }
 
     std::printf("ge_probe passed.\n");

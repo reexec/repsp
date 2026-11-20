@@ -80,12 +80,19 @@ inline constexpr GLenum kGlDepth24Stencil8 = 0x88F0;
 
 inline constexpr GLenum kGlNearest = 0x2600;
 inline constexpr GLenum kGlLinear = 0x2601;
+inline constexpr GLenum kGlNearestMipmapNearest = 0x2700;
+inline constexpr GLenum kGlLinearMipmapNearest = 0x2701;
+inline constexpr GLenum kGlNearestMipmapLinear = 0x2702;
+inline constexpr GLenum kGlLinearMipmapLinear = 0x2703;
 inline constexpr GLenum kGlTextureMagFilter = 0x2800;
 inline constexpr GLenum kGlTextureMinFilter = 0x2801;
 inline constexpr GLenum kGlTextureWrapS = 0x2802;
 inline constexpr GLenum kGlTextureWrapT = 0x2803;
+inline constexpr GLenum kGlTextureBaseLevel = 0x813C;
+inline constexpr GLenum kGlTextureMaxLevel = 0x813D;
 inline constexpr GLenum kGlTextureMaxAnisotropy = 0x84FE;
 inline constexpr GLenum kGlMaxTextureMaxAnisotropy = 0x84FF;
+inline constexpr GLenum kGlTextureLodBias = 0x8501;
 inline constexpr GLenum kGlMaxSamples = 0x8D57;
 inline constexpr GLenum kGlGpuMemInfoTotalKbNvx = 0x9048;
 inline constexpr GLenum kGlGpuMemInfoAvailKbNvx = 0x9049;
@@ -153,6 +160,13 @@ struct GlProcs
     void (REPSP_GL_APIENTRY *glTexSubImage2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void*) = nullptr;
     void (REPSP_GL_APIENTRY *glTexParameteri)(GLenum, GLenum, GLint) = nullptr;
     void (REPSP_GL_APIENTRY *glTexParameterf)(GLenum, GLenum, GLfloat) = nullptr;
+    void (REPSP_GL_APIENTRY *glGenerateMipmap)(GLenum) = nullptr;
+    void (REPSP_GL_APIENTRY *glGenSamplers)(GLsizei, GLuint*) = nullptr;
+    void (REPSP_GL_APIENTRY *glDeleteSamplers)(GLsizei, const GLuint*) = nullptr;
+    void (REPSP_GL_APIENTRY *glBindSampler)(GLuint, GLuint) = nullptr;
+    void (REPSP_GL_APIENTRY *glSamplerParameteri)(GLuint, GLenum, GLint) = nullptr;
+    void (REPSP_GL_APIENTRY *glSamplerParameterf)(GLuint, GLenum, GLfloat) = nullptr;
+    void (REPSP_GL_APIENTRY *glGetSamplerParameterfv)(GLuint, GLenum, GLfloat*) = nullptr;
     void (REPSP_GL_APIENTRY *glGetIntegerv)(GLenum, GLint*) = nullptr;
     void (REPSP_GL_APIENTRY *glGetFloatv)(GLenum, GLfloat*) = nullptr;
     GLenum (REPSP_GL_APIENTRY *glGetError)() = nullptr;
@@ -186,6 +200,7 @@ struct GlProcs
 
     GLint (REPSP_GL_APIENTRY *glGetUniformLocation)(GLuint, const GLchar*) = nullptr;
     void (REPSP_GL_APIENTRY *glUniform1i)(GLint, GLint) = nullptr;
+    void (REPSP_GL_APIENTRY *glUniform1f)(GLint, GLfloat) = nullptr;
     void (REPSP_GL_APIENTRY *glUniform2i)(GLint, GLint, GLint) = nullptr;
     void (REPSP_GL_APIENTRY *glUniform3ui)(GLint, GLuint, GLuint, GLuint) = nullptr;
     void (REPSP_GL_APIENTRY *glUniform4f)(GLint, GLfloat, GLfloat, GLfloat, GLfloat) = nullptr;
@@ -244,6 +259,13 @@ struct GlProcs
                Load(display, glTexImage2D, "glTexImage2D") &&
                Load(display, glTexSubImage2D, "glTexSubImage2D") &&
                Load(display, glTexParameteri, "glTexParameteri") &&
+               Load(display, glGenerateMipmap, "glGenerateMipmap") &&
+               Load(display, glGenSamplers, "glGenSamplers") &&
+               Load(display, glDeleteSamplers, "glDeleteSamplers") &&
+               Load(display, glBindSampler, "glBindSampler") &&
+               Load(display, glSamplerParameteri, "glSamplerParameteri") &&
+               Load(display, glSamplerParameterf, "glSamplerParameterf") &&
+               Load(display, glGetSamplerParameterfv, "glGetSamplerParameterfv") &&
                Load(display, glGenBuffers, "glGenBuffers") &&
                Load(display, glDeleteBuffers, "glDeleteBuffers") &&
                Load(display, glBindBuffer, "glBindBuffer") &&
@@ -268,6 +290,7 @@ struct GlProcs
                Load(display, glUseProgram, "glUseProgram") &&
                Load(display, glGetUniformLocation, "glGetUniformLocation") &&
                Load(display, glUniform1i, "glUniform1i") &&
+               Load(display, glUniform1f, "glUniform1f") &&
                Load(display, glUniform2i, "glUniform2i") &&
                Load(display, glUniform3ui, "glUniform3ui") &&
                Load(display, glUniform4f, "glUniform4f");
