@@ -98,6 +98,11 @@ constexpr uint32_t kAddrDeepStack    = 0x0880E000u;
 constexpr uint32_t kAddrStackOverflow = 0x0880E010u;
 constexpr uint32_t kAddrHostWaitMain = 0x0880E020u;
 constexpr uint32_t kAddrHostWaitHigh = 0x0880E030u;
+constexpr uint32_t kAddrDelayMinWaiter = 0x0880E040u;
+constexpr uint32_t kAddrDelayMinInspector = 0x0880E050u;
+
+int32_t g_delay_min_waiter_uid = 0;
+std::vector<int64_t> g_delay_min_observed_us;
 
 std::mutex g_host_wait_mutex;
 std::condition_variable g_host_wait_cv;
@@ -506,6 +511,32 @@ void FakeCallGuest(uint32_t addr)
         g_host_wait_cv.notify_all();
         break;
     }
+    case kAddrDelayMinWaiter:
+    {
+        TEST_ASSERT(HleCall("sceKernelDelayThread", 0u) == 0u);
+        TEST_ASSERT(HleCall("sceKernelDelayThread", 10u) == 0u);
+        TEST_ASSERT(HleCall("sceKernelDelayThread", 5000u) == 0u);
+        TEST_ASSERT(HleCall("sceKernelDelayThreadCB", 0u) == 0u);
+        TEST_ASSERT(HleCall("sceKernelDelayThreadCB", 10u) == 0u);
+        TEST_ASSERT(HleCall("sceKernelDelayThreadCB", 5000u) == 0u);
+        break;
+    }
+    case kAddrDelayMinInspector:
+    {
+        for (int i = 0; i < 6; ++i)
+        {
+            bool has_timeout = false;
+            int64_t duration_us = -1;
+            TEST_ASSERT(GetScheduler().GetThreadWaitDeadlineForTest(
+                g_delay_min_waiter_uid, &has_timeout, &duration_us));
+            TEST_ASSERT(has_timeout);
+            g_delay_min_observed_us.push_back(duration_us);
+            TEST_ASSERT(GetScheduler().WakeAllWaiters(
+                            repsp::runtime::WaitType::kDelay, 0, repsp::runtime::Scheduler::kWaitTimeout) == 1u);
+            GetScheduler().YieldCurrent();
+        }
+        break;
+    }
     default:
         TEST_ASSERT(false);
     }
@@ -704,6 +735,17 @@ int main()
     TEST_ASSERT(g_host_wait_high_ran);
     TEST_ASSERT(g_host_wait_passed);
     TEST_ASSERT(g_host_wait_saved_s0 == 0xCAFEBABEu);
+
+    // 16. sceKernelDelayThread / sceKernelDelayThreadCB enforce a 200 us minimum deadline
+    kernel::Register(kernel::KernelConfig{});
+    g_delay_min_observed_us.clear();
+    int32_t t_dwait = GetScheduler().CreateThread("delay_waiter", kAddrDelayMinWaiter, 32, 0x4000, 0, 0);
+    int32_t t_dinsp = GetScheduler().CreateThread("delay_insp", kAddrDelayMinInspector, 33, 0x4000, 0, 0);
+    TEST_ASSERT(t_dwait > 0 && t_dinsp > 0);
+    g_delay_min_waiter_uid = t_dwait;
+    TEST_ASSERT(GetScheduler().StartThread(t_dinsp, 0, 0) == 0);
+    GetScheduler().Run(t_dwait);
+    TEST_ASSERT((g_delay_min_observed_us == std::vector<int64_t>{ 200, 200, 5000, 200, 200, 5000 }));
 
     GetScheduler().Reset();
     std::printf("kernel_sched_probe passed.\n");

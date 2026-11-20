@@ -226,6 +226,7 @@ public:
     std::string FormatWakeLatencyStats() const;
     std::string FormatHostStackStats() const;
     std::vector<GuestThreadInfo> GetThreadsSnapshot() const;
+    bool GetThreadWaitDeadlineForTest(KernelUid thread_uid, bool* has_timeout, int64_t* duration_us) const;
     [[noreturn]] void TriggerMutexHeldStopForTest();
 
 private:
@@ -249,6 +250,7 @@ private:
         int32_t wait_result = 0;
         bool wait_allow_callbacks = false;
         bool has_timeout = false;
+        std::chrono::steady_clock::time_point wait_start;
         std::chrono::steady_clock::time_point deadline;
         int32_t wakeup_count = 0;
         int32_t exit_status = 0;

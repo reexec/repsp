@@ -118,16 +118,24 @@ void HleWakeupThread()
     recomp::Return(runtime::GetScheduler().WakeupThread(thid));
 }
 
+// Minimum duration for sceKernelDelayThread / sceKernelDelayThreadCB.
+// On PSP hardware, even a very short delay incurs kernel timer and thread
+// switch overhead far exceeding a few microseconds, and games' polling wait
+// loops rely on each iteration taking meaningful time.
+constexpr uint32_t kMinDelayThreadUs = 200u;
+
 void HleDelayThread()
 {
-    uint32_t delay_us = recomp::Arg<uint32_t>(0);
-    recomp::Return(runtime::GetScheduler().DelayThread(delay_us, false));
+    const uint32_t requested_us = recomp::Arg<uint32_t>(0);
+    const uint32_t effective_us = (requested_us < kMinDelayThreadUs) ? kMinDelayThreadUs : requested_us;
+    recomp::Return(runtime::GetScheduler().DelayThread(effective_us, false));
 }
 
 void HleDelayThreadCB()
 {
-    uint32_t delay_us = recomp::Arg<uint32_t>(0);
-    recomp::Return(runtime::GetScheduler().DelayThread(delay_us, true));
+    const uint32_t requested_us = recomp::Arg<uint32_t>(0);
+    const uint32_t effective_us = (requested_us < kMinDelayThreadUs) ? kMinDelayThreadUs : requested_us;
+    recomp::Return(runtime::GetScheduler().DelayThread(effective_us, true));
 }
 
 void HleCreateCallback()
