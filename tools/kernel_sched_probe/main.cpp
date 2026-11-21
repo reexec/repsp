@@ -2,6 +2,7 @@
 #include "repsp/hle/kernel_errors.h"
 #include "repsp/platform/guarded_run.h"
 #include "repsp/recomp/guest_cpu.h"
+#include "repsp/runtime/clock.h"
 #include "repsp/runtime/guest_memory.h"
 #include "repsp/runtime/nid_registry.h"
 #include "repsp/runtime/scheduler.h"
@@ -901,6 +902,41 @@ int main()
     TEST_ASSERT(t_poll_low > 0);
     GetScheduler().Run(t_poll_low);
     TEST_ASSERT((g_log == std::vector<std::string>{ "poll_high:delay_woke", "poll_high:sema_timeout", "poll_low:done" }));
+
+    // 19. sceKernelGetSystemTime and sceKernelSysClock2USec
+    kernel::Register(kernel::KernelConfig{});
+    TEST_ASSERT(static_cast<int32_t>(HleCall("sceKernelGetSystemTime", 0u)) == kSceKernelErrorIllegalAddr);
+    TEST_ASSERT(static_cast<int32_t>(HleCall("sceKernelSysClock2USec", 0u, 0x09000C90u, 0x09000C94u)) ==
+                kSceKernelErrorIllegalAddr);
+    {
+        const uint32_t kClockAddr = 0x09000C80u;
+        const uint32_t kSecAddr = 0x09000C90u;
+        const uint32_t kUsecAddr = 0x09000C94u;
+        const uint64_t t_before = GetSystemTimeWide();
+        TEST_ASSERT(static_cast<int32_t>(HleCall("sceKernelGetSystemTime", kClockAddr)) == kSceKernelErrorOk);
+        const uint64_t t_after = GetSystemTimeWide();
+        const uint32_t low = GetGuestMemory().ReadU32(kClockAddr);
+        const uint32_t hi = GetGuestMemory().ReadU32(kClockAddr + 4u);
+        const uint64_t sys_clock = static_cast<uint64_t>(low) | (static_cast<uint64_t>(hi) << 32);
+        TEST_ASSERT(sys_clock >= t_before && sys_clock <= t_after);
+
+        TEST_ASSERT(static_cast<int32_t>(HleCall("sceKernelSysClock2USec", kClockAddr, kSecAddr, kUsecAddr)) ==
+                    kSceKernelErrorOk);
+        const uint32_t sec = GetGuestMemory().ReadU32(kSecAddr);
+        const uint32_t usec = GetGuestMemory().ReadU32(kUsecAddr);
+        TEST_ASSERT(usec < 1000000u);
+        TEST_ASSERT(static_cast<uint64_t>(sec) * 1000000ull + usec == sys_clock);
+
+        // Verify 64-bit split (>32-bit microsecond value: 2^32 = 4294s + 967296us) and optional null outputs.
+        GetGuestMemory().WriteU32(kClockAddr, 0u);
+        GetGuestMemory().WriteU32(kClockAddr + 4u, 1u);
+        TEST_ASSERT(static_cast<int32_t>(HleCall("sceKernelSysClock2USec", kClockAddr, kSecAddr, 0u)) ==
+                    kSceKernelErrorOk);
+        TEST_ASSERT(GetGuestMemory().ReadU32(kSecAddr) == 4294u);
+        TEST_ASSERT(static_cast<int32_t>(HleCall("sceKernelSysClock2USec", kClockAddr, 0u, kUsecAddr)) ==
+                    kSceKernelErrorOk);
+        TEST_ASSERT(GetGuestMemory().ReadU32(kUsecAddr) == 967296u);
+    }
 
     GetScheduler().Reset();
     std::printf("kernel_sched_probe passed.\n");
