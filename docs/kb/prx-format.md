@@ -11,12 +11,20 @@ PSP 실행 모듈인 PRX(PSP Relocatable eXecutable)는 평문 ELF32(MIPS LE) �
 
 ## 1. ELF 헤더 및 세그먼트 배치
 
-* `e_type`: `0xFFA0` (재배치 가능한 사용자 모드 실행 파일).
-* `e_machine`: `8` (`EM_MIPS`).
+PSP 평문 사용자 모드 ELF32(MIPS LE, `e_machine = 8`) 실행 파일에는 두 가지 형식이 있습니다.
+
+| 항목 | PRX (`e_type = 0xFFA0`) | 고정 주소 실행 파일 (`e_type = 2`, `ET_EXEC`) |
+|---|---|---|
+| 링크 주소 | 주소 `0` 기준 상대 주소 | 고정 절대 주소(보통 사용자 메모리 시작 `0x08804000`) |
+| 재배치 | `SHT_PRXRELOC`(`0x700000A0`) 적용 | 없음 (`SHT_PRXRELOC` 존재 시 형식 오류; 크기 0인 일반 `SHT_REL`은 무시) |
+| 진입점(`e_entry`) | 세그먼트 0 기준 오프셋 (`base + seg[0].vaddr + e_entry`) | 절대 가상 주소 (로드된 `PT_LOAD` 범위 안이어야 함) |
+| `.rodata.sceModuleInfo` (`sh_addr`) | 세그먼트 0 기준 오프셋 | 절대 가상 주소 (`sh_addr - image_base`가 버퍼 오프셋) |
+| 섹션 헤더 없을 때 `p_paddr` 규약 | 세그먼트 안 오프셋 (**확인됨**) | **파일 오프셋** — `p_vaddr + (p_paddr - p_offset)`으로 가상 주소 환산 (**확인됨**) |
+| `SceModuleInfo` 내부 포인터(`gp`, `ent_*`, `stub_*`) | 재배치 후 절대 주소(또는 세그먼트 오프셋) | 링크 시점부터 절대 주소 |
+
 * 프로그램 헤더의 `PT_LOAD` 세그먼트가 메모리에 배치됩니다.
-  * 세그먼트 0: 코드(`.text`), 읽기 전용 데이터(`.rodata`), 임포트/익스포트 스터브(`.lib.stub`, `.lib.ent`).
-  * 세그먼트 1: 쓰기 가능 데이터(`.data`), 작은 데이터(`.sdata`), BSS(`.sbss`, `.bss`).
-* 재배치 기준 주소: PSP 커널 펌웨어는 첫 사용자 모듈을 `0x08804000`에 배치합니다.
+  * PRX는 보통 세그먼트 0(코드/읽기 전용 데이터/스터브)과 세그먼트 1(쓰기 가능 데이터/BSS)로 나뉘며, `ET_EXEC`은 단일 `PT_LOAD` 세그먼트(+ BSS)로 묶이는 경우가 많습니다(**추정**, 소비자 바이너리 1건 **확인됨**).
+* 배치 기준 주소: PSP 커널 펌웨어는 첫 사용자 모듈을 `0x08804000`에 배치합니다. `ET_EXEC`의 기준 주소는 가장 낮은 `PT_LOAD`의 `p_vaddr`로 고정되며 다른 주소로 재배치할 수 없습니다.
 
 ---
 
@@ -115,12 +123,14 @@ typedef struct {
 
 ---
 
-# PSP PRX format and relocation specifications (English)
+# PSP PRX and `ET_EXEC` format specifications (English)
 
-PSP executable modules (PRX: PSP Relocatable eXecutable) are based on the plain ELF32 MIPS little-endian format with executable type `0xFFA0` (`ET_SCE_EXEC`).
+Plain user-mode PSP executables use ELF32 MIPS little-endian (`e_machine = 8`) in two forms:
+* **PRX (`e_type = 0xFFA0`)**: linked at address 0, relocated to a caller-chosen base via `SHT_PRXRELOC` (`0x700000A0`); `e_entry` and `sh_addr` are segment-relative offsets, and without section headers the first program header's `p_paddr` is an offset within the segment (**confirmed**).
+* **Fixed-address `ET_EXEC` (`e_type = 2`)**: linked at a fixed virtual address (typically `0x08804000`, the start of PSP user memory) with no relocations (`SHT_PRXRELOC` is invalid; zero-sized ordinary `SHT_REL` sections are ignored). `e_entry`, `sh_addr`, and `SceModuleInfo` pointers are absolute virtual addresses. Without section headers, the first `PT_LOAD`'s `p_paddr` is a **file offset**, mapped to a virtual address as `p_vaddr + (p_paddr - p_offset)` (**confirmed**).
 
 Refer to the sections above for:
-1. ELF header and segment layout
+1. ELF header, PRX vs `ET_EXEC` comparison, and segment layout
 2. `SHT_PRXRELOC` relocation format and calculations (`R_MIPS_32`, `R_MIPS_26`, `R_MIPS_HI16`, `R_MIPS_LO16`)
 3. `SceModuleInfo` structure (52 bytes)
 4. Import stub table (`SceLibraryStubTable`)
