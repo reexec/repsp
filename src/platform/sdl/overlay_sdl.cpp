@@ -58,7 +58,7 @@ void FollowWindowSize(SDL_Window* window)
     style.FontScaleMain = scale;
 }
 
-bool g_menu_combo_held = false;
+GamepadShortcutState g_shortcut_state{};
 
 void Toggle(const char* how)
 {
@@ -147,6 +147,10 @@ namespace sdl_internal
 
 bool OverlayProcessEvent(const SDL_Event& event)
 {
+    if (OverlayWindow() == nullptr)
+    {
+        return false;
+    }
     if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
         event.key.key == SDLK_TAB &&
         (event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT)) == 0)
@@ -173,9 +177,11 @@ bool OverlayCapturesMouse()
     return ImGui::GetIO().WantCaptureMouse || ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow);
 }
 
-void PollGamepadShortcuts()
+GamepadShortcutResult PollGamepadShortcuts()
 {
-    bool menu = false;
+    bool any_triggers_down = false;
+    bool any_menu_y = false;
+    bool any_quit_l3r3 = false;
     int count = 0;
     SDL_JoystickID* ids = SDL_GetGamepads(&count);
     for (int i = 0; ids != nullptr && i < count; ++i)
@@ -185,22 +191,43 @@ void PollGamepadShortcuts()
         {
             continue;
         }
-        if (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) &&
-            SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) &&
-            SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_NORTH))
+        const int16_t lt = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+        const int16_t rt = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+        if (lt > kGamepadTriggerDownThreshold && rt > kGamepadTriggerDownThreshold)
         {
-            menu = true;
+            any_triggers_down = true;
+            any_menu_y = any_menu_y || SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_NORTH);
+            any_quit_l3r3 = any_quit_l3r3 ||
+                            (SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_LEFT_STICK) &&
+                             SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_RIGHT_STICK));
         }
     }
     if (ids != nullptr)
     {
         SDL_free(ids);
     }
-    if (menu && !g_menu_combo_held)
+
+    GamepadShortcutInput input{};
+    if (any_triggers_down)
     {
-        Toggle("LB+RB+Y");
+        input.left_trigger = 32767;
+        input.right_trigger = 32767;
+        input.y = any_menu_y;
+        input.l3 = any_quit_l3r3;
+        input.r3 = any_quit_l3r3;
     }
-    g_menu_combo_held = menu;
+    const bool allow_menu = (OverlayWindow() != nullptr);
+    const GamepadShortcutResult res =
+        UpdateGamepadShortcuts(g_shortcut_state, input, SDL_GetTicks(), allow_menu);
+    if (res.toggle_menu)
+    {
+        Toggle("LT+RT+Y");
+    }
+    if (res.request_quit)
+    {
+        std::fprintf(stderr, "[overlay] quit requested (LT+RT+L3+R3)\n");
+    }
+    return res;
 }
 
 void ShutdownOverlay()

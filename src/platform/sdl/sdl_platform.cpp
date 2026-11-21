@@ -217,7 +217,7 @@ void ResetInputSnapshot(bool dummy)
     g_input_dummy = dummy;
 }
 
-void UpdateInputSnapshotFromSdl(SDL_Gamepad* gamepad)
+void UpdateInputSnapshotFromSdl(SDL_Gamepad* gamepad, bool withhold_y, bool withhold_l3, bool withhold_r3)
 {
     if (OverlayVisible())
     {
@@ -242,7 +242,11 @@ void UpdateInputSnapshotFromSdl(SDL_Gamepad* gamepad)
     for (const auto& entry : kButtonMappings)
     {
         bool pressed = (keys && entry.scancode < num_keys && keys[entry.scancode]);
-        if (!pressed && gamepad && SDL_GetGamepadButton(gamepad, entry.gamepad_button))
+        const bool withheld =
+            (withhold_y && entry.gamepad_button == SDL_GAMEPAD_BUTTON_NORTH) ||
+            (withhold_l3 && entry.gamepad_button == SDL_GAMEPAD_BUTTON_LEFT_STICK) ||
+            (withhold_r3 && entry.gamepad_button == SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+        if (!pressed && !withheld && gamepad && SDL_GetGamepadButton(gamepad, entry.gamepad_button))
         {
             pressed = true;
         }
@@ -1058,8 +1062,12 @@ private:
                     ToggleFullscreen(win);
                 }
             }
-            sdl_internal::PollGamepadShortcuts();
-            UpdateInputSnapshotFromSdl(gamepad);
+            const GamepadShortcutResult gp_sc = sdl_internal::PollGamepadShortcuts();
+            if (gp_sc.request_quit)
+            {
+                close_requested_.store(true);
+            }
+            UpdateInputSnapshotFromSdl(gamepad, gp_sc.withhold_y, gp_sc.withhold_l3, gp_sc.withhold_r3);
 
             {
                 std::unique_lock<std::mutex> lock(ui_mutex_);
