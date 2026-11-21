@@ -197,7 +197,7 @@ PSP 실행 모듈(PRX, `0xFFA0`)을 검증하고 호출자가 지정한 기준 �
 ### 2.10. 컨트롤러 입력 및 DMAC 계약 (`ctrl.h`, `dmac.h`)
 
 * 소비자는 `repsp::hle::ctrl::Register()`와 `repsp::hle::dmac::Register()`로 `sceCtrl`(3개 NID)과 `sceDmac`(1개 NID) HLE를 등록하고, 종료 시 `Shutdown()`으로 정리합니다.
-* `repsp::hle::ctrl::SetInputSource(fn)`을 호출하면 기본 `platform::InputBackend` 폴링 대신 합성/스크립트 입력 공급자 `fn(vcount) -> ControllerState`를 사용할 수 있으며, `nullptr`로 복원할 수 있습니다.
+* `repsp::hle::ctrl::SetInputSource(fn)`을 호출하면 기본 `platform::InputBackend` 폴링 대신 합성/스크립트 입력 공급자 `fn(vcount) -> ControllerState`를 사용할 수 있으며, `nullptr`로 복원할 수 있습니다. `SetButtonFilter(fn)`은 `sceCtrlReadBuffer*`가 게스트에 반환할 버튼 마스크를 게스트 스레드 안에서 가공하며, 입력 녹화(`--input-record`)에는 필터 전 원시 버튼만 기록됩니다.
 * `repsp::hle::ctrl::GetStats()` / `FormatStats()`로 샘플링 주기·모드·생성/읽기 통계를 조회할 수 있습니다. `StartInputRecording(path)` / `StopInputRecording()`은 VBlank 샘플링 시점의 입력 변화를 `--input-script` 호환 텍스트 형식으로 기록하고 크래시 정리 시 안전하게 플러시·종료합니다(`ctrl_probe`로 왕복 검증).
 
 ### 2.11. 오디오·SAS·ATRAC 계약 (`audio.h`, `sascore.h`, `atrac.h`)
@@ -278,7 +278,7 @@ Consumers register `repsp::hle::ge::Register()` and `repsp::hle::display::Regist
 
 ### 2.10. Controller Input and DMAC Contract (`ctrl.h`, `dmac.h`)
 
-Consumers register `repsp::hle::ctrl::Register()` and `repsp::hle::dmac::Register()` for `sceCtrl` (3 NIDs) and `sceDmac` (`sceDmacMemcpy`), and call `Shutdown()` on exit. `repsp::hle::ctrl::SetInputSource(fn)` injects a custom `fn(vcount) -> ControllerState` source instead of polling `platform::InputBackend` (pass `nullptr` to restore). `repsp::hle::ctrl::GetStats()` / `FormatStats()` expose sampling cycle/mode and sample counters. `StartInputRecording(path)` / `StopInputRecording()` record button changes at VBlank sampling points in `--input-script`-compatible format and flush cleanly via crash cleanup (`ctrl_probe` round-trip verified).
+Consumers register `repsp::hle::ctrl::Register()` and `repsp::hle::dmac::Register()` for `sceCtrl` (3 NIDs) and `sceDmac` (`sceDmacMemcpy`), and call `Shutdown()` on exit. `repsp::hle::ctrl::SetInputSource(fn)` injects a custom `fn(vcount) -> ControllerState` source instead of polling `platform::InputBackend` (pass `nullptr` to restore), and `SetButtonFilter(fn)` transforms the button mask returned by `sceCtrlReadBuffer*` on the calling guest thread while keeping input recording (`--input-record`) on pre-filter human presses. `repsp::hle::ctrl::GetStats()` / `FormatStats()` expose sampling cycle/mode and sample counters. `StartInputRecording(path)` / `StopInputRecording()` record button changes at VBlank sampling points in `--input-script`-compatible format and flush cleanly via crash cleanup (`ctrl_probe` round-trip verified).
 
 ### 2.11. Audio, SAS Synthesizer, and ATRAC Contract (`audio.h`, `sascore.h`, `atrac.h`)
 

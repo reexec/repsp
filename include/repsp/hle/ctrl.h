@@ -32,12 +32,17 @@ struct CtrlStats
 };
 
 using InputSourceFn = std::function<platform::ControllerState(uint32_t vcount)>;
+using ButtonFilterFn = std::function<uint32_t(uint32_t buttons)>;
 
 void Register();
 void Shutdown();
 
 // Override the input source for deterministic testing (pass nullptr to restore platform polling).
 void SetInputSource(InputSourceFn fn);
+
+// Optional filter applied to button masks returned by sceCtrlReadBuffer* / sceCtrlPeekBuffer*
+// on the calling guest thread (pass nullptr to clear). Input recording logs the pre-filter value.
+void SetButtonFilter(ButtonFilterFn fn);
 
 // Record button state changes in --input-script format (<vblank> <button names>).
 bool StartInputRecording(const std::string& path);
