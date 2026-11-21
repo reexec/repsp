@@ -1191,6 +1191,70 @@ void HleUtilityMsgDialogShutdownStart()
     recomp::Return(static_cast<uint32_t>(kSceKernelErrorOk));
 }
 
+// PSPSDK psputility_sysparam.h system parameter IDs and return code (BSD).
+constexpr int32_t kSysParamIdAdhocChannel = 2;
+constexpr int32_t kSysParamIdWlanPowersave = 3;
+constexpr int32_t kSysParamIdDateFormat = 4;
+constexpr int32_t kSysParamIdTimeFormat = 5;
+constexpr int32_t kSysParamIdTimezone = 6;
+constexpr int32_t kSysParamIdDaylightSavings = 7;
+constexpr int32_t kSysParamIdLanguage = 8;
+constexpr int32_t kSysParamIdButtonAssign = 9;
+constexpr int32_t kSysParamRetvalFail = static_cast<int32_t>(0x80110103u);
+
+void HleUtilityGetSystemParamInt()
+{
+    const int32_t id = recomp::Arg<int32_t>(0);
+    const uint32_t out_addr = recomp::Arg<uint32_t>(1);
+    if (out_addr == 0 || !IsValidRange(out_addr, 4u))
+    {
+        recomp::Return(kSceUtilityErrorInvalidParam);
+        return;
+    }
+
+    int32_t value = 0;
+    switch (id)
+    {
+    case kSysParamIdAdhocChannel:
+        value = 0; // Automatic
+        break;
+    case kSysParamIdWlanPowersave:
+        value = 0; // Off
+        break;
+    case kSysParamIdDateFormat:
+        value = 0; // YYYYMMDD
+        break;
+    case kSysParamIdTimeFormat:
+        value = 0; // 24-hour
+        break;
+    case kSysParamIdTimezone:
+        value = 0; // UTC
+        break;
+    case kSysParamIdDaylightSavings:
+        value = 0; // Standard
+        break;
+    case kSysParamIdLanguage:
+        value = 1; // English (PSP_SYSTEMPARAM_LANGUAGE_ENGLISH)
+        break;
+    case kSysParamIdButtonAssign:
+        value = 0; // Circle confirm
+        break;
+    default:
+        runtime::Log(runtime::LogLevel::kWarn, "[sceUtility] Unknown GetSystemParamInt id=%d", id);
+        recomp::Return(kSysParamRetvalFail);
+        return;
+    }
+
+    WriteU32(out_addr, static_cast<uint32_t>(value));
+    recomp::Return(kSceKernelErrorOk);
+}
+
+// Firmware AV/Net/common modules are already provided as HLE libraries by repsp.
+void HleUtilityModuleLoadUnloadOk()
+{
+    recomp::Return(kSceKernelErrorOk);
+}
+
 } // namespace
 
 void Register(const Config& config)
@@ -1214,6 +1278,14 @@ void Register(const Config& config)
     reg.Register("sceUtility", 0x9A1C91D7u, "sceUtilityMsgDialogGetStatus", HleUtilityMsgDialogGetStatus);
     reg.Register("sceUtility", 0x95FC253Bu, "sceUtilityMsgDialogUpdate", HleUtilityMsgDialogUpdate);
     reg.Register("sceUtility", 0x67AF3428u, "sceUtilityMsgDialogShutdownStart", HleUtilityMsgDialogShutdownStart);
+
+    reg.RegisterByName("sceUtility", "sceUtilityGetSystemParamInt", HleUtilityGetSystemParamInt);
+    reg.RegisterByName("sceUtility", "sceUtilityLoadModule", HleUtilityModuleLoadUnloadOk);
+    reg.RegisterByName("sceUtility", "sceUtilityUnloadModule", HleUtilityModuleLoadUnloadOk);
+    reg.RegisterByName("sceUtility", "sceUtilityLoadAvModule", HleUtilityModuleLoadUnloadOk);
+    reg.RegisterByName("sceUtility", "sceUtilityUnloadAvModule", HleUtilityModuleLoadUnloadOk);
+    reg.RegisterByName("sceUtility", "sceUtilityLoadNetModule", HleUtilityModuleLoadUnloadOk);
+    reg.RegisterByName("sceUtility", "sceUtilityUnloadNetModule", HleUtilityModuleLoadUnloadOk);
 }
 
 void Shutdown()

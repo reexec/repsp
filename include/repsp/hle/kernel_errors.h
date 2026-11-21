@@ -31,6 +31,7 @@ constexpr int32_t kSceKernelErrorUnknownThid = static_cast<int32_t>(0x80020198u)
 constexpr int32_t kSceKernelErrorUnknownSemid = static_cast<int32_t>(0x80020199u);     // SCE_KERNEL_ERROR_UNKNOWN_SEMID
 constexpr int32_t kSceKernelErrorUnknownEvfid = static_cast<int32_t>(0x8002019Au);     // SCE_KERNEL_ERROR_UNKNOWN_EVFID
 constexpr int32_t kSceKernelErrorUnknownCbid = static_cast<int32_t>(0x8002019Du);      // SCE_KERNEL_ERROR_UNKNOWN_CBID
+constexpr int32_t kSceKernelErrorUnknownVplid = static_cast<int32_t>(0x8002019Eu);     // SCE_KERNEL_ERROR_UNKNOWN_VPLID
 constexpr int32_t kSceKernelErrorNotDormant = static_cast<int32_t>(0x8002019Fu);       // SCE_KERNEL_ERROR_NOT_DORMANT
 constexpr int32_t kSceKernelErrorDormant = static_cast<int32_t>(0x800201A0u);          // SCE_KERNEL_ERROR_DORMANT
 constexpr int32_t kSceKernelErrorIllegalPriority = static_cast<int32_t>(0x800201A3u);  // SCE_KERNEL_ERROR_ILLEGAL_PRIORITY
@@ -58,6 +59,7 @@ constexpr int32_t kSceKernelErrorInvalidMode = static_cast<int32_t>(0x80000107u)
 constexpr int32_t kSceKernelErrorInvalidValue = static_cast<int32_t>(0x800001FEu);    // SCE_ERROR_INVALID_VALUE
 
 // ModuleMgr errors (uOFW)
+constexpr int32_t kSceKernelErrorUnknownModule = static_cast<int32_t>(0x8002013Eu);      // SCE_KERNEL_ERROR_UNKNOWN_MODULE
 constexpr int32_t kSceKernelErrorPrxTypeUnsupported = static_cast<int32_t>(0x80020148u); // SCE_KERNEL_ERROR_PRX_TYPE_UNSUPPORTED
 
 // sceAudio errors (uOFW kd/audio, PSPSDK pspaudio.h)

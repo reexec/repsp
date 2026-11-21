@@ -100,6 +100,11 @@ constexpr uint32_t kAddrHostWaitMain = 0x0880E020u;
 constexpr uint32_t kAddrHostWaitHigh = 0x0880E030u;
 constexpr uint32_t kAddrDelayMinWaiter = 0x0880E040u;
 constexpr uint32_t kAddrDelayMinInspector = 0x0880E050u;
+constexpr uint32_t kAddrVplMain = 0x0880E060u;
+constexpr uint32_t kAddrVplWaiter = 0x0880E070u;
+
+int32_t g_vpl = 0;
+uint32_t g_vpl_waiter_addr = 0;
 
 int32_t g_delay_min_waiter_uid = 0;
 std::vector<int64_t> g_delay_min_observed_us;
@@ -451,6 +456,74 @@ void FakeCallGuest(uint32_t addr)
         HleCall("sceKernelSleepThread"); // forbidden inside interrupt handler
         break;
     }
+    case kAddrVplMain:
+    {
+        auto& mem = GetGuestMemory();
+        WriteStr(0x09000B00u, "test_vpl");
+        WriteStr(0x09000B20u, "vpl_waiter");
+
+        g_vpl = static_cast<int32_t>(HleCall("sceKernelCreateVpl", 0x09000B00u, 2u, 0u, 512u, 0u));
+        TEST_ASSERT(g_vpl > 0);
+
+        // ReferVplStatus before allocations
+        TEST_ASSERT(HleCall("sceKernelReferVplStatus", static_cast<uint32_t>(g_vpl), 0x09000B40u) == 0);
+        TEST_ASSERT(mem.ReadU32(0x09000B40u + 0x28u) == 512u);
+        TEST_ASSERT(mem.ReadU32(0x09000B40u + 0x2Cu) == 512u);
+
+        // Allocate two 256-byte blocks filling the 512-byte pool
+        TEST_ASSERT(HleCall("sceKernelAllocateVpl", static_cast<uint32_t>(g_vpl), 256u, 0x09000B80u, 0u) == 0);
+        TEST_ASSERT(HleCall("sceKernelAllocateVpl", static_cast<uint32_t>(g_vpl), 256u, 0x09000B84u, 0u) == 0);
+        const uint32_t b1 = mem.ReadU32(0x09000B80u);
+        const uint32_t b2 = mem.ReadU32(0x09000B84u);
+        TEST_ASSERT(b1 != 0 && b2 != 0 && b1 != b2);
+        TEST_ASSERT((b1 & 7u) == 0 && (b2 & 7u) == 0);
+
+        // Exhaustion checks: TryAllocateVpl -> NO_MEMORY, zero-timeout AllocateVpl -> WAIT_TIMEOUT
+        TEST_ASSERT(static_cast<int32_t>(HleCall("sceKernelTryAllocateVpl", static_cast<uint32_t>(g_vpl), 16u, 0x09000B88u))
+                    == kSceKernelErrorNoMemory);
+        mem.WriteU32(0x09000B8Cu, 0u);
+        TEST_ASSERT(static_cast<int32_t>(HleCall("sceKernelAllocateVpl", static_cast<uint32_t>(g_vpl), 16u, 0x09000B88u, 0x09000B8Cu))
+                    == kSceKernelErrorWaitTimeout);
+
+        // Spawn higher-priority waiter needing 384 bytes (requires coalescing b1 + b2)
+        int32_t tw = static_cast<int32_t>(HleCall("sceKernelCreateThread", 0x09000B20u, kAddrVplWaiter, 0x18u, 0x4000u, 0u));
+        TEST_ASSERT(tw > 0);
+        TEST_ASSERT(HleCall("sceKernelStartThread", static_cast<uint32_t>(tw), 0u, 0u) == 0);
+        TEST_ASSERT(g_vpl_waiter_addr == 0);
+
+        // Free b1 (256 B): still not enough for 384 B
+        TEST_ASSERT(HleCall("sceKernelFreeVpl", static_cast<uint32_t>(g_vpl), b1) == 0);
+        TEST_ASSERT(g_vpl_waiter_addr == 0);
+
+        // Free b2 (256 B): coalesces to 512 B, wakes waiter immediately (higher prio)
+        TEST_ASSERT(HleCall("sceKernelFreeVpl", static_cast<uint32_t>(g_vpl), b2) == 0);
+        TEST_ASSERT(HleCall("sceKernelWaitThreadEnd", static_cast<uint32_t>(tw), 0u) == 0);
+        TEST_ASSERT(g_vpl_waiter_addr != 0);
+
+        // Pool is fully free again after waiter freed its block
+        TEST_ASSERT(HleCall("sceKernelReferVplStatus", static_cast<uint32_t>(g_vpl), 0x09000B40u) == 0);
+        TEST_ASSERT(mem.ReadU32(0x09000B40u + 0x2Cu) == 512u);
+
+        TEST_ASSERT(HleCall("sceKernelDeleteVpl", static_cast<uint32_t>(g_vpl)) == 0);
+        TEST_ASSERT(static_cast<int32_t>(HleCall("sceKernelDeleteVpl", static_cast<uint32_t>(g_vpl)))
+                    == kSceKernelErrorUnknownVplid);
+        g_log.push_back("vpl:done");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrVplWaiter:
+    {
+        auto& mem = GetGuestMemory();
+        mem.WriteU32(0x09000B90u, 0u);
+        TEST_ASSERT(HleCall("sceKernelAllocateVpl", static_cast<uint32_t>(g_vpl), 384u, 0x09000B90u, 0u) == 0);
+        g_vpl_waiter_addr = mem.ReadU32(0x09000B90u);
+        TEST_ASSERT(g_vpl_waiter_addr != 0);
+        mem.WriteU32(g_vpl_waiter_addr, 0x12345678u);
+        TEST_ASSERT(HleCall("sceKernelFreeVpl", static_cast<uint32_t>(g_vpl), g_vpl_waiter_addr) == 0);
+        g_log.push_back("vpl_waiter:got");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
     case kAddrDeepStack:
     {
         g_cpu.gpr[2] = DeepStackTouch(600);
@@ -746,6 +819,16 @@ int main()
     TEST_ASSERT(GetScheduler().StartThread(t_dinsp, 0, 0) == 0);
     GetScheduler().Run(t_dwait);
     TEST_ASSERT((g_delay_min_observed_us == std::vector<int64_t>{ 200, 200, 5000, 200, 200, 5000 }));
+
+    // 17. VPL create, allocate, exhaustion, coalescing free, wait/wake handoff, delete
+    kernel::Register(kernel::KernelConfig{});
+    g_log.clear();
+    g_vpl = 0;
+    g_vpl_waiter_addr = 0;
+    int32_t t_vpl = GetScheduler().CreateThread("vpl_main", kAddrVplMain, 0x20, 0x4000, 0, 0);
+    TEST_ASSERT(t_vpl > 0);
+    GetScheduler().Run(t_vpl);
+    TEST_ASSERT((g_log == std::vector<std::string>{ "vpl_waiter:got", "vpl:done" }));
 
     GetScheduler().Reset();
     std::printf("kernel_sched_probe passed.\n");

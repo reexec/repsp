@@ -491,6 +491,23 @@ int main()
     TEST_ASSERT(stop_res.stopped);
     TEST_ASSERT(stop_res.stop_reason.find("99") != std::string::npos);
 
+    // 8. System parameter queries and firmware module load/unload helpers.
+    const uint32_t kParamOutAddr = 0x08920000u;
+    mem.WriteU32(kParamOutAddr, 0xDEADBEEFu);
+    TEST_ASSERT(CallNid(0xA5DA2406u /* sceUtilityGetSystemParamInt */, 8u, kParamOutAddr) == 0);
+    TEST_ASSERT(mem.ReadU32(kParamOutAddr) == 1u);
+    TEST_ASSERT(CallNid(0xA5DA2406u, 9u, kParamOutAddr) == 0);
+    TEST_ASSERT(mem.ReadU32(kParamOutAddr) == 0u);
+    TEST_ASSERT(CallNid(0xA5DA2406u, 999u, kParamOutAddr) == static_cast<int32_t>(0x80110103u));
+    TEST_ASSERT(CallNid(0xA5DA2406u, 8u, 0u) == repsp::hle::kSceUtilityErrorInvalidParam);
+
+    TEST_ASSERT(CallNid(0xC629AF26u /* sceUtilityLoadAvModule */, 0u) == 0);
+    TEST_ASSERT(CallNid(0xF7D8D092u /* sceUtilityUnloadAvModule */, 0u) == 0);
+    TEST_ASSERT(CallNid(0x1579A159u /* sceUtilityLoadNetModule */, 1u) == 0);
+    TEST_ASSERT(CallNid(0x64D50C56u /* sceUtilityUnloadNetModule */, 1u) == 0);
+    TEST_ASSERT(CallNid(0x2A2B3DE0u /* sceUtilityLoadModule */, 0x300u) == 0);
+    TEST_ASSERT(CallNid(0xE49BFE92u /* sceUtilityUnloadModule */, 0x300u) == 0);
+
     repsp::hle::utility::Shutdown();
     mem.Shutdown();
 

@@ -54,14 +54,16 @@ void Register(const KernelConfig& config)
     detail::RegisterSysMem();
     detail::RegisterThreadManThread();
     detail::RegisterThreadManSync();
+    detail::RegisterThreadManVpl();
     detail::RegisterIoFileMgr();
-    detail::RegisterModuleMgr();
+    detail::RegisterModuleMgr(config.module_image_base, config.module_image_size);
     detail::RegisterLoadExec();
     detail::RegisterUtils();
     detail::RegisterStdio();
     detail::RegisterKernelLibrary();
     detail::RegisterPowerSuspend();
     detail::RegisterUmd();
+    detail::RegisterImpose();
 }
 
 std::vector<OpenFileInfo> GetOpenFilesSnapshot()

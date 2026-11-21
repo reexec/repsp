@@ -60,7 +60,7 @@ flowchart BT
 | `repsp_codec` | `repsp::codec` | `include/repsp/codec/` | 코덱 디코더 계약 (`AtracDecoder`/`SilentDecoder`, `AvcDecoder`/`BlankAvcDecoder`) |
 | `repsp_gpu` | `repsp::gpu` | `include/repsp/gpu/` | GE 디스플레이 리스트 해석기(`GeInterpreter`), 소프트웨어 래스터라이저(기본) 및 OpenGL 3.3 Core 백엔드(`RenderBackend`, 공용 `texture_decode`) |
 | `repsp_recomp` | `repsp::recomp` | `include/repsp/recomp/` | lifter 중립 CPU 콜백 계약(`repsp_guest_cpu_ops`), 인자/반환 도우미(GPR/FPR), C 메모리 접근 함수, 안전점 `repsp_recomp_poll` |
-| `repsp_hle_kernel` | `repsp::hle_kernel` | `include/repsp/hle/` | `KernelConfig` 기반 커널/UMD HLE 65개 함수 등록(`repsp::hle::kernel::Register`), 오류 코드 정의(`kernel_errors.h`) |
+| `repsp_hle_kernel` | `repsp::hle_kernel` | `include/repsp/hle/` | `KernelConfig` 기반 커널/UMD/Impose HLE 80개 함수 등록(`repsp::hle::kernel::Register`), 오류 코드 정의(`kernel_errors.h`) |
 | `repsp_hle_ge` | `repsp::hle_ge` | `include/repsp/hle/ge.h` | `sceGe_user` 7개 NID 등록(`repsp::hle::ge::Register`), `SIGNAL`/`FINISH` 인터럽트 콜백 전달 |
 | `repsp_hle_display` | `repsp::hle_display` | `include/repsp/hle/display.h` | `sceDisplay` 6개 NID 등록(`repsp::hle::display::Register`), `VblankClock` 구독, RGBA8 변환 및 BMP 프레임 덤프 |
 | `repsp_hle_ctrl` | `repsp::hle_ctrl` | `include/repsp/hle/ctrl.h` | `sceCtrl` 3개 NID 등록(`repsp::hle::ctrl::Register`), `VblankClock` 기반 64항목 입력 링 버퍼, 테스트/스크립트용 `SetInputSource` 주입 |
@@ -69,7 +69,7 @@ flowchart BT
 | `repsp_hle_sascore` | `repsp::hle_sascore` | `include/repsp/hle/sascore.h` | `sceSasCore` 13개 NID 등록, Sony VAG ADPCM/ADSR 32-보이스 믹서(드라이 전용 리버브) |
 | `repsp_hle_atrac` | `repsp::hle_atrac` | `include/repsp/hle/atrac.h` | `sceAtrac3plus` 11개 NID 등록, RIFF 파서·스트림 상태 머신 (`repsp::codec::AtracDecoder` 사용) |
 | `repsp_hle_mpeg` | `repsp::hle_mpeg` | `include/repsp/hle/mpeg.h` | `sceMpeg` 24개 NID 등록, PSMF 파서, MPEG-2 PS/PES 디먹서, 링 버퍼 게스트 콜백, AVC/ATRAC AU 큐 (`repsp::codec` 디코더 사용) |
-| `repsp_hle_utility` | `repsp::hle_utility` | `include/repsp/hle/utility.h` | `sceUtility` 8개 NID 등록(Savedata·MsgDialog), 단일 다이얼로그 상태 머신, 호스트 평문 슬롯/`PARAM.SFO` 입출력, `DialogPolicy` |
+| `repsp_hle_utility` | `repsp::hle_utility` | `include/repsp/hle/utility.h` | `sceUtility` 15개 NID 등록(Savedata·MsgDialog·SystemParamInt·모듈 로드/언로드), 단일 다이얼로그 상태 머신, 호스트 평문 슬롯/`PARAM.SFO` 입출력, `DialogPolicy` |
 
 ---
 
@@ -169,7 +169,7 @@ PSP 재배치 가능 모듈(PRX, `e_type 0xFFA0`)과 고정 주소 실행 파일
 
 ### 2.8. 커널 설정 및 스케줄러 계약 (`kernel.h`, `scheduler.h`)
 
-* 소비자는 `repsp::hle::kernel::Register(const KernelConfig&)`를 통해 장치 마운트(`disc0:`, `umd0:`, `ms0:` 등), 로드된 메인 모듈 이미지 범위(`module_image_base`, `module_image_size`)를 등록하고 65개 커널·UMD HLE 함수를 활성화합니다.
+* 소비자는 `repsp::hle::kernel::Register(const KernelConfig&)`를 통해 장치 마운트(`disc0:`, `umd0:`, `ms0:` 등), 로드된 메인 모듈 이미지 범위(`module_image_base`, `module_image_size`)를 등록하고 80개 커널·UMD·Impose HLE 함수를 활성화합니다.
 * `repsp::runtime::GetScheduler()`는 `CreateThread`로 첫 `module_start` 스레드를 만들고 `Run(entry_thread_uid)`로 단일 코어 바톤 스케줄러를 구동합니다. 게스트 워커 스레드 내부의 `RaiseStop`이나 하드웨어 결함은 각 워커의 `GuardedRun`이 포착한 뒤, 모든 워커를 join하고 호출자 스레드의 바깥 `GuardedRun`으로 전파합니다. 교착 시에는 모든 스레드와 대기 대상을 담아 `RaiseStop`으로 멈춥니다.
 * **인터럽트 전달 계약**: `Scheduler::QueueInterrupt`로 적재된 인터럽트(예: GE `SIGNAL`/`FINISH`)는 `repsp_recomp_hle_call` 종료 시점, `repsp_recomp_poll()`, 유휴 루프 등 안전점에서 16 KiB 커널 인터럽트 스택(`0x08010000`)을 사용해 전달됩니다. 인터럽트 핸들러 안에서는 블로킹 대기·명시적 양보(`WaitCurrent`/`YieldCurrent`)가 금지되며 위반 시 즉시 `RaiseStop`으로 정지합니다.
 * **스레드 문맥 게스트 함수 호출**: `Scheduler::CallGuestFunction(entry, a0, a1, a2, a3)`는 현재 실행 중인 게스트 스레드 컨텍스트 위에서 레지스터(특히 호출자 보존 `$s0..$s7`, `$fp`, `$sp`, `$ra`)를 저장·복원한 뒤 게스트 함수(예: `sceMpegRingbufferPut` 읽기 콜백)를 호출하고 `$v0`를 반환합니다. 인터럽트 스택으로 전환하지 않으므로 콜백 내부에서 블로킹 커널 대기(`sceIoRead`, `sceKernelDelayThread` 등)가 정상 동작합니다.
