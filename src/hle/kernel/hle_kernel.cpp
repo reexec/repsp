@@ -64,6 +64,7 @@ void Register(const KernelConfig& config)
     detail::RegisterPowerSuspend();
     detail::RegisterUmd();
     detail::RegisterImpose();
+    detail::RegisterRtc();
 }
 
 std::vector<OpenFileInfo> GetOpenFilesSnapshot()

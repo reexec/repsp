@@ -187,6 +187,32 @@ int main()
     repsp_recomp_hle_call(ComputeNid("sceImposeSetUMDPopup"));
     TEST_ASSERT(static_cast<int32_t>(g_cpu.gpr[2]) == kSceKernelErrorOk);
 
+    // 8. sceRtcGetCurrentClockLocalTime
+    g_cpu.gpr[4] = 0u;
+    repsp_recomp_hle_call(ComputeNid("sceRtcGetCurrentClockLocalTime"));
+    TEST_ASSERT(static_cast<int32_t>(g_cpu.gpr[2]) == static_cast<int32_t>(0x80510002u));
+
+    const uint32_t rtc_addr = 0x09001000u;
+    g_cpu.gpr[4] = rtc_addr;
+    repsp_recomp_hle_call(ComputeNid("sceRtcGetCurrentClockLocalTime"));
+    TEST_ASSERT(static_cast<int32_t>(g_cpu.gpr[2]) == kSceKernelErrorOk);
+    {
+        const uint16_t year = GetGuestMemory().ReadU16(rtc_addr + 0x00u);
+        const uint16_t month = GetGuestMemory().ReadU16(rtc_addr + 0x02u);
+        const uint16_t day = GetGuestMemory().ReadU16(rtc_addr + 0x04u);
+        const uint16_t hour = GetGuestMemory().ReadU16(rtc_addr + 0x06u);
+        const uint16_t minute = GetGuestMemory().ReadU16(rtc_addr + 0x08u);
+        const uint16_t second = GetGuestMemory().ReadU16(rtc_addr + 0x0Au);
+        const uint32_t usec = GetGuestMemory().ReadU32(rtc_addr + 0x0Cu);
+        TEST_ASSERT(year >= 2000u && year <= 2100u);
+        TEST_ASSERT(month >= 1u && month <= 12u);
+        TEST_ASSERT(day >= 1u && day <= 31u);
+        TEST_ASSERT(hour <= 23u);
+        TEST_ASSERT(minute <= 59u);
+        TEST_ASSERT(second <= 59u);
+        TEST_ASSERT(usec < 1000000u);
+    }
+
     std::printf("sysmem_probe passed.\n");
     return 0;
 }

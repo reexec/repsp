@@ -145,7 +145,40 @@ int main()
     TEST_ASSERT(static_cast<int64_t>(GetGuestMemory().ReadU64(res_addr)) == 5);
     TEST_ASSERT(std::memcmp(GetGuestMemory().Translate(buf_addr), "HELLO", 5) == 0);
 
-    TEST_ASSERT(CallHle3("sceIoClose", static_cast<uint32_t>(afd), 0, 0) == 0);
+    TEST_ASSERT(CallHle3("sceIoCloseAsync", static_cast<uint32_t>(afd), 0, 0) == 0);
+    // Busy while CloseAsync result has not been collected
+    TEST_ASSERT(CallHle3("sceIoCloseAsync", static_cast<uint32_t>(afd), 0, 0) == kSceKernelErrorAsyncBusy);
+    GetGuestMemory().WriteU64(res_addr, 0xDEADBEEFULL);
+    TEST_ASSERT(CallHle3("sceIoWaitAsync", static_cast<uint32_t>(afd), res_addr, 0) == 0);
+    TEST_ASSERT(static_cast<int64_t>(GetGuestMemory().ReadU64(res_addr)) == 0);
+    // Descriptor is gone once CloseAsync is collected
+    TEST_ASSERT(CallHle3("sceIoWaitAsync", static_cast<uint32_t>(afd), res_addr, 0) == kSceKernelErrorBadf);
+    TEST_ASSERT(CallHle3("sceIoCloseAsync", static_cast<uint32_t>(afd), 0, 0) == kSceKernelErrorBadf);
+
+    // 4b. CloseAsync collected via PollAsync
+    int32_t afd2 = CallHle3("sceIoOpenAsync", path_addr, 0x0001, 0);
+    TEST_ASSERT(afd2 >= 3);
+    TEST_ASSERT(CallHle3("sceIoWaitAsyncCB", static_cast<uint32_t>(afd2), res_addr, 0) == 0);
+    TEST_ASSERT(CallHle3("sceIoCloseAsync", static_cast<uint32_t>(afd2), 0, 0) == 0);
+    TEST_ASSERT(CallHle3("sceIoPollAsync", static_cast<uint32_t>(afd2), res_addr, 0) == 0);
+    TEST_ASSERT(static_cast<int64_t>(GetGuestMemory().ReadU64(res_addr)) == 0);
+    TEST_ASSERT(CallHle3("sceIoPollAsync", static_cast<uint32_t>(afd2), res_addr, 0) == kSceKernelErrorBadf);
+
+    // 4c. sceIoGetstat on file, directory, and missing path
+    const uint32_t stat_addr = 0x09003000u;
+    WriteGuestStr(path_addr, "disc0:/PSP_GAME/USRDIR/DATA.BIN");
+    TEST_ASSERT(CallHle3("sceIoGetstat", path_addr, stat_addr, 0) == 0);
+    TEST_ASSERT((GetGuestMemory().ReadU32(stat_addr + 0x00u) & 0xF000u) == 0x2000u);
+    TEST_ASSERT(GetGuestMemory().ReadU32(stat_addr + 0x04u) == 0x0020u);
+    TEST_ASSERT(GetGuestMemory().ReadU64(stat_addr + 0x08u) == 14u);
+
+    WriteGuestStr(path_addr, "disc0:/PSP_GAME/USRDIR");
+    TEST_ASSERT(CallHle3("sceIoGetstat", path_addr, stat_addr, 0) == 0);
+    TEST_ASSERT((GetGuestMemory().ReadU32(stat_addr + 0x00u) & 0xF000u) == 0x1000u);
+    TEST_ASSERT(GetGuestMemory().ReadU32(stat_addr + 0x04u) == 0x0010u);
+
+    WriteGuestStr(path_addr, "disc0:/PSP_GAME/USRDIR/NO_SUCH_FILE.BIN");
+    TEST_ASSERT(CallHle3("sceIoGetstat", path_addr, stat_addr, 0) == kSceKernelErrorErrnoEnoent);
 
     // 5. ModuleMgr HLE PRX whitelist checks (AV modules vs unknown PRX)
     {
