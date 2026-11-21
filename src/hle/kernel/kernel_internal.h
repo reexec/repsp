@@ -19,6 +19,7 @@ void RegisterKernelLibrary();
 void RegisterPowerSuspend();
 void RegisterUmd();
 void RegisterImpose();
+void RegisterRtc();
 
 void ResetIoFiles();
 void ResetThreadManSync();
