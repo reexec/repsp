@@ -62,7 +62,13 @@ struct HleModuleObject
     runtime::KernelUid uid = 0;
     std::string path;
     std::string name;
+    uint32_t base = 0;
+    uint32_t size = 0;
 };
+
+runtime::KernelUid g_main_module_uid = 0;
+uint32_t g_main_module_base = 0;
+uint32_t g_main_module_size = 0;
 
 std::string ReadGuestCString(uint32_t addr, size_t max_len = 512)
 {
@@ -172,21 +178,57 @@ void HleSelfStopUnloadModule()
     platform::RaiseStop("module self-unload");
 }
 
+void HleGetModuleId()
+{
+    if (g_main_module_uid <= 0)
+    {
+        recomp::Return(kSceKernelErrorUnknownModule);
+        return;
+    }
+    recomp::Return(g_main_module_uid);
+}
+
+void HleGetModuleIdByAddress()
+{
+    uint32_t addr = recomp::Arg<uint32_t>(0);
+    if (g_main_module_uid > 0 && g_main_module_size > 0 &&
+        addr >= g_main_module_base &&
+        static_cast<uint64_t>(addr) < static_cast<uint64_t>(g_main_module_base) + g_main_module_size)
+    {
+        recomp::Return(g_main_module_uid);
+        return;
+    }
+    recomp::Return(kSceKernelErrorUnknownModule);
+}
+
 } // namespace
 
 void ResetModules()
 {
-    // Managed by KernelObjectTable.
+    g_main_module_uid = 0;
+    g_main_module_base = 0;
+    g_main_module_size = 0;
 }
 
-void RegisterModuleMgr()
+void RegisterModuleMgr(uint32_t main_module_base, uint32_t main_module_size)
 {
+    g_main_module_base = main_module_base;
+    g_main_module_size = main_module_size;
+    auto main_mod = std::make_shared<HleModuleObject>();
+    main_mod->name = "main_module";
+    main_mod->base = main_module_base;
+    main_mod->size = main_module_size;
+    main_mod->uid = runtime::GetKernelObjects().Create(runtime::KernelObjectType::kModule, main_mod);
+    g_main_module_uid = main_mod->uid;
+
     auto& reg = runtime::GetNidRegistry();
     reg.RegisterByName("ModuleMgrForUser", "sceKernelLoadModule", HleLoadModule);
     reg.RegisterByName("ModuleMgrForUser", "sceKernelStartModule", HleStartModule);
     reg.RegisterByName("ModuleMgrForUser", "sceKernelStopModule", HleStopModule);
     reg.RegisterByName("ModuleMgrForUser", "sceKernelUnloadModule", HleUnloadModule);
     reg.RegisterByName("ModuleMgrForUser", "sceKernelSelfStopUnloadModule", HleSelfStopUnloadModule);
+    reg.RegisterByName("ModuleMgrForUser", "sceKernelGetModuleId", HleGetModuleId);
+    reg.RegisterByName("ModuleMgrForUser", "sceKernelGetModuleIdByAddress", HleGetModuleIdByAddress);
 }
 
 } // namespace repsp::hle::kernel::detail

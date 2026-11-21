@@ -10,13 +10,14 @@ void RegisterSysMem();
 void RegisterThreadManThread();
 void RegisterThreadManSync();
 void RegisterIoFileMgr();
-void RegisterModuleMgr();
+void RegisterModuleMgr(uint32_t main_module_base, uint32_t main_module_size);
 void RegisterLoadExec();
 void RegisterUtils();
 void RegisterStdio();
 void RegisterKernelLibrary();
 void RegisterPowerSuspend();
 void RegisterUmd();
+void RegisterImpose();
 
 void ResetIoFiles();
 void ResetThreadManSync();

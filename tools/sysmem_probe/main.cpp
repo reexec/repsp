@@ -165,6 +165,28 @@ int main()
     TEST_ASSERT(CallSetCompiledSdkVersion(0x02060010u) == kSceKernelErrorOk);
     TEST_ASSERT(CallSetCompilerVersion(0x00030306u) == kSceKernelErrorOk);
 
+    // 7. ModuleMgr GetModuleId / GetModuleIdByAddress and sceImpose
+    repsp_recomp_hle_call(ComputeNid("sceKernelGetModuleId"));
+    int32_t main_mod_uid = static_cast<int32_t>(g_cpu.gpr[2]);
+    TEST_ASSERT(main_mod_uid > 0);
+
+    g_cpu.gpr[4] = 0x08804000u + 0x100u;
+    repsp_recomp_hle_call(ComputeNid("sceKernelGetModuleIdByAddress"));
+    TEST_ASSERT(static_cast<int32_t>(g_cpu.gpr[2]) == main_mod_uid);
+
+    g_cpu.gpr[4] = 0x09500000u;
+    repsp_recomp_hle_call(ComputeNid("sceKernelGetModuleIdByAddress"));
+    TEST_ASSERT(static_cast<int32_t>(g_cpu.gpr[2]) == kSceKernelErrorUnknownModule);
+
+    g_cpu.gpr[4] = 1u;
+    g_cpu.gpr[5] = 0u;
+    repsp_recomp_hle_call(ComputeNid("sceImposeSetLanguageMode"));
+    TEST_ASSERT(static_cast<int32_t>(g_cpu.gpr[2]) == kSceKernelErrorOk);
+
+    g_cpu.gpr[4] = 1u;
+    repsp_recomp_hle_call(ComputeNid("sceImposeSetUMDPopup"));
+    TEST_ASSERT(static_cast<int32_t>(g_cpu.gpr[2]) == kSceKernelErrorOk);
+
     std::printf("sysmem_probe passed.\n");
     return 0;
 }

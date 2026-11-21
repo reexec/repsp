@@ -11,6 +11,7 @@ target_sources(repsp_hle_kernel PRIVATE
     kernel/kernel_library.cpp
     kernel/power_suspend.cpp
     kernel/umd.cpp
+    kernel/impose.cpp
 )
 target_link_libraries(repsp_hle_kernel PUBLIC repsp_recomp)
 

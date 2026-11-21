@@ -58,6 +58,7 @@ constexpr int32_t kSceKernelErrorInvalidMode = static_cast<int32_t>(0x80000107u)
 constexpr int32_t kSceKernelErrorInvalidValue = static_cast<int32_t>(0x800001FEu);    // SCE_ERROR_INVALID_VALUE
 
 // ModuleMgr errors (uOFW)
+constexpr int32_t kSceKernelErrorUnknownModule = static_cast<int32_t>(0x8002013Eu);      // SCE_KERNEL_ERROR_UNKNOWN_MODULE
 constexpr int32_t kSceKernelErrorPrxTypeUnsupported = static_cast<int32_t>(0x80020148u); // SCE_KERNEL_ERROR_PRX_TYPE_UNSUPPORTED
 
 // sceAudio errors (uOFW kd/audio, PSPSDK pspaudio.h)
