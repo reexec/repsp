@@ -31,6 +31,7 @@ constexpr int32_t kSceKernelErrorUnknownThid = static_cast<int32_t>(0x80020198u)
 constexpr int32_t kSceKernelErrorUnknownSemid = static_cast<int32_t>(0x80020199u);     // SCE_KERNEL_ERROR_UNKNOWN_SEMID
 constexpr int32_t kSceKernelErrorUnknownEvfid = static_cast<int32_t>(0x8002019Au);     // SCE_KERNEL_ERROR_UNKNOWN_EVFID
 constexpr int32_t kSceKernelErrorUnknownCbid = static_cast<int32_t>(0x8002019Du);      // SCE_KERNEL_ERROR_UNKNOWN_CBID
+constexpr int32_t kSceKernelErrorUnknownVplid = static_cast<int32_t>(0x8002019Eu);     // SCE_KERNEL_ERROR_UNKNOWN_VPLID
 constexpr int32_t kSceKernelErrorNotDormant = static_cast<int32_t>(0x8002019Fu);       // SCE_KERNEL_ERROR_NOT_DORMANT
 constexpr int32_t kSceKernelErrorDormant = static_cast<int32_t>(0x800201A0u);          // SCE_KERNEL_ERROR_DORMANT
 constexpr int32_t kSceKernelErrorIllegalPriority = static_cast<int32_t>(0x800201A3u);  // SCE_KERNEL_ERROR_ILLEGAL_PRIORITY

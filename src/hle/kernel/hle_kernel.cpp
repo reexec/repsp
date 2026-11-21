@@ -54,6 +54,7 @@ void Register(const KernelConfig& config)
     detail::RegisterSysMem();
     detail::RegisterThreadManThread();
     detail::RegisterThreadManSync();
+    detail::RegisterThreadManVpl();
     detail::RegisterIoFileMgr();
     detail::RegisterModuleMgr(config.module_image_base, config.module_image_size);
     detail::RegisterLoadExec();

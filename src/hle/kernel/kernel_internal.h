@@ -9,6 +9,7 @@ namespace repsp::hle::kernel::detail
 void RegisterSysMem();
 void RegisterThreadManThread();
 void RegisterThreadManSync();
+void RegisterThreadManVpl();
 void RegisterIoFileMgr();
 void RegisterModuleMgr(uint32_t main_module_base, uint32_t main_module_size);
 void RegisterLoadExec();

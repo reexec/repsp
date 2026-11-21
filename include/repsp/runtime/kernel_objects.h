@@ -22,6 +22,7 @@ enum class KernelObjectType
     kPartitionBlock,
     kFile,
     kModule,
+    kVpl,
 };
 
 enum class LookupStatus

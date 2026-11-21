@@ -3,6 +3,7 @@ target_sources(repsp_hle_kernel PRIVATE
     kernel/sysmem.cpp
     kernel/threadman_thread.cpp
     kernel/threadman_sync.cpp
+    kernel/threadman_vpl.cpp
     kernel/iofilemgr.cpp
     kernel/modulemgr.cpp
     kernel/loadexec.cpp
