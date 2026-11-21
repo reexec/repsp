@@ -20,27 +20,30 @@
 
 | 반복 | 정지 NID / 사유 | 구현 내용 (출처) | 재실행 결과 |
 |---:|---|---|---|
-| 0 (시작점) | `(b) Unimplemented kernel NID`: `SysMemUserForUser` `0x7591C7DB` (`sceKernelSetCompiledSdkVersion`) | `src/hle/kernel/sysmem.cpp`에 `sceKernelSetCompiledSdkVersion` (`0x7591C7DB`), 같은 CRT 시작 묶음의 `sceKernelSetCompilerVersion` (`0xF77D77CB`), 그리고 `UserPartition`에 이미 구현된 조회 메서드를 노출하는 `sceKernelMaxFreeMemSize` (`0xA291F107`), `sceKernelTotalFreeMemSize` (`0xF919F628`) 추가(출처: uOFW / psprecomp `src/hle/sysmem.c`, **추정** → 실행·probe로 **확인됨**). | `sceKernelSetCompiledSdkVersion` 1회, `sceKernelSetCompilerVersion` 1회 호출 후 통과. 게스트가 `user_main` 스레드(우선순위 32, 스택 256 KiB)를 생성·시작한 뒤 해당 스레드 진입점에서 **디스패치 미스**로 정지. |
+| 1 | `(b) Unimplemented kernel NID`: `SysMemUserForUser` `0x7591C7DB` (`sceKernelSetCompiledSdkVersion`) | `src/hle/kernel/sysmem.cpp`에 `sceKernelSetCompiledSdkVersion` (`0x7591C7DB`), `sceKernelSetCompilerVersion` (`0xF77D77CB`), `sceKernelMaxFreeMemSize` (`0xA291F107`), `sceKernelTotalFreeMemSize` (`0xF919F628`) 추가(출처: uOFW / psprecomp `src/hle/sysmem.c`, **추정** → 실행·probe로 **확인됨**). | 소비자 패치(`0007-exec-scan-code-pointers.patch`) 적용 후 `user_main` 진입 및 `UserSbrk` 할당 통과 → `ModuleMgrForUser:sceKernelGetModuleIdByAddress` (`0xD8B73127`)에서 정지. |
+| 2 | `(b) Unimplemented kernel NID`: `ModuleMgrForUser` `0xD8B73127` (`sceKernelGetModuleIdByAddress`) | `src/hle/kernel/modulemgr.cpp`에 메인 모듈 `kModule` UID 등록 및 `sceKernelGetModuleIdByAddress` (`0xD8B73127`), `sceKernelGetModuleId` (`0xF0A26395`) 구현(`kSceKernelErrorUnknownModule = 0x8002013E`, 출처: PSPSDK / uOFW). | `sceKernelGetModuleIdByAddress` 1회 및 `sceKernelCpuSuspendIntr`/`ResumeIntr` 통과 → `sceUtility:sceUtilityGetSystemParamInt` (`0xA5DA2406`)에서 정지. |
+| 3 | `(a) Unimplemented non-kernel NID`: `sceUtility` `0xA5DA2406` (`sceUtilityGetSystemParamInt`) | `src/hle/utility/hle_utility.cpp`에 `sceUtilityGetSystemParamInt` (`0xA5DA2406`, PSPSDK `psputility_sysparam.h` ID 2~9 및 오류 `0x80110103`)과 모듈 로드/언로드 6종(`sceUtilityLoadModule`/`UnloadModule`, `LoadAvModule`/`UnloadAvModule`, `LoadNetModule`/`UnloadNetModule` — HLE 상주 성공 반환, 설계 §2) 구현. | `sceUtilityGetSystemParamInt(id=8)` 1회 통과 → `sceImpose:sceImposeSetLanguageMode` (`0x36AA6E91`)에서 정지. |
+| 4 | `(a) Unimplemented non-kernel NID`: `sceImpose` `0x36AA6E91` (`sceImposeSetLanguageMode`) | `src/hle/kernel/impose.cpp`에 `sceImposeSetLanguageMode` (`0x36AA6E91`)과 `sceImposeSetUMDPopup` (`0x72189C48`) 추가(출처: PSPSDK `pspimpose_driver.h` / uOFW `impose`). | `sceImposeSetLanguageMode(1, 0)` 1회 통과 후, C++ 정적 초기화자(`.data` 섹션 내부 코드)가 `lui+addiu`로 조립해 배열 생성자 도우미에 넘긴 함수 포인터에서 **디스패치 미스**로 일시 중단(소비자 리프터가 `.text` 바깥에 발견된 함수 내부의 `lui+addiu` 쌍을 스캔하지 않아 누락된 리프터 문제로 확인). |
 
-### 최종 정지 지점 (설계 §1 완료 조건 도달)
-* **정지 분류**: `(b) Unexpected runtime/HLE stop` — **미구현 NID가 아닌 디스패치 미스 (`Dispatch miss`, exit code 11)**
-* **관측 사실**: `module_start` 스레드가 두 버전 보고 호출을 마치고 `user_main` 스레드를 생성·기동했으나, 소비자 측 재컴파일 코드의 간접 호출 디스패치 표에 `user_main` 진입점이 등록되어 있지 않아 정지함(디스패치 `0`회, 표시 `0`프레임).
-* 설계 §1 멈춤 기준("미구현 NID가 아닌 이유로 멈추면 이 issue를 끝내고 그 지점을 보고한다")에 따라 여기서 반복을 종료합니다. 네트워크 모듈(`repsp_hle_net`)과 작은 함수들은 아직 호출되지 않아 미루었습니다.
+### 현재 정지 지점 (소비자 리프터 보고)
+* **정지 분류**: `(b) Unexpected runtime/HLE stop` — `Dispatch miss` (exit code 11, 디스패치 `0`, 표시 `0`프레임).
+* **원인**: `.data` 섹션 내부에 배치된 C++ 정적 초기화자 함수가 `lui+addiu` 쌍으로 조립한 함수 포인터를 간접 호출했으나, 리프터의 `lui+addiu` 스캔이 `.text` 범위에만 제한되어 대상 함수가 리프트되지 않았음. 리드 판단을 위해 여기서 중단하고 보고합니다.
 
 ---
 
 ## 3. 정적 임포트 대조 변화 (소비자 측)
 
-* `repsp` 등록 HLE NID 수: `146` → **`150`** (`+4`)
+* `repsp` 등록 HLE NID 수: `146` → `150` → **`161`** (`+15`)
 * `nid_names.cpp` 공개 이름 수: `216` → **`283`** (`+67`)
-* 소비자 정적 커버리지: **`141 / 229` (미구현 88)** → **`145 / 229` (미구현 84)** (`SysMemUserForUser`: `3/8` → `7/8`)
+* 소비자 정적 커버리지: **`141 / 229` (미구현 88)** → **`154 / 229` (미구현 75)** (`SysMemUserForUser` 7/8, `ModuleMgrForUser` 4/5, `sceUtility` 13/17, `sceImpose` 2/2)
 
 ---
 
 ## 4. probe 및 단독 빌드 검증
 
-* `tools/sysmem_probe/main.cpp`: `sceKernelTotalFreeMemSize`, `sceKernelMaxFreeMemSize`(할당으로 인한 분할 시 `max < total` 및 해제 후 복원 확인), `sceKernelSetCompiledSdkVersion`, `sceKernelSetCompilerVersion` 검증을 추가했습니다.
-* `ARCHITECTURE.md`: `repsp_hle_kernel` 등록 함수 수(`65` → `69`)를 갱신했습니다.
+* `tools/sysmem_probe/main.cpp`: `SysMem` 4종, `ModuleMgr` 2종(`GetModuleId`, `GetModuleIdByAddress`), `sceImpose` 2종 검증 추가.
+* `tools/utility_probe/main.cpp`: `sceUtilityGetSystemParamInt` 및 `sceUtilityLoad*/Unload*` 6종 검증 추가.
+* `ARCHITECTURE.md`: `repsp_hle_kernel` (`73`개), `repsp_hle_utility` (`15`개) 갱신.
 * **Win64 Debug (`win64-debug`)**: `repsp` 타깃 경고 **0건**(서드파티 `imgui.vcxproj` `C4819` 2건 동일), CTest **23/23 통과**.
 * **Win64 Release (`win64-release`)**: `repsp` 타깃 경고 **0건**(동일 `C4819` 2건), CTest **23/23 통과**.
 
@@ -61,20 +64,20 @@
 * Verified **87 of 88** previously unregistered consumer NIDs against public PSPSDK / uOFW / psprecomp names and added **67** newly verified entries to `src/runtime/nid_names.cpp` (`216` → `283` total known names).
 * **Unconfirmed NID (1)**: `ModuleMgrForUser:0x8F2DF740` (left out of `nid_names.cpp`).
 
-## 2. Step 2: Boot-Path Loop (Design §1 Stopping Rule Reached)
+## 2. Step 2: Boot-Path Loop (Paused at Lifter Discovery Gap)
 
-* **Iteration 1**: Stopped on `SysMemUserForUser` `0x7591C7DB` (`sceKernelSetCompiledSdkVersion`). Implemented `sceKernelSetCompiledSdkVersion`, its CRT startup sibling `sceKernelSetCompilerVersion` (`0xF77D77CB`), and the existing `UserPartition` queries `sceKernelMaxFreeMemSize` (`0xA291F107`) and `sceKernelTotalFreeMemSize` (`0xF919F628`) in `src/hle/kernel/sysmem.cpp` (sources: uOFW / psprecomp `src/hle/sysmem.c`, **inferred** → **confirmed** by probe and run).
-* **Re-run result**: Both `sceKernelSetCompiledSdkVersion` (1 call) and `sceKernelSetCompilerVersion` (1 call) succeeded; `module_start` created and started `user_main` (prio 32, 256 KiB stack), which immediately stopped with **Dispatch miss** (not an unimplemented NID, exit code 11, 0 dispatches, 0 frames presented).
-* Per design §1's stopping rule, the loop ends here and reports the non-NID stop. `repsp_hle_net` and the small utility modules were not reached and remain deferred.
+* **Iteration 1 (`SysMemUserForUser` `0x7591C7DB`)**: Implemented `sceKernelSetCompiledSdkVersion`, `sceKernelSetCompilerVersion`, `sceKernelMaxFreeMemSize`, `sceKernelTotalFreeMemSize`. After consumer patch `0007`, `user_main` entered and allocated `UserSbrk`.
+* **Iteration 2 (`ModuleMgrForUser` `0xD8B73127`)**: Implemented main module UID registration, `sceKernelGetModuleIdByAddress`, and `sceKernelGetModuleId` (`kSceKernelErrorUnknownModule = 0x8002013E`). Advanced past CRT/newlib init to `sceUtilityGetSystemParamInt`.
+* **Iteration 3 (`sceUtility` `0xA5DA2406`)**: Implemented `sceUtilityGetSystemParamInt` (PSPSDK IDs 2..9, error `0x80110103`) and module load/unload helpers (`sceUtilityLoad/Unload{,Av,Net}Module`). Advanced to `sceImposeSetLanguageMode`.
+* **Iteration 4 (`sceImpose` `0x36AA6E91`)**: Implemented `sceImposeSetLanguageMode` and `sceImposeSetUMDPopup` in `src/hle/kernel/impose.cpp`. Advanced into C++ static initializers (code placed in `.data`), where a `lui+addiu`-built function pointer missed dispatch because the lifter's `lui+addiu` scan only covers `.text`. Paused here to report the lifter gap.
 
 ## 3. Static Coverage Delta
 
-* `repsp` registered HLE NIDs: `146` → **`150`** (`+4`)
+* `repsp` registered HLE NIDs: `146` → **`161`** (`+15`)
 * `nid_names.cpp` known names: `216` → **`283`** (`+67`)
-* Consumer static coverage: **`141 / 229` (88 missing)** → **`145 / 229` (84 missing)** (`SysMemUserForUser`: `3/8` → `7/8`)
+* Consumer static coverage: **`141 / 229` (88 missing)** → **`154 / 229` (75 missing)**
 
 ## 4. Verification
 
-* Extended `tools/sysmem_probe/main.cpp` to verify `sceKernelTotalFreeMemSize`, `sceKernelMaxFreeMemSize` (including split-heap and post-free restoration), `sceKernelSetCompiledSdkVersion`, and `sceKernelSetCompilerVersion`.
-* Updated `ARCHITECTURE.md` (`repsp_hle_kernel` count `65` → `69`).
+* Extended `tools/sysmem_probe/main.cpp` and `tools/utility_probe/main.cpp` for all newly added NIDs; updated `ARCHITECTURE.md` (`repsp_hle_kernel` 73, `repsp_hle_utility` 15).
 * **Win64 Debug & Release standalone**: 0 warnings on all `repsp` targets (only the 2 pre-existing third-party `imgui.vcxproj` `C4819` warnings under CP949), **23/23 CTest passed** in both configurations.
