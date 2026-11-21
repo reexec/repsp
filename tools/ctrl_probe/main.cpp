@@ -309,8 +309,61 @@ int main()
         TEST_ASSERT(parsed[3].vblank == 7 && parsed[3].buttons == 0u);
     }
 
+    // 8. Button filter transforms returned buttons while recording logs pre-filter buttons
+    {
+        const std::filesystem::path rec_path =
+            std::filesystem::temp_directory_path() / "repsp_ctrl_probe_filter.txt";
+        std::filesystem::remove(rec_path);
+
+        repsp::hle::ctrl::Register();
+        clock.Stop();
+        repsp::hle::ctrl::SetInputSource([](uint32_t /*vcount*/)
+        {
+            repsp::platform::ControllerState st{};
+            st.buttons = repsp::platform::kPspCtrlCross;
+            return st;
+        });
+
+        TEST_ASSERT(repsp::hle::ctrl::StartInputRecording(rec_path.string()));
+
+        // Without filter: game reads raw CROSS.
+        clock.StepForTest();
+        TEST_ASSERT(CallReadPositive(kPadBuf, 1) == 1);
+        TEST_ASSERT(ReadPadFromGuest(kPadBuf).buttons == repsp::platform::kPspCtrlCross);
+
+        // With filter: game reads TRIANGLE instead of CROSS.
+        repsp::hle::ctrl::SetButtonFilter([](uint32_t buttons) -> uint32_t
+        {
+            TEST_ASSERT(buttons == repsp::platform::kPspCtrlCross);
+            return repsp::platform::kPspCtrlTriangle;
+        });
+        clock.StepForTest();
+        TEST_ASSERT(CallReadPositive(kPadBuf, 1) == 1);
+        TEST_ASSERT(ReadPadFromGuest(kPadBuf).buttons == repsp::platform::kPspCtrlTriangle);
+
+        // Clearing filter restores raw CROSS.
+        repsp::hle::ctrl::SetButtonFilter(nullptr);
+        clock.StepForTest();
+        TEST_ASSERT(CallReadPositive(kPadBuf, 1) == 1);
+        TEST_ASSERT(ReadPadFromGuest(kPadBuf).buttons == repsp::platform::kPspCtrlCross);
+
+        repsp::hle::ctrl::StopInputRecording();
+        clock.Start();
+        repsp::hle::ctrl::Shutdown();
+        clock.ResetForTest();
+
+        // Recording must contain only the pre-filter value (CROSS), never TRIANGLE.
+        std::ifstream in(rec_path);
+        TEST_ASSERT(in.is_open());
+        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        std::filesystem::remove(rec_path);
+        TEST_ASSERT(content.find("CROSS") != std::string::npos);
+        TEST_ASSERT(content.find("TRIANGLE") == std::string::npos);
+    }
+
     mem.Shutdown();
 
-    std::printf("[PASS] ctrl_probe: 7/7 checks passed\n");
+    std::printf("[PASS] ctrl_probe: 8/8 checks passed\n");
     return 0;
 }
