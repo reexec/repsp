@@ -28,6 +28,8 @@ constexpr RawNidDef kKnownNames[] = {
     { "SysMemUserForUser", "sceKernelTotalFreeMemSize" },
     { "SysMemUserForUser", "sceKernelDevkitVersion" },
     { "SysMemUserForUser", "sceKernelPrintf" },
+    { "SysMemUserForUser", "sceKernelSetCompiledSdkVersion" },
+    { "SysMemUserForUser", "sceKernelSetCompilerVersion" },
 
     // ThreadManForUser
     { "ThreadManForUser", "sceKernelCreateThread" },
@@ -67,6 +69,12 @@ constexpr RawNidDef kKnownNames[] = {
     { "ThreadManForUser", "sceKernelCheckCallback" },
     { "ThreadManForUser", "sceKernelGetSystemTimeLow" },
     { "ThreadManForUser", "sceKernelGetSystemTimeWide" },
+    { "ThreadManForUser", "sceKernelGetSystemTime" },
+    { "ThreadManForUser", "sceKernelSysClock2USec" },
+    { "ThreadManForUser", "sceKernelCreateVpl" },
+    { "ThreadManForUser", "sceKernelDeleteVpl" },
+    { "ThreadManForUser", "sceKernelAllocateVpl" },
+    { "ThreadManForUser", "sceKernelFreeVpl" },
 
     // IoFileMgrForUser
     { "IoFileMgrForUser", "sceIoOpen" },
@@ -81,6 +89,7 @@ constexpr RawNidDef kKnownNames[] = {
     { "IoFileMgrForUser", "sceIoLseekAsync" },
     { "IoFileMgrForUser", "sceIoLseek32" },
     { "IoFileMgrForUser", "sceIoGetstat" },
+    { "IoFileMgrForUser", "sceIoChstat" },
     { "IoFileMgrForUser", "sceIoWaitAsync" },
     { "IoFileMgrForUser", "sceIoWaitAsyncCB" },
     { "IoFileMgrForUser", "sceIoPollAsync" },
@@ -89,6 +98,11 @@ constexpr RawNidDef kKnownNames[] = {
     { "IoFileMgrForUser", "sceIoDclose" },
     { "IoFileMgrForUser", "sceIoChdir" },
     { "IoFileMgrForUser", "sceIoMkdir" },
+    { "IoFileMgrForUser", "sceIoRmdir" },
+    { "IoFileMgrForUser", "sceIoRemove" },
+    { "IoFileMgrForUser", "sceIoRename" },
+    { "IoFileMgrForUser", "sceIoDevctl" },
+    { "IoFileMgrForUser", "sceIoIoctl" },
 
     // ModuleMgrForUser
     { "ModuleMgrForUser", "sceKernelLoadModule" },
@@ -96,6 +110,8 @@ constexpr RawNidDef kKnownNames[] = {
     { "ModuleMgrForUser", "sceKernelStopModule" },
     { "ModuleMgrForUser", "sceKernelUnloadModule" },
     { "ModuleMgrForUser", "sceKernelSelfStopUnloadModule" },
+    { "ModuleMgrForUser", "sceKernelGetModuleId" },
+    { "ModuleMgrForUser", "sceKernelGetModuleIdByAddress" },
 
     // LoadExecForUser
     { "LoadExecForUser", "sceKernelExitGame" },
@@ -111,6 +127,9 @@ constexpr RawNidDef kKnownNames[] = {
     { "UtilsForUser", "sceKernelUtilsMt19937UInt" },
     { "UtilsForUser", "sceKernelSetGPO" },
     { "UtilsForUser", "sceKernelGetGPI" },
+    { "UtilsForUser", "sceKernelLibcTime" },
+    { "UtilsForUser", "sceKernelLibcClock" },
+    { "UtilsForUser", "sceKernelLibcGettimeofday" },
 
     // StdioForUser
     { "StdioForUser", "sceKernelStdin" },
@@ -134,6 +153,8 @@ constexpr RawNidDef kKnownNames[] = {
     { "sceSuspendForUser", "sceKernelPowerLock" },
     { "sceSuspendForUser", "sceKernelPowerUnlock" },
     { "sceSuspendForUser", "sceKernelPowerTick" },
+    { "sceSuspendForUser", "sceKernelVolatileMemTryLock" },
+    { "sceSuspendForUser", "sceKernelVolatileMemUnlock" },
 
     // sceUmdUser
     { "sceUmdUser", "sceUmdCheckMedium" },
@@ -147,6 +168,8 @@ constexpr RawNidDef kKnownNames[] = {
     { "sceUmdUser", "sceUmdGetErrorStat" },
     { "sceUmdUser", "sceUmdRegisterUMDCallBack" },
     { "sceUmdUser", "sceUmdUnRegisterUMDCallBack" },
+    { "sceUmdUser", "sceUmdReplaceProhibit" },
+    { "sceUmdUser", "sceUmdReplacePermit" },
 
     // sceGe_user
     { "sceGe_user", "sceGeEdramGetAddr" },
@@ -213,6 +236,14 @@ constexpr RawNidDef kKnownNames[] = {
     { "sceUtility", "sceUtilitySavedataUpdate" },
     { "sceUtility", "sceUtilityLoadModule" },
     { "sceUtility", "sceUtilityUnloadModule" },
+    { "sceUtility", "sceUtilityLoadAvModule" },
+    { "sceUtility", "sceUtilityUnloadAvModule" },
+    { "sceUtility", "sceUtilityLoadNetModule" },
+    { "sceUtility", "sceUtilityUnloadNetModule" },
+    { "sceUtility", "sceUtilityNetconfInitStart" },
+    { "sceUtility", "sceUtilityNetconfGetStatus" },
+    { "sceUtility", "sceUtilityNetconfUpdate" },
+    { "sceUtility", "sceUtilityNetconfShutdownStart" },
 
     // sceRtc
     { "sceRtc", "sceRtcGetCurrentClock" },
@@ -229,6 +260,7 @@ constexpr RawNidDef kKnownNames[] = {
     // sceSasCore
     { "sceSasCore", "__sceSasInit" },
     { "sceSasCore", "__sceSasCore" },
+    { "sceSasCore", "__sceSasCoreWithMix" },
     { "sceSasCore", "__sceSasGetEndFlag" },
     { "sceSasCore", "__sceSasSetVoice" },
     { "sceSasCore", "__sceSasSetKeyOn" },
@@ -236,10 +268,17 @@ constexpr RawNidDef kKnownNames[] = {
     { "sceSasCore", "__sceSasSetPitch" },
     { "sceSasCore", "__sceSasSetVolume" },
     { "sceSasCore", "__sceSasSetADSR" },
+    { "sceSasCore", "__sceSasSetADSRmode" },
     { "sceSasCore", "__sceSasSetSimpleADSR" },
+    { "sceSasCore", "__sceSasSetSL" },
+    { "sceSasCore", "__sceSasSetNoise" },
+    { "sceSasCore", "__sceSasSetPause" },
+    { "sceSasCore", "__sceSasGetPauseFlag" },
+    { "sceSasCore", "__sceSasGetEnvelopeHeight" },
     { "sceSasCore", "__sceSasRevType" },
     { "sceSasCore", "__sceSasRevEVOL" },
     { "sceSasCore", "__sceSasRevVON" },
+    { "sceSasCore", "__sceSasRevParam" },
 
     // sceAtrac3plus
     { "sceAtrac3plus", "sceAtracGetStreamDataInfo" },
@@ -252,7 +291,47 @@ constexpr RawNidDef kKnownNames[] = {
     { "sceAtrac3plus", "sceAtracGetRemainFrame" },
     { "sceAtrac3plus", "sceAtracGetSoundSample" },
     { "sceAtrac3plus", "sceAtracGetBufferInfoForReseting" },
+    { "sceAtrac3plus", "sceAtracGetBufferInfoForResetting" },
     { "sceAtrac3plus", "sceAtracGetInternalErrorInfo" },
+
+    // sceImpose
+    { "sceImpose", "sceImposeSetLanguageMode" },
+    { "sceImpose", "sceImposeSetUMDPopup" },
+
+    // sceHprm
+    { "sceHprm", "sceHprmPeekLatch" },
+    { "sceHprm", "sceHprmReadLatch" },
+
+    // sceNet
+    { "sceNet", "sceNetInit" },
+    { "sceNet", "sceNetTerm" },
+    { "sceNet", "sceNetGetLocalEtherAddr" },
+    { "sceNet", "sceNetEtherNtostr" },
+
+    // sceNetAdhoc
+    { "sceNetAdhoc", "sceNetAdhocInit" },
+    { "sceNetAdhoc", "sceNetAdhocTerm" },
+    { "sceNetAdhoc", "sceNetAdhocPdpCreate" },
+    { "sceNetAdhoc", "sceNetAdhocPdpDelete" },
+    { "sceNetAdhoc", "sceNetAdhocPdpSend" },
+    { "sceNetAdhoc", "sceNetAdhocPdpRecv" },
+
+    // sceNetAdhocctl
+    { "sceNetAdhocctl", "sceNetAdhocctlInit" },
+    { "sceNetAdhocctl", "sceNetAdhocctlTerm" },
+    { "sceNetAdhocctl", "sceNetAdhocctlAddHandler" },
+    { "sceNetAdhocctl", "sceNetAdhocctlDelHandler" },
+
+    // sceNetAdhocMatching
+    { "sceNetAdhocMatching", "sceNetAdhocMatchingInit" },
+    { "sceNetAdhocMatching", "sceNetAdhocMatchingTerm" },
+    { "sceNetAdhocMatching", "sceNetAdhocMatchingCreate" },
+    { "sceNetAdhocMatching", "sceNetAdhocMatchingDelete" },
+    { "sceNetAdhocMatching", "sceNetAdhocMatchingStart" },
+    { "sceNetAdhocMatching", "sceNetAdhocMatchingStop" },
+    { "sceNetAdhocMatching", "sceNetAdhocMatchingSelectTarget" },
+    { "sceNetAdhocMatching", "sceNetAdhocMatchingCancelTarget" },
+    { "sceNetAdhocMatching", "sceNetAdhocMatchingSetHelloOpt" },
 
     // sceMpeg
     { "sceMpeg", "sceMpegAvcDecode" },
