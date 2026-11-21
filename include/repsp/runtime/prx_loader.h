@@ -10,7 +10,8 @@
 namespace repsp::runtime
 {
 
-// Copy segments to guest memory at base, zero bss, apply relocations.
+// Copy segments of a PSP PRX (0xFFA0) or fixed-address ET_EXEC (2) to guest memory
+// at base, zero BSS, and apply PRX relocations when applicable.
 std::optional<module::LoadedPrx> LoadPrx(std::span<const uint8_t> file, uint32_t base,
                                          GuestMemory& memory, std::string* error = nullptr);
 
