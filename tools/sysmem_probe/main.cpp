@@ -66,6 +66,32 @@ uint32_t CallGetHeadAddr(int32_t uid)
     return g_cpu.gpr[2];
 }
 
+uint32_t CallMaxFreeMemSize()
+{
+    repsp_recomp_hle_call(repsp::runtime::ComputeNid("sceKernelMaxFreeMemSize"));
+    return g_cpu.gpr[2];
+}
+
+uint32_t CallTotalFreeMemSize()
+{
+    repsp_recomp_hle_call(repsp::runtime::ComputeNid("sceKernelTotalFreeMemSize"));
+    return g_cpu.gpr[2];
+}
+
+int32_t CallSetCompiledSdkVersion(uint32_t ver)
+{
+    g_cpu.gpr[4] = ver;
+    repsp_recomp_hle_call(repsp::runtime::ComputeNid("sceKernelSetCompiledSdkVersion"));
+    return static_cast<int32_t>(g_cpu.gpr[2]);
+}
+
+int32_t CallSetCompilerVersion(uint32_t ver)
+{
+    g_cpu.gpr[4] = ver;
+    repsp_recomp_hle_call(repsp::runtime::ComputeNid("sceKernelSetCompilerVersion"));
+    return static_cast<int32_t>(g_cpu.gpr[2]);
+}
+
 } // namespace
 
 int main()
@@ -119,6 +145,25 @@ int main()
     TEST_ASSERT(CallFree(uid_low2) == 0);
     TEST_ASSERT(CallFree(uid_high) == 0);
     TEST_ASSERT(CallFree(uid_fixed) == 0);
+
+    // 6. Free memory queries and version-reporting calls
+    uint32_t total_before = CallTotalFreeMemSize();
+    uint32_t max_before = CallMaxFreeMemSize();
+    TEST_ASSERT(total_before > 0);
+    TEST_ASSERT(max_before == total_before);
+
+    int32_t uid_split = CallAlloc(2, name_addr, 2 /*Addr*/, 4096, 0x09400000u);
+    TEST_ASSERT(uid_split > 0);
+    uint32_t total_after = CallTotalFreeMemSize();
+    uint32_t max_after = CallMaxFreeMemSize();
+    TEST_ASSERT(total_after == total_before - 4096u);
+    TEST_ASSERT(max_after < total_after);
+    TEST_ASSERT(CallFree(uid_split) == 0);
+    TEST_ASSERT(CallTotalFreeMemSize() == total_before);
+    TEST_ASSERT(CallMaxFreeMemSize() == max_before);
+
+    TEST_ASSERT(CallSetCompiledSdkVersion(0x02060010u) == kSceKernelErrorOk);
+    TEST_ASSERT(CallSetCompilerVersion(0x00030306u) == kSceKernelErrorOk);
 
     std::printf("sysmem_probe passed.\n");
     return 0;

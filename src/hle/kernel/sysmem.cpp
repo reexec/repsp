@@ -72,14 +72,47 @@ void HleGetBlockHeadAddr()
     recomp::Return(addr);
 }
 
+void HleMaxFreeMemSize()
+{
+    recomp::Return(runtime::GetUserPartition().MaxFreeBlockSize());
+}
+
+void HleTotalFreeMemSize()
+{
+    recomp::Return(runtime::GetUserPartition().TotalFreeBytes());
+}
+
+// Advisory CRT version-reporting calls (uOFW / psprecomp sysmem.c): record and return 0.
+uint32_t g_compiled_sdk_version = 0;
+uint32_t g_compiler_version = 0;
+
+void HleSetCompiledSdkVersion()
+{
+    g_compiled_sdk_version = recomp::Arg<uint32_t>(0);
+    recomp::Return(kSceKernelErrorOk);
+}
+
+void HleSetCompilerVersion()
+{
+    g_compiler_version = recomp::Arg<uint32_t>(0);
+    recomp::Return(kSceKernelErrorOk);
+}
+
 } // namespace
 
 void RegisterSysMem()
 {
+    g_compiled_sdk_version = 0;
+    g_compiler_version = 0;
+
     auto& reg = runtime::GetNidRegistry();
     reg.RegisterByName("SysMemUserForUser", "sceKernelAllocPartitionMemory", HleAllocPartitionMemory);
     reg.RegisterByName("SysMemUserForUser", "sceKernelFreePartitionMemory", HleFreePartitionMemory);
     reg.RegisterByName("SysMemUserForUser", "sceKernelGetBlockHeadAddr", HleGetBlockHeadAddr);
+    reg.RegisterByName("SysMemUserForUser", "sceKernelMaxFreeMemSize", HleMaxFreeMemSize);
+    reg.RegisterByName("SysMemUserForUser", "sceKernelTotalFreeMemSize", HleTotalFreeMemSize);
+    reg.RegisterByName("SysMemUserForUser", "sceKernelSetCompiledSdkVersion", HleSetCompiledSdkVersion);
+    reg.RegisterByName("SysMemUserForUser", "sceKernelSetCompilerVersion", HleSetCompilerVersion);
 }
 
 } // namespace repsp::hle::kernel::detail
