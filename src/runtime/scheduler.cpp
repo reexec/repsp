@@ -198,6 +198,7 @@ void Scheduler::Reset()
         fatal_stop_ = false;
         fatal_stop_reason_.clear();
         external_wait_sources_ = 0;
+        timed_waiter_count_ = 0;
     }
 
     for (auto& t : old_threads)
@@ -257,7 +258,14 @@ void Scheduler::MakeReadyLocked(const std::shared_ptr<GuestThread>& t, bool at_f
     t->wait_type = WaitType::kNone;
     t->wait_target_uid = 0;
     t->wait_detail.clear();
-    t->has_timeout = false;
+    if (t->has_timeout)
+    {
+        t->has_timeout = false;
+        if (timed_waiter_count_ > 0)
+        {
+            --timed_waiter_count_;
+        }
+    }
     auto it = std::find(ready_queue_.begin(), ready_queue_.end(), t->uid);
     if (it != ready_queue_.end())
     {
@@ -847,6 +855,14 @@ int32_t Scheduler::TerminateThread(KernelUid thread_uid, bool delete_target)
             return kErrIllegalContext;
         }
         RemoveFromReadyQueueLocked(target->uid);
+        if (target->has_timeout)
+        {
+            target->has_timeout = false;
+            if (timed_waiter_count_ > 0)
+            {
+                --timed_waiter_count_;
+            }
+        }
         target->state = ThreadState::kDead;
         target->exit_status = static_cast<int32_t>(0x800201ACu);
         WakeWaitersLocked(WaitType::kThreadEnd, target->uid, kWaitOk, true);
@@ -1055,13 +1071,21 @@ int32_t Scheduler::WaitCurrentIf(
     cur->wait_allow_callbacks = allow_callbacks;
     if (timeout_us != nullptr)
     {
-        cur->has_timeout = true;
+        if (!cur->has_timeout)
+        {
+            cur->has_timeout = true;
+            ++timed_waiter_count_;
+        }
         cur->wait_start = std::chrono::steady_clock::now();
         cur->deadline = cur->wait_start + std::chrono::microseconds(*timeout_us);
     }
-    else
+    else if (cur->has_timeout)
     {
         cur->has_timeout = false;
+        if (timed_waiter_count_ > 0)
+        {
+            --timed_waiter_count_;
+        }
     }
 
     SwitchOutCurrentLocked(lock, cur);
@@ -1502,9 +1526,38 @@ void Scheduler::YieldCurrent()
     SwitchOutCurrentLocked(lock, cur);
 }
 
+size_t Scheduler::ExpireTimedWaitsLocked(std::chrono::steady_clock::time_point now)
+{
+    if (timed_waiter_count_ == 0)
+    {
+        return 0;
+    }
+    size_t expired = 0;
+    for (const auto& t : threads_)
+    {
+        if (t->state == ThreadState::kWaiting &&
+            t->wait_type != WaitType::kHostWait &&
+            t->has_timeout &&
+            now >= t->deadline)
+        {
+            t->wait_result = kWaitTimeout;
+            MakeReadyLocked(t);
+            ++expired;
+        }
+    }
+    return expired;
+}
+
 void Scheduler::Poll()
 {
     DeliverPendingInterrupts();
+    {
+        std::lock_guard<TrackedMutex> lock(mutex_);
+        if (timed_waiter_count_ > 0)
+        {
+            ExpireTimedWaitsLocked(std::chrono::steady_clock::now());
+        }
+    }
     YieldIfPreempted();
 }
 
@@ -1696,15 +1749,7 @@ void Scheduler::Run(KernelUid entry_thread_uid)
             if (has_timeout)
             {
                 cv_.wait_until(lock, min_deadline);
-                auto now = std::chrono::steady_clock::now();
-                for (const auto& t : threads_)
-                {
-                    if (t->state == ThreadState::kWaiting && t->wait_type != WaitType::kHostWait && t->has_timeout && now >= t->deadline)
-                    {
-                        t->wait_result = kWaitTimeout;
-                        MakeReadyLocked(t);
-                    }
-                }
+                ExpireTimedWaitsLocked(std::chrono::steady_clock::now());
             }
             else
             {

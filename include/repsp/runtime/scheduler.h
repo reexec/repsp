@@ -273,6 +273,7 @@ private:
     bool HasHigherPriorityReadyLocked(int32_t priority) const;
     void SwitchOutCurrentLocked(std::unique_lock<TrackedMutex>& lock, const std::shared_ptr<GuestThread>& cur);
     void DeliverPendingInterruptsLocked(std::unique_lock<TrackedMutex>& lock);
+    size_t ExpireTimedWaitsLocked(std::chrono::steady_clock::time_point now);
     void WakeWaitersLocked(WaitType type, KernelUid target_uid, int32_t result, bool wake_all);
     int32_t RunPendingCallbacksLocked(std::unique_lock<TrackedMutex>& lock, const std::shared_ptr<GuestThread>& cur);
     void ThreadEntry(std::shared_ptr<GuestThread> self);
@@ -301,6 +302,7 @@ private:
     bool fatal_stop_ = false;
     std::string fatal_stop_reason_;
     uint32_t external_wait_sources_ = 0;
+    size_t timed_waiter_count_ = 0;
     bool wake_latency_enabled_ = false;
     WakeLatencyStats wake_stats_{};
 };
