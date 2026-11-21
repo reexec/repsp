@@ -102,9 +102,13 @@ constexpr uint32_t kAddrDelayMinWaiter = 0x0880E040u;
 constexpr uint32_t kAddrDelayMinInspector = 0x0880E050u;
 constexpr uint32_t kAddrVplMain = 0x0880E060u;
 constexpr uint32_t kAddrVplWaiter = 0x0880E070u;
+constexpr uint32_t kAddrPollTimeoutLow = 0x0880E080u;
+constexpr uint32_t kAddrPollTimeoutHigh = 0x0880E090u;
 
 int32_t g_vpl = 0;
 uint32_t g_vpl_waiter_addr = 0;
+int32_t g_poll_sema = 0;
+int g_poll_high_stage = 0;
 
 int32_t g_delay_min_waiter_uid = 0;
 std::vector<int64_t> g_delay_min_observed_us;
@@ -524,6 +528,63 @@ void FakeCallGuest(uint32_t addr)
         g_cpu.gpr[2] = 0;
         break;
     }
+    case kAddrPollTimeoutLow:
+    {
+        WriteStr(0x09000C00u, "poll_high");
+        WriteStr(0x09000C20u, "poll_sema");
+        g_poll_sema = static_cast<int32_t>(HleCall("sceKernelCreateSema", 0x09000C20u, 0u, 0u, 1u, 0u));
+        TEST_ASSERT(g_poll_sema > 0);
+
+        int32_t th = static_cast<int32_t>(HleCall("sceKernelCreateThread", 0x09000C00u, kAddrPollTimeoutHigh, 18u, 0x4000u, 0u));
+        TEST_ASSERT(th > 0);
+        // StartThread preempts into high-priority thread, which immediately calls DelayThread(2000).
+        TEST_ASSERT(HleCall("sceKernelStartThread", static_cast<uint32_t>(th), 0u, 0u) == 0);
+        TEST_ASSERT(g_poll_high_stage == 1);
+
+        // Suspend interrupts and spin past the 2 ms deadline calling Poll(): must NOT preempt.
+        uint32_t intr_state = HleCall("sceKernelCpuSuspendIntr");
+        auto spin_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(6);
+        while (std::chrono::steady_clock::now() < spin_until)
+        {
+            repsp_recomp_poll();
+            TEST_ASSERT(g_poll_high_stage == 1);
+        }
+
+        // Resume interrupts; the very first Poll() must preempt into high-priority thread.
+        HleCall("sceKernelCpuResumeIntr", intr_state);
+        repsp_recomp_poll();
+        TEST_ASSERT(g_poll_high_stage == 2);
+
+        // High thread is now in WaitSema with a 2 ms timeout; busy-poll until it times out.
+        auto limit = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        while (g_poll_high_stage < 3 && std::chrono::steady_clock::now() < limit)
+        {
+            repsp_recomp_poll();
+        }
+        TEST_ASSERT(g_poll_high_stage == 3);
+
+        TEST_ASSERT(HleCall("sceKernelWaitThreadEnd", static_cast<uint32_t>(th), 0u) == 0);
+        TEST_ASSERT(HleCall("sceKernelDeleteSema", static_cast<uint32_t>(g_poll_sema)) == 0);
+        g_log.push_back("poll_low:done");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
+    case kAddrPollTimeoutHigh:
+    {
+        g_poll_high_stage = 1;
+        TEST_ASSERT(HleCall("sceKernelDelayThread", 2000u) == 0);
+        g_poll_high_stage = 2;
+        g_log.push_back("poll_high:delay_woke");
+
+        GetGuestMemory().WriteU32(0x09000C40u, 2000u);
+        int32_t res = static_cast<int32_t>(
+            HleCall("sceKernelWaitSema", static_cast<uint32_t>(g_poll_sema), 1u, 0x09000C40u));
+        TEST_ASSERT(res == kSceKernelErrorWaitTimeout);
+        g_poll_high_stage = 3;
+        g_log.push_back("poll_high:sema_timeout");
+        g_cpu.gpr[2] = 0;
+        break;
+    }
     case kAddrDeepStack:
     {
         g_cpu.gpr[2] = DeepStackTouch(600);
@@ -829,6 +890,17 @@ int main()
     TEST_ASSERT(t_vpl > 0);
     GetScheduler().Run(t_vpl);
     TEST_ASSERT((g_log == std::vector<std::string>{ "vpl_waiter:got", "vpl:done" }));
+
+    // 18. Scheduler::Poll() expires timed waits (DelayThread & WaitSema timeout) during busy loop
+    //     and respects CpuSuspendIntr until resumed.
+    kernel::Register(kernel::KernelConfig{});
+    g_log.clear();
+    g_poll_sema = 0;
+    g_poll_high_stage = 0;
+    int32_t t_poll_low = GetScheduler().CreateThread("poll_low", kAddrPollTimeoutLow, 32, 0x4000, 0, 0);
+    TEST_ASSERT(t_poll_low > 0);
+    GetScheduler().Run(t_poll_low);
+    TEST_ASSERT((g_log == std::vector<std::string>{ "poll_high:delay_woke", "poll_high:sema_timeout", "poll_low:done" }));
 
     GetScheduler().Reset();
     std::printf("kernel_sched_probe passed.\n");
