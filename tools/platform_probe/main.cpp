@@ -1,5 +1,6 @@
 #include "repsp/platform/guarded_run.h"
 #include "repsp/platform/host_thread.h"
+#include "repsp/platform/overlay.h"
 #include "repsp/platform/path.h"
 #include "repsp/platform/platform.h"
 #include "repsp/platform/virtual_memory.h"
@@ -224,6 +225,85 @@ int main()
         TEST_ASSERT(stretch.x == 0 && stretch.y == 0 && stretch.width == 1280 && stretch.height == 720);
         const auto integer = ComputeOutputRect(1280, 720, 480, 272, AspectMode::kInteger);
         TEST_ASSERT(integer.width == 960 && integer.height == 544 && integer.x == 160 && integer.y == 88);
+    }
+
+    // 8. Gamepad shortcut state machine (windowless, deterministic time)
+    {
+        GamepadShortcutState st{};
+
+        // Without LT+RT (or at/below 16384 threshold), Y/L3/R3 reach the game.
+        {
+            GamepadShortcutInput in{};
+            in.left_trigger = 16384;
+            in.right_trigger = 32767;
+            in.y = true;
+            in.l3 = true;
+            in.r3 = true;
+            const auto r = UpdateGamepadShortcuts(st, in, 100, true);
+            TEST_ASSERT(!r.toggle_menu && !r.request_quit);
+            TEST_ASSERT(!r.withhold_y && !r.withhold_l3 && !r.withhold_r3);
+        }
+
+        // LT+RT held (> 16384): Y/L3/R3 withheld even with no combo pressed.
+        {
+            GamepadShortcutInput in{};
+            in.left_trigger = 16385;
+            in.right_trigger = 16385;
+            const auto r = UpdateGamepadShortcuts(st, in, 200, true);
+            TEST_ASSERT(!r.toggle_menu && !r.request_quit);
+            TEST_ASSERT(r.withhold_y && r.withhold_l3 && r.withhold_r3);
+        }
+
+        // LT+RT+Y toggles once per press.
+        {
+            GamepadShortcutInput in{};
+            in.left_trigger = 20000;
+            in.right_trigger = 20000;
+            in.y = true;
+            const auto r1 = UpdateGamepadShortcuts(st, in, 300, true);
+            TEST_ASSERT(r1.toggle_menu && !r1.request_quit && r1.withhold_y);
+            const auto r2 = UpdateGamepadShortcuts(st, in, 316, true);
+            TEST_ASSERT(!r2.toggle_menu && !r2.request_quit && r2.withhold_y);
+            in.y = false;
+            const auto r3 = UpdateGamepadShortcuts(st, in, 332, true);
+            TEST_ASSERT(!r3.toggle_menu);
+            in.y = true;
+            const auto r4 = UpdateGamepadShortcuts(st, in, 350, true);
+            TEST_ASSERT(r4.toggle_menu);
+            // When allow_menu is false (software renderer), LT+RT+Y does not toggle.
+            in.y = false;
+            (void)UpdateGamepadShortcuts(st, in, 366, false);
+            in.y = true;
+            const auto r5 = UpdateGamepadShortcuts(st, in, 382, false);
+            TEST_ASSERT(!r5.toggle_menu && r5.withhold_y);
+        }
+
+        // LT+RT+L3+R3: under 1 s does not quit; at 1 s quits once; holding longer still once.
+        {
+            GamepadShortcutInput in{};
+            in.left_trigger = 25000;
+            in.right_trigger = 25000;
+            in.l3 = true;
+            in.r3 = true;
+            const auto t0 = UpdateGamepadShortcuts(st, in, 1000, false);
+            TEST_ASSERT(!t0.request_quit && t0.withhold_l3 && t0.withhold_r3);
+            const auto t999 = UpdateGamepadShortcuts(st, in, 1999, false);
+            TEST_ASSERT(!t999.request_quit);
+            const auto t1000 = UpdateGamepadShortcuts(st, in, 2000, false);
+            TEST_ASSERT(t1000.request_quit);
+            const auto t1500 = UpdateGamepadShortcuts(st, in, 2500, false);
+            TEST_ASSERT(!t1500.request_quit);
+            const auto t3000 = UpdateGamepadShortcuts(st, in, 4000, false);
+            TEST_ASSERT(!t3000.request_quit);
+
+            // Releasing resets the timer; holding 1 s again fires once more.
+            in.r3 = false;
+            TEST_ASSERT(!UpdateGamepadShortcuts(st, in, 4100, false).request_quit);
+            in.r3 = true;
+            TEST_ASSERT(!UpdateGamepadShortcuts(st, in, 4200, false).request_quit);
+            TEST_ASSERT(!UpdateGamepadShortcuts(st, in, 5199, false).request_quit);
+            TEST_ASSERT(UpdateGamepadShortcuts(st, in, 5200, false).request_quit);
+        }
     }
 
     std::printf("platform_probe passed.\n");

@@ -4,6 +4,8 @@
 #ifndef REPSP_PLATFORM_SDL_DISPLAY_SDL_INTERNAL_H
 #define REPSP_PLATFORM_SDL_DISPLAY_SDL_INTERNAL_H
 
+#include "repsp/platform/overlay.h"
+
 #include <SDL3/SDL.h>
 
 namespace repsp::platform::sdl_internal
@@ -22,8 +24,10 @@ bool OverlayProcessEvent(const SDL_Event& event);
 // True when the overlay is open and currently captures mouse input (hovering a menu window).
 bool OverlayCapturesMouse();
 
-// Gamepad shortcuts: LB+RB+Y toggles the menu.
-void PollGamepadShortcuts();
+// Gamepad shortcuts: LT+RT+Y toggles the menu (OpenGL only), LT+RT+L3+R3 held
+// 1 s requests quit (OpenGL and software), and Y/L3/R3 are withheld from game
+// input while LT+RT are held.
+GamepadShortcutResult PollGamepadShortcuts();
 
 // Releases the ImGui context and backends; called on the UI thread before the
 // GL context is destroyed.
