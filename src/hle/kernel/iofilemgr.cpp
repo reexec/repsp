@@ -43,6 +43,7 @@ struct IoFileEntry
     uint32_t flags = 0;
     uint64_t offset = 0;
     bool has_async_op = false;
+    bool closing_async = false;
     int64_t async_result = 0;
 };
 
@@ -467,6 +468,41 @@ void HleIoLseekAsync()
     recomp::Return(0);
 }
 
+void HleIoCloseAsync()
+{
+    int32_t fd = recomp::Arg<int32_t>(0);
+    std::shared_ptr<IoFileEntry> entry;
+    {
+        std::lock_guard<std::mutex> lock(IoMutex());
+        auto it = IoFiles().find(fd);
+        if (it == IoFiles().end())
+        {
+            recomp::Return(kSceKernelErrorBadf);
+            return;
+        }
+        entry = it->second;
+        if (entry->has_async_op)
+        {
+            recomp::Return(kSceKernelErrorAsyncBusy);
+            return;
+        }
+        entry->has_async_op = true;
+        entry->closing_async = true;
+        entry->async_result = 0;
+    }
+
+    if (entry->fp != nullptr)
+    {
+        std::fclose(entry->fp);
+        entry->fp = nullptr;
+    }
+    if (runtime::GetNidRegistry().IsTraceEnabled())
+    {
+        runtime::Log(runtime::LogLevel::kInfo, "[IO] closeAsync(fd=%d \"%s\")", fd, entry->guest_path.c_str());
+    }
+    recomp::Return(0);
+}
+
 int32_t FinishAsyncWait(int32_t fd, uint32_t res_addr, bool allow_callbacks)
 {
     if (allow_callbacks)
@@ -492,6 +528,10 @@ int32_t FinishAsyncWait(int32_t fd, uint32_t res_addr, bool allow_callbacks)
             runtime::GetGuestMemory().WriteU64(res_addr, static_cast<uint64_t>(entry->async_result));
         }
         entry->has_async_op = false;
+        if (entry->closing_async)
+        {
+            IoFiles().erase(it);
+        }
     }
 
     return 0;
@@ -534,6 +574,10 @@ void HleIoPollAsync()
         runtime::GetGuestMemory().WriteU64(res_addr, static_cast<uint64_t>(entry->async_result));
     }
     entry->has_async_op = false;
+    if (entry->closing_async)
+    {
+        IoFiles().erase(it);
+    }
     recomp::Return(0);
 }
 
@@ -582,6 +626,7 @@ void RegisterIoFileMgr()
     reg.RegisterByName("IoFileMgrForUser", "sceIoOpenAsync", HleIoOpenAsync);
     reg.RegisterByName("IoFileMgrForUser", "sceIoReadAsync", HleIoReadAsync);
     reg.RegisterByName("IoFileMgrForUser", "sceIoLseekAsync", HleIoLseekAsync);
+    reg.RegisterByName("IoFileMgrForUser", "sceIoCloseAsync", HleIoCloseAsync);
     reg.RegisterByName("IoFileMgrForUser", "sceIoWaitAsync", HleIoWaitAsync);
     reg.RegisterByName("IoFileMgrForUser", "sceIoWaitAsyncCB", HleIoWaitAsyncCB);
     reg.RegisterByName("IoFileMgrForUser", "sceIoPollAsync", HleIoPollAsync);
