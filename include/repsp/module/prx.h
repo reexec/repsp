@@ -54,11 +54,14 @@ struct LoadedPrx
     size_t relocations_applied;
 };
 
-// Validates the ELF and reports what loading would produce, without modifying memory.
+// Validates a PSP PRX (e_type 0xFFA0) or fixed-address ET_EXEC (e_type 2) ELF
+// and reports what loading would produce, without modifying memory.
 std::optional<LoadedPrx> ParsePrx(std::span<const uint8_t> file, uint32_t base,
                                  std::string* error = nullptr);
 
-// Relocates the PRX into a byte buffer with segments laid out relative to base.
+// Lays out a PSP PRX (e_type 0xFFA0, with SHT_PRXRELOC relocations) or fixed-address
+// ET_EXEC (e_type 2, without relocation; base must match the lowest PT_LOAD vaddr)
+// into a byte buffer relative to base.
 std::optional<std::vector<uint8_t>> RelocateToBuffer(std::span<const uint8_t> file, uint32_t base,
                                                      std::string* error = nullptr);
 

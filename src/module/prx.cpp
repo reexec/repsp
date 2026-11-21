@@ -11,6 +11,7 @@ namespace
 {
 
 constexpr uint32_t kElfMagic = 0x464C457F; // 0x7F 'E' 'L' 'F'
+constexpr uint16_t kTypeExec = 2;
 constexpr uint16_t kTypePrx = 0xFFA0;
 constexpr uint16_t kMachineMips = 8;
 constexpr uint32_t kPtLoad = 1;
@@ -61,6 +62,219 @@ struct RelocateResult
     bool has_modinfo = false;
 };
 
+std::optional<RelocateResult> ProcessExec(std::span<const uint8_t> file, uint32_t base,
+                                          uint32_t e_entry, uint32_t e_phoff, uint32_t e_shoff,
+                                          uint16_t e_phentsize, uint16_t e_phnum,
+                                          uint16_t e_shentsize, uint16_t e_shnum,
+                                          uint16_t e_shstrndx, std::string* error)
+{
+    const uint8_t* data = file.data();
+    std::vector<PrxSegment> segments;
+    uint32_t image_base = 0;
+    bool has_first_load = false;
+    uint32_t first_load_vaddr = 0;
+    uint32_t first_load_offset = 0;
+    uint32_t first_load_paddr = 0;
+
+    for (uint16_t i = 0; i < e_phnum; ++i)
+    {
+        const uint8_t* ph = data + e_phoff + static_cast<size_t>(i) * e_phentsize;
+        uint32_t p_type = Read32(ph + 0);
+        uint32_t p_offset = Read32(ph + 4);
+        uint32_t p_vaddr = Read32(ph + 8);
+        uint32_t p_paddr = Read32(ph + 12);
+        uint32_t p_filesz = Read32(ph + 16);
+        uint32_t p_memsz = Read32(ph + 20);
+
+        if (p_type != kPtLoad)
+        {
+            continue;
+        }
+
+        if (static_cast<size_t>(p_offset) + p_filesz > file.size())
+        {
+            SetError(error, "Segment file data exceeds file size");
+            return std::nullopt;
+        }
+        if (p_filesz > p_memsz)
+        {
+            SetError(error, "Segment file size exceeds memory size");
+            return std::nullopt;
+        }
+        if (static_cast<uint64_t>(p_vaddr) + p_memsz > 0x100000000ULL)
+        {
+            SetError(error, "Segment address range overflows 32-bit address space");
+            return std::nullopt;
+        }
+
+        if (!has_first_load)
+        {
+            has_first_load = true;
+            image_base = p_vaddr;
+            first_load_vaddr = p_vaddr;
+            first_load_offset = p_offset;
+            first_load_paddr = p_paddr;
+        }
+        else if (p_vaddr < image_base)
+        {
+            image_base = p_vaddr;
+        }
+
+        segments.push_back(PrxSegment{p_vaddr, p_offset, p_filesz, p_memsz});
+    }
+
+    if (segments.empty())
+    {
+        SetError(error, "No PT_LOAD segments found in ET_EXEC");
+        return std::nullopt;
+    }
+
+    if (base != image_base)
+    {
+        std::ostringstream oss;
+        oss << "ET_EXEC is fixed at 0x" << std::hex << std::uppercase << image_base
+            << "; requested base 0x" << base;
+        SetError(error, oss.str());
+        return std::nullopt;
+    }
+
+    uint32_t image_size = 0;
+    bool entry_in_segment = false;
+    for (const auto& seg : segments)
+    {
+        uint64_t rel_vaddr = static_cast<uint64_t>(seg.vaddr - image_base);
+        uint64_t seg_end = rel_vaddr + seg.mem_size;
+        if (seg_end > 0xFFFFFFFFULL)
+        {
+            SetError(error, "ET_EXEC image size overflows 32-bit range");
+            return std::nullopt;
+        }
+        if (static_cast<uint32_t>(seg_end) > image_size)
+        {
+            image_size = static_cast<uint32_t>(seg_end);
+        }
+
+        if (e_entry >= seg.vaddr &&
+            static_cast<uint64_t>(e_entry) < static_cast<uint64_t>(seg.vaddr) + seg.mem_size)
+        {
+            entry_in_segment = true;
+        }
+    }
+
+    if (!entry_in_segment)
+    {
+        std::ostringstream oss;
+        oss << "ET_EXEC entry point 0x" << std::hex << std::uppercase << e_entry
+            << " is outside loaded segments";
+        SetError(error, oss.str());
+        return std::nullopt;
+    }
+
+    // Validate section headers and reject PRX relocation sections
+    if (e_shnum > 0)
+    {
+        if (e_shentsize < 40 ||
+            static_cast<size_t>(e_shoff) + static_cast<size_t>(e_shnum) * e_shentsize > file.size())
+        {
+            SetError(error, "Section header table exceeds file size");
+            return std::nullopt;
+        }
+
+        for (uint16_t i = 0; i < e_shnum; ++i)
+        {
+            const uint8_t* sh = data + e_shoff + static_cast<size_t>(i) * e_shentsize;
+            uint32_t sh_type = Read32(sh + 4);
+            if (sh_type == kShtPrxReloc || sh_type == kShtPrxRelocCompressed)
+            {
+                SetError(error, "PRX relocation sections are not allowed in ET_EXEC");
+                return std::nullopt;
+            }
+            if (sh_type == 8 /* SHT_NOBITS */)
+            {
+                continue;
+            }
+            uint32_t sh_offset = Read32(sh + 16);
+            uint32_t sh_size = Read32(sh + 20);
+            if (static_cast<size_t>(sh_offset) + sh_size > file.size())
+            {
+                SetError(error, "Section contents exceed file size");
+                return std::nullopt;
+            }
+        }
+    }
+
+    // Allocate image buffer relative to image_base and copy segment contents
+    std::vector<uint8_t> buffer(image_size, 0);
+    for (const auto& seg : segments)
+    {
+        if (seg.file_size > 0)
+        {
+            uint32_t rel_vaddr = seg.vaddr - image_base;
+            std::memcpy(buffer.data() + rel_vaddr, data + seg.file_offset, seg.file_size);
+        }
+    }
+
+    // Locate .rodata.sceModuleInfo
+    uint32_t modinfo_offset = 0;
+    bool has_modinfo = false;
+
+    if (e_shnum > 0 && e_shstrndx < e_shnum)
+    {
+        const uint8_t* strtab_sh = data + e_shoff + static_cast<size_t>(e_shstrndx) * e_shentsize;
+        uint32_t strtab_off = Read32(strtab_sh + 16);
+        uint32_t strtab_sz = Read32(strtab_sh + 20);
+
+        if (static_cast<size_t>(strtab_off) + strtab_sz <= file.size())
+        {
+            const char* strtab = reinterpret_cast<const char*>(data + strtab_off);
+            for (uint16_t i = 0; i < e_shnum; ++i)
+            {
+                const uint8_t* sh = data + e_shoff + static_cast<size_t>(i) * e_shentsize;
+                uint32_t name_idx = Read32(sh + 0);
+                if (name_idx < strtab_sz && (strtab_sz - name_idx) >= 22)
+                {
+                    const char* sname = strtab + name_idx;
+                    if (std::memcmp(sname, ".rodata.sceModuleInfo", 22) == 0)
+                    {
+                        uint32_t sh_addr = Read32(sh + 12);
+                        if (sh_addr < image_base ||
+                            static_cast<size_t>(sh_addr - image_base) + 52 > buffer.size())
+                        {
+                            SetError(error, "ET_EXEC .rodata.sceModuleInfo is outside loaded image");
+                            return std::nullopt;
+                        }
+                        modinfo_offset = sh_addr - image_base;
+                        has_modinfo = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Without section headers, ET_EXEC stores the module info file offset in first PT_LOAD p_paddr.
+    if (!has_modinfo && first_load_paddr != 0 && first_load_paddr >= first_load_offset)
+    {
+        uint64_t modinfo_vaddr =
+            static_cast<uint64_t>(first_load_vaddr) + (first_load_paddr - first_load_offset);
+        if (modinfo_vaddr >= image_base && (modinfo_vaddr - image_base) + 52 <= buffer.size())
+        {
+            modinfo_offset = static_cast<uint32_t>(modinfo_vaddr - image_base);
+            has_modinfo = true;
+        }
+    }
+
+    RelocateResult result;
+    result.buffer = std::move(buffer);
+    result.segments = std::move(segments);
+    result.entry = e_entry;
+    result.relocations_applied = 0;
+    result.modinfo_offset = modinfo_offset;
+    result.has_modinfo = has_modinfo;
+
+    return result;
+}
+
 std::optional<RelocateResult> ProcessPrx(std::span<const uint8_t> file, uint32_t base,
                                         std::string* error)
 {
@@ -90,9 +304,9 @@ std::optional<RelocateResult> ProcessPrx(std::span<const uint8_t> file, uint32_t
     }
 
     uint16_t e_type = Read16(data + 16);
-    if (e_type != kTypePrx)
+    if (e_type != kTypePrx && e_type != kTypeExec)
     {
-        SetError(error, "Unsupported ELF type (expected PRX e_type 0xFFA0)");
+        SetError(error, "Unsupported ELF type (expected PRX 0xFFA0 or ET_EXEC 2)");
         return std::nullopt;
     }
 
@@ -122,6 +336,12 @@ std::optional<RelocateResult> ProcessPrx(std::span<const uint8_t> file, uint32_t
     {
         SetError(error, "Program header table exceeds file size");
         return std::nullopt;
+    }
+
+    if (e_type == kTypeExec)
+    {
+        return ProcessExec(file, base, e_entry, e_phoff, e_shoff, e_phentsize, e_phnum,
+                           e_shentsize, e_shnum, e_shstrndx, error);
     }
 
     std::vector<PrxSegment> segments;

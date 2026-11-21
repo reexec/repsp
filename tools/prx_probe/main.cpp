@@ -209,6 +209,234 @@ std::vector<uint8_t> BuildSyntheticPrx()
     return prx;
 }
 
+// Build a valid synthetic fixed-address ET_EXEC in memory (no title data)
+std::vector<uint8_t> BuildSyntheticExec(uint32_t exec_base)
+{
+    std::vector<uint8_t> elf(0x500, 0);
+
+    // ELF Header at 0x00
+    elf[0] = 0x7F;
+    elf[1] = 'E';
+    elf[2] = 'L';
+    elf[3] = 'F';
+    elf[4] = 1; // ELFCLASS32
+    elf[5] = 1; // ELFDATA2LSB
+    elf[6] = 1; // EV_CURRENT
+
+    Write16(elf, 16, 2);                // e_type = ET_EXEC
+    Write16(elf, 18, 8);                // e_machine = EM_MIPS
+    Write32(elf, 20, 1);                // e_version = 1
+    Write32(elf, 24, exec_base + 0x10); // e_entry (absolute)
+    Write32(elf, 28, 52);               // e_phoff = 52
+    Write32(elf, 32, 100);              // e_shoff = 100
+    Write32(elf, 36, 0);                // e_flags = 0
+    Write16(elf, 40, 52);               // e_ehsize = 52
+    Write16(elf, 42, 32);               // e_phentsize = 32
+    Write16(elf, 44, 1);                // e_phnum = 1
+    Write16(elf, 46, 40);               // e_shentsize = 40
+    Write16(elf, 48, 4);                // e_shnum = 4
+    Write16(elf, 50, 1);                // e_shstrndx = 1
+
+    // Program Header 0: single PT_LOAD with BSS
+    Write32(elf, 52 + 0, 1);            // p_type = PT_LOAD
+    Write32(elf, 52 + 4, 0x200);        // p_offset = 0x200
+    Write32(elf, 52 + 8, exec_base);    // p_vaddr = exec_base
+    Write32(elf, 52 + 12, 0x240);       // p_paddr = file offset of .rodata.sceModuleInfo
+    Write32(elf, 52 + 16, 0x200);       // p_filesz = 0x200 (512 bytes)
+    Write32(elf, 52 + 20, 0x400);       // p_memsz = 0x400 (1024 bytes, 512 bytes BSS)
+    Write32(elf, 52 + 24, 7);           // p_flags = RWX
+    Write32(elf, 52 + 28, 16);          // p_align = 16
+
+    // Section string table at 0x120
+    const char strtab[] = "\0.shstrtab\0.rodata.sceModuleInfo\0.rel.text\0";
+    size_t strtab_sz = sizeof(strtab);
+    std::memcpy(&elf[0x120], strtab, strtab_sz);
+
+    // Section Header 0: NULL (offset 100)
+    // Section Header 1: .shstrtab (offset 140)
+    Write32(elf, 140 + 0, 1);                                  // sh_name (".shstrtab")
+    Write32(elf, 140 + 4, 3);                                  // sh_type = SHT_STRTAB
+    Write32(elf, 140 + 16, 0x120);                             // sh_offset
+    Write32(elf, 140 + 20, static_cast<uint32_t>(strtab_sz));  // sh_size
+    Write32(elf, 140 + 32, 1);                                 // sh_addralign
+
+    // Section Header 2: .rodata.sceModuleInfo (offset 180)
+    Write32(elf, 180 + 0, 11);               // sh_name (".rodata.sceModuleInfo")
+    Write32(elf, 180 + 4, 1);                // sh_type = SHT_PROGBITS
+    Write32(elf, 180 + 8, 2);                // sh_flags = SHF_ALLOC
+    Write32(elf, 180 + 12, exec_base + 0x40); // sh_addr (absolute)
+    Write32(elf, 180 + 16, 0x240);           // sh_offset
+    Write32(elf, 180 + 20, 52);              // sh_size = 52
+    Write32(elf, 180 + 32, 4);               // sh_addralign
+
+    // Section Header 3: empty .rel.text (offset 220, SHT_REL size 0 — ignored)
+    Write32(elf, 220 + 0, 33);    // sh_name (".rel.text")
+    Write32(elf, 220 + 4, 9);     // sh_type = SHT_REL
+    Write32(elf, 220 + 16, 0x200);
+    Write32(elf, 220 + 20, 0);    // sh_size = 0
+    Write32(elf, 220 + 32, 4);
+
+    // Segment 0 data at 0x200
+    // +0x10: entry point instructions
+    Write32(elf, 0x200 + 0x10, 0x03E00008); // jr $ra
+    Write32(elf, 0x200 + 0x14, 0x00000000); // nop
+    // +0x20: sentinel word (must remain unchanged)
+    Write32(elf, 0x200 + 0x20, 0xCAFEBABE);
+
+    // +0x40 (file 0x240): SceModuleInfo
+    Write16(elf, 0x240 + 0x00, 0);
+    elf[0x240 + 0x02] = 2;
+    elf[0x240 + 0x03] = 1;
+    std::memcpy(&elf[0x240 + 0x04], "exec_mod", 9);
+    Write32(elf, 0x240 + 0x20, exec_base + 0x300); // gp (absolute, in BSS)
+    Write32(elf, 0x240 + 0x24, exec_base + 0x100); // ent_top
+    Write32(elf, 0x240 + 0x28, exec_base + 0x110); // ent_end (16 bytes)
+    Write32(elf, 0x240 + 0x2C, exec_base + 0x080); // stub_top
+    Write32(elf, 0x240 + 0x30, exec_base + 0x094); // stub_end (20 bytes)
+
+    // +0x80 (file 0x280): .lib.stub entry (20 bytes)
+    Write32(elf, 0x280 + 0x00, exec_base + 0x0A0); // name_ptr
+    Write16(elf, 0x280 + 0x04, 0);
+    Write16(elf, 0x280 + 0x06, 0);
+    elf[0x280 + 0x08] = 5;                         // ent_len = 5 (20 bytes)
+    elf[0x280 + 0x09] = 0;                         // var_cnt = 0
+    Write16(elf, 0x280 + 0x0A, 1);                 // func_cnt = 1
+    Write32(elf, 0x280 + 0x0C, exec_base + 0x0B0); // nid_tbl
+    Write32(elf, 0x280 + 0x10, exec_base + 0x0C0); // stub_tbl
+
+    // +0xA0 (file 0x2A0): import library name
+    std::memcpy(&elf[0x2A0], "exec_imp_lib", 13);
+    // +0xB0 (file 0x2B0): import NID
+    Write32(elf, 0x2B0, 0xAABBCCDD);
+    // +0xC0 (file 0x2C0): import stub thunk
+    Write32(elf, 0x2C0 + 0, 0x03E00008);
+    Write32(elf, 0x2C0 + 4, 0x00000000);
+
+    // +0x100 (file 0x300): .lib.ent entry (16 bytes)
+    Write32(elf, 0x300 + 0x00, exec_base + 0x120); // name_ptr
+    Write16(elf, 0x300 + 0x04, 0);
+    Write16(elf, 0x300 + 0x06, 0);
+    elf[0x300 + 0x08] = 4;                         // ent_len = 4 (16 bytes)
+    elf[0x300 + 0x09] = 0;                         // var_cnt = 0
+    Write16(elf, 0x300 + 0x0A, 1);                 // func_cnt = 1
+    Write32(elf, 0x300 + 0x0C, exec_base + 0x130); // tbl
+
+    // +0x120 (file 0x320): export library name
+    std::memcpy(&elf[0x320], "exec_exp_lib", 13);
+    // +0x130 (file 0x330): export NID + absolute address
+    Write32(elf, 0x330 + 0, 0x11223344);
+    Write32(elf, 0x330 + 4, exec_base + 0x10);
+
+    return elf;
+}
+
+int RunExecTests(repsp::runtime::GuestMemory& memory)
+{
+    std::cout << "[prx_probe] Starting fixed-address ET_EXEC verification..." << std::endl;
+
+    const uint32_t kExecBase = 0x08804000;
+    auto exec = BuildSyntheticExec(kExecBase);
+    std::string err;
+
+    // 1. ParsePrx on synthetic ET_EXEC
+    auto parsed = repsp::module::ParsePrx(exec, kExecBase, &err);
+    if (!parsed)
+    {
+        std::cerr << "FAILED: ParsePrx(ET_EXEC) returned nullopt: " << err << std::endl;
+        return 1;
+    }
+
+    CHECK(parsed->base == kExecBase);
+    CHECK(parsed->entry == kExecBase + 0x10);
+    CHECK(parsed->gp == kExecBase + 0x300);
+    CHECK(parsed->image_end == kExecBase + 0x400);
+    CHECK(parsed->relocations_applied == 0);
+    CHECK(parsed->segments.size() == 1);
+    CHECK(parsed->segments[0].vaddr == kExecBase);
+    CHECK(parsed->segments[0].file_size == 0x200);
+    CHECK(parsed->segments[0].mem_size == 0x400);
+    CHECK(parsed->info.name == "exec_mod");
+    CHECK(parsed->info.version[0] == 2);
+    CHECK(parsed->info.version[1] == 1);
+    CHECK(parsed->imports.size() == 1);
+    CHECK(parsed->imports[0].library == "exec_imp_lib");
+    CHECK(parsed->imports[0].nid == 0xAABBCCDD);
+    CHECK(parsed->imports[0].stub_address == kExecBase + 0xC0);
+    CHECK(parsed->exports.size() == 1);
+    CHECK(parsed->exports[0].library == "exec_exp_lib");
+    CHECK(parsed->exports[0].nid == 0x11223344);
+    CHECK(parsed->exports[0].address == kExecBase + 0x10);
+
+    // 2. RelocateToBuffer on synthetic ET_EXEC
+    auto buf = repsp::module::RelocateToBuffer(exec, kExecBase, &err);
+    if (!buf)
+    {
+        std::cerr << "FAILED: RelocateToBuffer(ET_EXEC) returned nullopt: " << err << std::endl;
+        return 1;
+    }
+    CHECK(buf->size() == 0x400);
+    CHECK(Read32(buf->data() + 0x10) == 0x03E00008);
+    CHECK(Read32(buf->data() + 0x20) == 0xCAFEBABE);
+    for (size_t b = 0x200; b < 0x400; ++b)
+    {
+        CHECK((*buf)[b] == 0);
+    }
+
+    // 3. LoadPrx into GuestMemory (pre-dirty BSS to verify zeroing)
+    memory.WriteU32(kExecBase + 0x200, 0xDEADBEEF);
+    auto loaded = repsp::runtime::LoadPrx(exec, kExecBase, memory, &err);
+    if (!loaded)
+    {
+        std::cerr << "FAILED: LoadPrx(ET_EXEC) returned nullopt: " << err << std::endl;
+        return 1;
+    }
+    CHECK(memory.ReadU32(kExecBase + 0x10) == 0x03E00008);
+    CHECK(memory.ReadU32(kExecBase + 0x20) == 0xCAFEBABE);
+    CHECK(memory.ReadU32(kExecBase + 0x200) == 0);
+
+    // 4. Section-headerless ET_EXEC using p_paddr file-offset convention
+    auto no_sh = exec;
+    Write32(no_sh, 32, 0); // e_shoff = 0
+    Write16(no_sh, 48, 0); // e_shnum = 0
+    Write16(no_sh, 50, 0); // e_shstrndx = 0
+    auto parsed_no_sh = repsp::module::ParsePrx(no_sh, kExecBase, &err);
+    if (!parsed_no_sh)
+    {
+        std::cerr << "FAILED: ParsePrx(sectionless ET_EXEC) returned nullopt: " << err << std::endl;
+        return 1;
+    }
+    CHECK(parsed_no_sh->info.name == "exec_mod");
+    CHECK(parsed_no_sh->gp == kExecBase + 0x300);
+    CHECK(parsed_no_sh->imports.size() == 1);
+    CHECK(parsed_no_sh->imports[0].nid == 0xAABBCCDD);
+    CHECK(parsed_no_sh->exports.size() == 1);
+    CHECK(parsed_no_sh->exports[0].nid == 0x11223344);
+
+    // 5. Rejections
+    // 5.1 Base mismatch (error must name both addresses)
+    err.clear();
+    CHECK(!repsp::module::ParsePrx(exec, kExecBase + 0x1000, &err));
+    CHECK(err.find("8804000") != std::string::npos);
+    CHECK(err.find("8805000") != std::string::npos);
+
+    // 5.2 SHT_PRXRELOC in ET_EXEC
+    auto exec_with_prxreloc = exec;
+    Write32(exec_with_prxreloc, 220 + 4, 0x700000A0);
+    CHECK(!repsp::module::ParsePrx(exec_with_prxreloc, kExecBase, &err));
+
+    // 5.3 Entry out of range (above and below loaded segment)
+    auto bad_entry_high = exec;
+    Write32(bad_entry_high, 24, kExecBase + 0x400);
+    CHECK(!repsp::module::ParsePrx(bad_entry_high, kExecBase, &err));
+
+    auto bad_entry_low = exec;
+    Write32(bad_entry_low, 24, kExecBase - 4);
+    CHECK(!repsp::module::ParsePrx(bad_entry_low, kExecBase, &err));
+
+    std::cout << "[prx_probe] Fixed-address ET_EXEC checks passed." << std::endl;
+    return 0;
+}
+
 } // namespace
 
 int main()
@@ -336,6 +564,12 @@ int main()
     CHECK(!repsp::runtime::LoadPrx(prx, 0x30000000, memory, &err));
 
     std::cout << "[prx_probe] All bad input rejection tests passed." << std::endl;
+
+    if (RunExecTests(memory) != 0)
+    {
+        return 1;
+    }
+
     std::cout << "[prx_probe] ALL CHECKS PASSED!" << std::endl;
 
     return 0;
