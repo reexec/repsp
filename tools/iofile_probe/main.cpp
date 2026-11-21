@@ -164,6 +164,22 @@ int main()
     TEST_ASSERT(static_cast<int64_t>(GetGuestMemory().ReadU64(res_addr)) == 0);
     TEST_ASSERT(CallHle3("sceIoPollAsync", static_cast<uint32_t>(afd2), res_addr, 0) == kSceKernelErrorBadf);
 
+    // 4c. sceIoGetstat on file, directory, and missing path
+    const uint32_t stat_addr = 0x09003000u;
+    WriteGuestStr(path_addr, "disc0:/PSP_GAME/USRDIR/DATA.BIN");
+    TEST_ASSERT(CallHle3("sceIoGetstat", path_addr, stat_addr, 0) == 0);
+    TEST_ASSERT((GetGuestMemory().ReadU32(stat_addr + 0x00u) & 0xF000u) == 0x2000u);
+    TEST_ASSERT(GetGuestMemory().ReadU32(stat_addr + 0x04u) == 0x0020u);
+    TEST_ASSERT(GetGuestMemory().ReadU64(stat_addr + 0x08u) == 14u);
+
+    WriteGuestStr(path_addr, "disc0:/PSP_GAME/USRDIR");
+    TEST_ASSERT(CallHle3("sceIoGetstat", path_addr, stat_addr, 0) == 0);
+    TEST_ASSERT((GetGuestMemory().ReadU32(stat_addr + 0x00u) & 0xF000u) == 0x1000u);
+    TEST_ASSERT(GetGuestMemory().ReadU32(stat_addr + 0x04u) == 0x0010u);
+
+    WriteGuestStr(path_addr, "disc0:/PSP_GAME/USRDIR/NO_SUCH_FILE.BIN");
+    TEST_ASSERT(CallHle3("sceIoGetstat", path_addr, stat_addr, 0) == kSceKernelErrorErrnoEnoent);
+
     // 5. ModuleMgr HLE PRX whitelist checks (AV modules vs unknown PRX)
     {
         const std::filesystem::path mod_dir = tmp_root / "disc" / "PSP_GAME" / "USRDIR" / "modules";

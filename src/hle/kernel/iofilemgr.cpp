@@ -581,6 +581,61 @@ void HleIoPollAsync()
     recomp::Return(0);
 }
 
+// PSPSDK pspiofilemgr_stat.h: SceIoStat (88 bytes = 0x58):
+//   +0x00 u32 st_mode (FIO_S_IFDIR=0x1000, FIO_S_IFREG=0x2000, rwx=0777)
+//   +0x04 u32 st_attr (FIO_SO_IFDIR=0x0010, FIO_SO_IFREG=0x0020)
+//   +0x08 s64 st_size
+//   +0x10..+0x3F ScePspDateTime st_ctime, st_atime, st_mtime (3 x 16 bytes)
+//   +0x40..+0x57 u32 st_private[6]
+constexpr uint32_t kFioSIfDir = 0x1000u;
+constexpr uint32_t kFioSIfReg = 0x2000u;
+constexpr uint32_t kFioSoIfDir = 0x0010u;
+constexpr uint32_t kFioSoIfReg = 0x0020u;
+
+void HleIoGetstat()
+{
+    const uint32_t path_addr = recomp::Arg<uint32_t>(0);
+    const uint32_t stat_addr = recomp::Arg<uint32_t>(1);
+    if (path_addr == 0 || stat_addr == 0)
+    {
+        recomp::Return(kSceKernelErrorIllegalAddr);
+        return;
+    }
+
+    const std::string path = ReadGuestCString(path_addr);
+    std::filesystem::path host_path;
+    std::string normalized;
+    const auto st = runtime::GetVfs().Resolve(path, false, &host_path, &normalized);
+    if (st != runtime::VfsResolveStatus::kOk)
+    {
+        recomp::Return(MapVfsError(st));
+        return;
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(host_path, ec))
+    {
+        recomp::Return(kSceKernelErrorErrnoEnoent);
+        return;
+    }
+
+    const bool is_dir = std::filesystem::is_directory(host_path, ec);
+    const uint64_t size = is_dir ? 0u : static_cast<uint64_t>(std::filesystem::file_size(host_path, ec));
+
+    auto& mem = runtime::GetGuestMemory();
+    std::memset(mem.Translate(stat_addr), 0, 0x58u);
+    mem.WriteU32(stat_addr + 0x00u, (is_dir ? kFioSIfDir : kFioSIfReg) | 0777u);
+    mem.WriteU32(stat_addr + 0x04u, is_dir ? kFioSoIfDir : kFioSoIfReg);
+    mem.WriteU64(stat_addr + 0x08u, size);
+
+    if (runtime::GetNidRegistry().IsTraceEnabled())
+    {
+        runtime::Log(runtime::LogLevel::kInfo, "[IO] getstat(\"%s\") -> dir=%d size=%llu",
+                     normalized.c_str(), is_dir ? 1 : 0, static_cast<unsigned long long>(size));
+    }
+    recomp::Return(0);
+}
+
 } // namespace
 
 void ResetIoFiles()
@@ -630,6 +685,7 @@ void RegisterIoFileMgr()
     reg.RegisterByName("IoFileMgrForUser", "sceIoWaitAsync", HleIoWaitAsync);
     reg.RegisterByName("IoFileMgrForUser", "sceIoWaitAsyncCB", HleIoWaitAsyncCB);
     reg.RegisterByName("IoFileMgrForUser", "sceIoPollAsync", HleIoPollAsync);
+    reg.RegisterByName("IoFileMgrForUser", "sceIoGetstat", HleIoGetstat);
 }
 
 } // namespace repsp::hle::kernel::detail
