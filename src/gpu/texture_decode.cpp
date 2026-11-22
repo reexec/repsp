@@ -118,7 +118,7 @@ uint32_t DxtTexel(const DrawState& st, uint32_t x, uint32_t y)
     }
     else if (st.tex_fmt == kTpsmDxt5)
     {
-        const uint64_t bits = static_cast<uint64_t>(Read16(blk + 12u)) | (static_cast<uint64_t>(Read32(blk + 8u)) << 16);
+        const uint64_t bits = static_cast<uint64_t>(Read32(blk + 8u)) | (static_cast<uint64_t>(Read16(blk + 12u)) << 32);
         const int a0 = Read8(blk + 14u);
         const int a1 = Read8(blk + 15u);
         const int k = static_cast<int>(bits >> (3u * i)) & 7;

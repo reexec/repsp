@@ -10,6 +10,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -977,6 +980,154 @@ int main()
         const uint32_t lin_px = ReadVramPixel32(kFbAddr, kFbw, 3, 1);
         const uint32_t lin_r = lin_px & 0xFFu;
         TEST_ASSERT(lin_r > 20u && lin_r < 235u);
+    }
+
+    // GE draw & texture trace: off -> no output, out-of-range -> no output, in-range -> 1 line per draw
+    // and unique texture files written once.
+    {
+        namespace fs = std::filesystem;
+        const fs::path trace_dir = fs::temp_directory_path() / "repsp_ge_trace_probe";
+        std::error_code ec;
+        fs::remove_all(trace_dir, ec);
+
+        constexpr uint32_t kTraceTexAddr = 0x08941000u;
+        constexpr uint32_t kTraceClutAddr = 0x08941800u;
+        const uint8_t t8_pixels[16] = { 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3 };
+        const uint32_t clut32[8] = {
+            0xFF000000u, 0xFF0000FFu, 0xFF00FF00u, 0xFFFF0000u,
+            0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
+        };
+        std::memcpy(mem.Translate(kTraceTexAddr), t8_pixels, sizeof(t8_pixels));
+        std::memcpy(mem.Translate(kTraceClutAddr), clut32, sizeof(clut32));
+
+        const VertexTexColorPos2D verts[2] = {
+            { 0, 0, 0xFFFFFFFFu, 0, 0, 0, 0 },
+            { 4, 4, 0xFFFFFFFFu, 4, 4, 0, 0 },
+        };
+        std::memcpy(mem.Translate(kVertAddr), verts, sizeof(verts));
+
+        const std::vector<uint32_t> cmds = {
+            GeCmd(kOpFbp, kFbAddr & 0x00FFFFFFu),
+            GeCmd(kOpFbw, ((kFbAddr >> 8) & 0x00FF0000u) | kFbw),
+            GeCmd(kOpPsm, 3u),
+            GeCmd(kOpScissor1, 0u),
+            GeCmd(kOpScissor2, (271u << 10) | 479u),
+            GeCmd(kOpTme, 1u),
+            GeCmd(kOpTpsm, 5u), // T8
+            GeCmd(kOpTmode, 0u),
+            GeCmd(kOpTbp0, kTraceTexAddr & 0x00FFFFFFu),
+            GeCmd(kOpTbw0, ((kTraceTexAddr >> 8) & 0x00FF0000u) | 4u),
+            GeCmd(kOpTsize0, (2u << 8) | 2u), // 4x4
+            GeCmd(kOpCbp, kTraceClutAddr & 0x00FFFFFFu),
+            GeCmd(kOpCbph, (kTraceClutAddr >> 8) & 0x0F0000u),
+            GeCmd(kOpCmode, (0xFFu << 8) | 3u), // 8888, mask=0xFF
+            GeCmd(kOpCload, 1u), // 32 bytes = 8 entries
+            GeCmd(kOpTflt, 0u),
+            GeCmd(kOpTfunc, 3u),
+            GeCmd(kOpVtype, (1u << 23) | (2u << 7) | (7u << 2) | 2u),
+            GeCmd(kOpBase, (kVertAddr >> 8) & 0x00FF0000u),
+            GeCmd(kOpVaddr, kVertAddr & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u),
+            GeCmd(kOpVaddr, kVertAddr & 0x00FFFFFFu),
+            GeCmd(kOpPrim, (6u << 16) | 2u),
+            GeCmd(kOpFinish, 0u),
+            GeCmd(kOpEnd, 0u),
+        };
+        WriteList(kListAddr, cmds);
+
+        // 1) Disabled: nothing created.
+        repsp::gpu::ConfigureGeTrace(nullptr, 0, 0);
+        repsp::gpu::SetGeTraceFrame(10);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+        TEST_ASSERT(!fs::exists(trace_dir));
+
+        // 2) Enabled for frames 10..11, draw on frame 9 (outside range): nothing created.
+        const std::string dir_str = trace_dir.string();
+        repsp::gpu::ConfigureGeTrace(dir_str.c_str(), 10, 11);
+        repsp::gpu::SetGeTraceFrame(9);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+        TEST_ASSERT(!fs::exists(trace_dir / "ge_trace.txt"));
+
+        // 3) Frame 10 (in range): 2 draws -> 2 lines, 1 unique texture set (raw + clut + dec).
+        repsp::gpu::SetGeTraceFrame(10);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+
+        // 4) Frame 12 (past range): still only 2 lines.
+        repsp::gpu::SetGeTraceFrame(12);
+        TEST_ASSERT(static_cast<int32_t>(InvokeNid(nids, kNidGeListEnQueue, kListAddr, 0, static_cast<uint32_t>(-1), 0)) > 0);
+
+        repsp::gpu::ConfigureGeTrace(nullptr, 0, 0);
+
+        std::ifstream ifs(trace_dir / "ge_trace.txt");
+        TEST_ASSERT(ifs.is_open());
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(ifs, line))
+        {
+            if (!line.empty()) lines.push_back(line);
+        }
+        ifs.close();
+        TEST_ASSERT(lines.size() == 2u);
+        TEST_ASSERT(lines[0].find("f=10 ") == 0u);
+        TEST_ASSERT(lines[0].find("tex=tex_0000") != std::string::npos);
+        TEST_ASSERT(lines[1].find("tex=tex_0000") != std::string::npos);
+        TEST_ASSERT(fs::exists(trace_dir / "tex_0000_raw.bin"));
+        TEST_ASSERT(fs::exists(trace_dir / "tex_0000_clut.bin"));
+        TEST_ASSERT(fs::exists(trace_dir / "tex_0000_dec.bmp"));
+        TEST_ASSERT(!fs::exists(trace_dir / "tex_0001_raw.bin"));
+
+        fs::remove_all(trace_dir, ec);
+    }
+
+    // DXT5 48-bit alpha index order: bytes 8..11 are low 32 bits, bytes 12..13 are high 16 bits.
+    {
+        constexpr uint32_t kDxt5Addr = 0x08942000u;
+        // Build one 4x4 DXT5 block: white color (c0=0xFFFF, c1=0xFFFF, cidx=0),
+        // a0=210, a1=0 (8-level interpolation: k=0->210, k=1->0, k=2->180, k=3->150,
+        // k=4->120, k=5->90, k=6->60, k=7->30).
+        // Assign distinct 3-bit indices k[i] = i % 8 for all 16 texels so swapping
+        // the low 32 bits (blk+8..11) and high 16 bits (blk+12..13) fails immediately.
+        uint64_t alpha_bits = 0;
+        for (uint32_t i = 0; i < 16u; ++i)
+        {
+            alpha_bits |= static_cast<uint64_t>(i & 7u) << (3u * i);
+        }
+        uint8_t blk[16] = {0};
+        // Color block: cidx=0, c0=0xFFFF, c1=0xFFFF
+        blk[4] = 0xFFu;
+        blk[5] = 0xFFu;
+        blk[6] = 0xFFu;
+        blk[7] = 0xFFu;
+        // Alpha indices (little-endian 48-bit at bytes 8..13)
+        for (int b = 0; b < 6; ++b)
+        {
+            blk[8 + b] = static_cast<uint8_t>((alpha_bits >> (8 * b)) & 0xFFu);
+        }
+        blk[14] = 210u; // a0
+        blk[15] = 0u;   // a1
+        std::memcpy(mem.Translate(kDxt5Addr), blk, sizeof(blk));
+
+        repsp::gpu::DrawState st{};
+        st.tex_enable = 1;
+        st.tex_addr = kDxt5Addr;
+        st.tex_fmt = repsp::gpu::kTpsmDxt5;
+        st.tex_w = 4;
+        st.tex_h = 4;
+        st.tex_bw = 4;
+        st.tex_clamp_u = 1;
+        st.tex_clamp_v = 1;
+
+        static constexpr uint8_t kExpectedAlpha[8] = { 210, 0, 180, 150, 120, 90, 60, 30 };
+        for (int y = 0; y < 4; ++y)
+        {
+            for (int x = 0; x < 4; ++x)
+            {
+                const int i = y * 4 + x;
+                const uint32_t px = repsp::gpu::TexelFetch(st, x, y);
+                const uint8_t alpha = static_cast<uint8_t>((px >> 24) & 0xFFu);
+                TEST_ASSERT(alpha == kExpectedAlpha[i & 7]);
+            }
+        }
     }
 
     std::printf("ge_probe passed.\n");
