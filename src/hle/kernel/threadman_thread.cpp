@@ -164,6 +164,49 @@ void HleGetSystemTimeLow()
     recomp::Return(runtime::GetSystemTimeLow());
 }
 
+void HleGetSystemTime()
+{
+    uint32_t clock_addr = recomp::Arg<uint32_t>(0);
+    if (clock_addr == 0)
+    {
+        recomp::Return(kSceKernelErrorIllegalAddr);
+        return;
+    }
+
+    const uint64_t us = runtime::GetSystemTimeWide();
+    auto& mem = runtime::GetGuestMemory();
+    mem.WriteU32(clock_addr, static_cast<uint32_t>(us & 0xFFFFFFFFu));
+    mem.WriteU32(clock_addr + 4u, static_cast<uint32_t>(us >> 32));
+    recomp::Return(kSceKernelErrorOk);
+}
+
+void HleSysClock2USec()
+{
+    uint32_t clock_addr = recomp::Arg<uint32_t>(0);
+    uint32_t sec_addr = recomp::Arg<uint32_t>(1);
+    uint32_t usec_addr = recomp::Arg<uint32_t>(2);
+    if (clock_addr == 0)
+    {
+        recomp::Return(kSceKernelErrorIllegalAddr);
+        return;
+    }
+
+    auto& mem = runtime::GetGuestMemory();
+    const uint64_t low = mem.ReadU32(clock_addr);
+    const uint64_t hi = mem.ReadU32(clock_addr + 4u);
+    const uint64_t total_us = low | (hi << 32);
+
+    if (sec_addr != 0)
+    {
+        mem.WriteU32(sec_addr, static_cast<uint32_t>(total_us / 1000000ull));
+    }
+    if (usec_addr != 0)
+    {
+        mem.WriteU32(usec_addr, static_cast<uint32_t>(total_us % 1000000ull));
+    }
+    recomp::Return(kSceKernelErrorOk);
+}
+
 } // namespace
 
 void RegisterThreadManThread()
@@ -185,6 +228,8 @@ void RegisterThreadManThread()
     reg.RegisterByName("ThreadManForUser", "sceKernelCheckCallback", HleCheckCallback);
     reg.RegisterByName("ThreadManForUser", "sceKernelGetSystemTimeWide", HleGetSystemTimeWide);
     reg.RegisterByName("ThreadManForUser", "sceKernelGetSystemTimeLow", HleGetSystemTimeLow);
+    reg.RegisterByName("ThreadManForUser", "sceKernelGetSystemTime", HleGetSystemTime);
+    reg.RegisterByName("ThreadManForUser", "sceKernelSysClock2USec", HleSysClock2USec);
 }
 
 } // namespace repsp::hle::kernel::detail
