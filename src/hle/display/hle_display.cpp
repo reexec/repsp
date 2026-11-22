@@ -1,4 +1,5 @@
 #include "repsp/hle/display.h"
+#include "repsp/gpu/ge_interpreter.h"
 #include "repsp/gpu/render_backend.h"
 #include "repsp/platform/display.h"
 #include "repsp/platform/platform.h"
@@ -119,6 +120,7 @@ void PresentActive(std::unique_lock<std::mutex>& lock)
     if (is_gl)
     {
         ++g_frames_presented;
+        gpu::SetGeTraceFrame(g_frames_presented);
         lock.unlock();
         gpu::PresentGlTarget(fb.topaddr);
 
@@ -156,6 +158,7 @@ void PresentActive(std::unique_lock<std::mutex>& lock)
         rgba_copy = g_rgba_scratch;
     }
     ++g_frames_presented;
+    gpu::SetGeTraceFrame(g_frames_presented);
     lock.unlock();
 
     if (backend)
@@ -386,6 +389,7 @@ void Register(const DisplayHleConfig& config)
         g_has_pending_fb = false;
         g_frames_presented = 0;
         g_frames_dumped = 0;
+        gpu::SetGeTraceFrame(0);
 
         g_backend = platform::GetDisplay();
         g_owns_platform = false;

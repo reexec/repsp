@@ -2,6 +2,7 @@
 // Reshaped to repsp types and GuestMemory with no dependency on psprecomp headers.
 
 #include "repsp/gpu/ge_interpreter.h"
+#include "ge_trace.h"
 #include "repsp/platform/guarded_run.h"
 #include "repsp/runtime/guest_memory.h"
 
@@ -412,6 +413,7 @@ void GeInterpreter::Reset()
 
     ds_ = DrawState{};
     std::memset(clut_, 0, sizeof(clut_));
+    clut_loaded_bytes_ = 0;
     std::memset(tbp_, 0, sizeof(tbp_));
     std::memset(tbw_, 0, sizeof(tbw_));
     cbp_ = zbp_ = zbw_ = vaddr_ = iaddr_ = 0;
@@ -424,6 +426,7 @@ void GeInterpreter::Reset()
     xf_.proj[0] = xf_.proj[5] = xf_.proj[10] = xf_.proj[15] = 1.0f;
     xf_.uscale = xf_.vscale = 1.0f;
     ResetRenderedPixelCount();
+    detail::GeTraceReloadFromEnv();
 }
 
 void GeInterpreter::SetInterruptCallback(GeInterruptCallback cb)
@@ -517,6 +520,11 @@ void GeInterpreter::DrawPrim(uint32_t type, uint32_t count)
 
     if (n > 0)
     {
+        if (detail::GeTraceIsEnabled())
+        {
+            detail::GeTraceRecordDraw(stats_.lists, kPrimNames[type & 7u], stats_.vtype,
+                                      v, n, ds_, xf_, clut_loaded_bytes_);
+        }
         auto* backend = GetRenderBackend();
         const uint32_t step = (type == kPrimTriangles) ? 3u : ((type == kPrimSprites || type == kPrimLines) ? 2u : 0u);
         const uint32_t chunk = (type == kPrimTriangles) ? 24u : 16u;
@@ -654,9 +662,19 @@ void GeInterpreter::RunList(QueueSlot* q)
         }
         case kGeBezier:
             ++stats_.unsupported_bezier;
+            if (detail::GeTraceIsEnabled())
+            {
+                detail::GeTraceRecordDraw(stats_.lists, "bezier", stats_.vtype,
+                                          nullptr, 0, ds_, xf_, clut_loaded_bytes_);
+            }
             break;
         case kGeSpline:
             ++stats_.unsupported_spline;
+            if (detail::GeTraceIsEnabled())
+            {
+                detail::GeTraceRecordDraw(stats_.lists, "spline", stats_.vtype,
+                                          nullptr, 0, ds_, xf_, clut_loaded_bytes_);
+            }
             break;
         case kGeJump:
             q->list = FoldGeAddr(ResolveGeAddr(q->base, q->offset, arg));
@@ -878,6 +896,7 @@ void GeInterpreter::RunList(QueueSlot* q)
             uint32_t n = (arg & 0x3Fu) * 32u;
             if (n > sizeof(clut_)) n = sizeof(clut_);
             for (uint32_t i = 0; i < n; ++i) clut_[i] = Read8(cbp_ + i);
+            clut_loaded_bytes_ = n;
             break;
         }
         case kGeCmode:
@@ -1197,6 +1216,21 @@ GeInterpreter& GetGeInterpreter()
 {
     static GeInterpreter instance;
     return instance;
+}
+
+void SetGeTraceFrame(uint64_t frame)
+{
+    detail::GeTraceSetFrame(frame);
+}
+
+void ConfigureGeTrace(const char* dir, uint64_t first_frame, uint64_t last_frame)
+{
+    detail::GeTraceConfigure(dir, first_frame, last_frame);
+}
+
+void ReloadGeTraceFromEnv()
+{
+    detail::GeTraceReloadFromEnv();
 }
 
 } // namespace repsp::gpu

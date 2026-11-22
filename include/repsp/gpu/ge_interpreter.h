@@ -190,10 +190,17 @@ private:
     uint32_t vaddr_ = 0;
     uint32_t iaddr_ = 0;
     uint8_t clut_[1024] = {0};
+    uint32_t clut_loaded_bytes_ = 0;
     uint32_t material_ = 0xFFFFFFFFu;
 };
 
 GeInterpreter& GetGeInterpreter();
+
+// Optional GE draw and texture trace (disabled by default; controlled via
+// REPSP_GE_TRACE and REPSP_GE_TRACE_FRAMES).
+void SetGeTraceFrame(uint64_t frame);
+void ConfigureGeTrace(const char* dir, uint64_t first_frame, uint64_t last_frame);
+void ReloadGeTraceFromEnv();
 
 } // namespace repsp::gpu
 
