@@ -362,8 +362,94 @@ int main()
         TEST_ASSERT(content.find("TRIANGLE") == std::string::npos);
     }
 
+    // 9. Sample filter transforms lx/ly/buttons, runs after button filter, restores on clear,
+    //    and leaves input recording on pre-filter values.
+    {
+        const std::filesystem::path rec_path =
+            std::filesystem::temp_directory_path() / "repsp_ctrl_probe_sample_filter.txt";
+        std::filesystem::remove(rec_path);
+
+        repsp::hle::ctrl::Register();
+        clock.Stop();
+        TEST_ASSERT(CallMode(repsp::hle::ctrl::kPspCtrlModeAnalog) == repsp::hle::ctrl::kPspCtrlModeDigital);
+        repsp::hle::ctrl::SetInputSource([](uint32_t /*vcount*/)
+        {
+            repsp::platform::ControllerState st{};
+            st.buttons = repsp::platform::kPspCtrlCross;
+            st.lx = 0.0f;
+            st.ly = 0.0f;
+            return st;
+        });
+
+        TEST_ASSERT(repsp::hle::ctrl::StartInputRecording(rec_path.string()));
+
+        // Sample filter alone modifies buttons, lx, ly.
+        repsp::hle::ctrl::SetSampleFilter([](repsp::hle::ctrl::SceCtrlData& sample)
+        {
+            TEST_ASSERT(sample.buttons == repsp::platform::kPspCtrlCross);
+            TEST_ASSERT(sample.lx == 128 && sample.ly == 128);
+            sample.buttons = repsp::platform::kPspCtrlCircle;
+            sample.lx = 255;
+            sample.ly = 0;
+        });
+        clock.StepForTest();
+        TEST_ASSERT(CallReadPositive(kPadBuf, 1) == 1);
+        {
+            const auto d = ReadPadFromGuest(kPadBuf);
+            TEST_ASSERT(d.buttons == repsp::platform::kPspCtrlCircle);
+            TEST_ASSERT(d.lx == 255 && d.ly == 0);
+        }
+
+        // Combined: button filter runs first, then sample filter sees button-filtered value.
+        repsp::hle::ctrl::SetButtonFilter([](uint32_t buttons) -> uint32_t
+        {
+            TEST_ASSERT(buttons == repsp::platform::kPspCtrlCross);
+            return repsp::platform::kPspCtrlSquare;
+        });
+        repsp::hle::ctrl::SetSampleFilter([](repsp::hle::ctrl::SceCtrlData& sample)
+        {
+            TEST_ASSERT(sample.buttons == repsp::platform::kPspCtrlSquare);
+            sample.buttons |= repsp::platform::kPspCtrlUp;
+            sample.lx = 10;
+            sample.ly = 240;
+        });
+        clock.StepForTest();
+        TEST_ASSERT(CallReadPositive(kPadBuf, 1) == 1);
+        {
+            const auto d = ReadPadFromGuest(kPadBuf);
+            TEST_ASSERT(d.buttons == (repsp::platform::kPspCtrlSquare | repsp::platform::kPspCtrlUp));
+            TEST_ASSERT(d.lx == 10 && d.ly == 240);
+        }
+
+        // Clearing both restores original values.
+        repsp::hle::ctrl::SetButtonFilter(nullptr);
+        repsp::hle::ctrl::SetSampleFilter(nullptr);
+        clock.StepForTest();
+        TEST_ASSERT(CallReadPositive(kPadBuf, 1) == 1);
+        {
+            const auto d = ReadPadFromGuest(kPadBuf);
+            TEST_ASSERT(d.buttons == repsp::platform::kPspCtrlCross);
+            TEST_ASSERT(d.lx == 128 && d.ly == 128);
+        }
+
+        repsp::hle::ctrl::StopInputRecording();
+        clock.Start();
+        repsp::hle::ctrl::Shutdown();
+        clock.ResetForTest();
+
+        std::ifstream in(rec_path);
+        TEST_ASSERT(in.is_open());
+        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        std::filesystem::remove(rec_path);
+        TEST_ASSERT(content.find("CROSS") != std::string::npos);
+        TEST_ASSERT(content.find("CIRCLE") == std::string::npos);
+        TEST_ASSERT(content.find("SQUARE") == std::string::npos);
+        TEST_ASSERT(content.find("UP") == std::string::npos);
+    }
+
     mem.Shutdown();
 
-    std::printf("[PASS] ctrl_probe: 8/8 checks passed\n");
+    std::printf("[PASS] ctrl_probe: 9/9 checks passed\n");
     return 0;
 }
