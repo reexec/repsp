@@ -49,6 +49,7 @@ uint64_t g_last_read_seq = 0;
 uint64_t g_samples_read = 0;
 InputSourceFn g_input_source;
 ButtonFilterFn g_button_filter;
+SampleFilterFn g_sample_filter;
 
 std::atomic<std::FILE*> g_record_file{nullptr};
 uint32_t g_last_recorded_buttons = 0;
@@ -250,7 +251,8 @@ void HleReadBufferPositive()
 
     std::array<SceCtrlData, kRingSize> out{};
     int32_t actual = 0;
-    ButtonFilterFn filter;
+    ButtonFilterFn button_filter;
+    SampleFilterFn sample_filter;
     {
         std::lock_guard<std::mutex> lock(g_ctrl_mutex);
         if (!g_initialized)
@@ -277,14 +279,22 @@ void HleReadBufferPositive()
         }
         g_last_read_seq = g_samples_produced;
         g_samples_read += static_cast<uint64_t>(actual);
-        filter = g_button_filter;
+        button_filter = g_button_filter;
+        sample_filter = g_sample_filter;
     }
 
-    if (filter)
+    if (button_filter || sample_filter)
     {
         for (int32_t i = 0; i < actual; ++i)
         {
-            out[static_cast<size_t>(i)].buttons = filter(out[static_cast<size_t>(i)].buttons);
+            if (button_filter)
+            {
+                out[static_cast<size_t>(i)].buttons = button_filter(out[static_cast<size_t>(i)].buttons);
+            }
+            if (sample_filter)
+            {
+                sample_filter(out[static_cast<size_t>(i)]);
+            }
         }
     }
 
@@ -322,6 +332,7 @@ void Register()
         g_samples_read = 0;
         g_input_source = nullptr;
         g_button_filter = nullptr;
+        g_sample_filter = nullptr;
         g_initialized = true;
     }
 
@@ -355,6 +366,7 @@ void Shutdown()
         g_vblank_sub_id = 0;
         g_input_source = nullptr;
         g_button_filter = nullptr;
+        g_sample_filter = nullptr;
     }
 
     if (was_initialized)
@@ -375,6 +387,12 @@ void SetButtonFilter(ButtonFilterFn fn)
 {
     std::lock_guard<std::mutex> lock(g_ctrl_mutex);
     g_button_filter = std::move(fn);
+}
+
+void SetSampleFilter(SampleFilterFn fn)
+{
+    std::lock_guard<std::mutex> lock(g_ctrl_mutex);
+    g_sample_filter = std::move(fn);
 }
 
 bool StartInputRecording(const std::string& path)

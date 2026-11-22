@@ -33,6 +33,7 @@ struct CtrlStats
 
 using InputSourceFn = std::function<platform::ControllerState(uint32_t vcount)>;
 using ButtonFilterFn = std::function<uint32_t(uint32_t buttons)>;
+using SampleFilterFn = std::function<void(SceCtrlData& sample)>;
 
 void Register();
 void Shutdown();
@@ -43,6 +44,10 @@ void SetInputSource(InputSourceFn fn);
 // Optional filter applied to button masks returned by sceCtrlReadBuffer* / sceCtrlPeekBuffer*
 // on the calling guest thread (pass nullptr to clear). Input recording logs the pre-filter value.
 void SetButtonFilter(ButtonFilterFn fn);
+
+// Optional per-sample filter applied after SetButtonFilter on the calling guest thread
+// (pass nullptr to clear). May modify buttons and analog axes (lx/ly). Input recording logs pre-filter values.
+void SetSampleFilter(SampleFilterFn fn);
 
 // Record button state changes in --input-script format (<vblank> <button names>).
 bool StartInputRecording(const std::string& path);
