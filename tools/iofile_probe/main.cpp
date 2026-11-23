@@ -214,6 +214,58 @@ int main()
         TEST_ASSERT(unk_err == kSceKernelErrorPrxTypeUnsupported);
     }
 
+    // 7. sceIoDevctl("ms0:", 0x02425818, &ptr, 4, 0, 0) free space query.
+    {
+        const uint32_t dev_addr = 0x09003000u;
+        const uint32_t ptr_box_addr = 0x09003100u;
+        const uint32_t out_struct_addr = 0x09003200u;
+        WriteGuestStr(dev_addr, "ms0:");
+        GetGuestMemory().WriteU32(ptr_box_addr, out_struct_addr);
+        std::memset(GetGuestMemory().Translate(out_struct_addr), 0, 20u);
+
+        g_cpu.gpr[4] = dev_addr;
+        g_cpu.gpr[5] = 0x02425818u;
+        g_cpu.gpr[6] = ptr_box_addr;
+        g_cpu.gpr[7] = 4u;
+        g_cpu.gpr[8] = 0u;
+        g_cpu.gpr[9] = 0u;
+        repsp_recomp_hle_call(ComputeNid("sceIoDevctl"));
+        TEST_ASSERT(static_cast<int32_t>(g_cpu.gpr[2]) == 0);
+
+        const uint32_t max_clusters = GetGuestMemory().ReadU32(out_struct_addr + 0x00u);
+        const uint32_t free_clusters = GetGuestMemory().ReadU32(out_struct_addr + 0x04u);
+        const uint32_t sector_size = GetGuestMemory().ReadU32(out_struct_addr + 0x0Cu);
+        const uint32_t sector_count = GetGuestMemory().ReadU32(out_struct_addr + 0x10u);
+        TEST_ASSERT(sector_size == 512u);
+        TEST_ASSERT(sector_count == 64u);
+        TEST_ASSERT(max_clusters >= free_clusters);
+        TEST_ASSERT(free_clusters <= 32768u);
+        // Product must fit in positive signed 32-bit integer.
+        const uint64_t free_bytes = static_cast<uint64_t>(free_clusters) * sector_size * sector_count;
+        TEST_ASSERT(free_bytes <= 0x40000000ull);
+    }
+
+    // 8. sceKernelVolatileMemTryLock / Unlock and double-lock failure.
+    {
+        const uint32_t vm_ptr_addr = 0x09003300u;
+        const uint32_t vm_size_addr = 0x09003304u;
+        GetGuestMemory().WriteU32(vm_ptr_addr, 0u);
+        GetGuestMemory().WriteU32(vm_size_addr, 0u);
+
+        TEST_ASSERT(CallHle3("sceKernelVolatileMemTryLock", 0u, vm_ptr_addr, vm_size_addr) == 0);
+        TEST_ASSERT(GetGuestMemory().ReadU32(vm_ptr_addr) == 0x08400000u);
+        TEST_ASSERT(GetGuestMemory().ReadU32(vm_size_addr) == 0x00400000u);
+
+        // Double lock fails with SCE_POWER_ERROR_TAKEN_SLOT.
+        TEST_ASSERT(CallHle3("sceKernelVolatileMemTryLock", 0u, vm_ptr_addr, vm_size_addr) == kScePowerErrorTakenSlot);
+
+        // Unlock succeeds, double unlock fails, re-lock succeeds.
+        TEST_ASSERT(CallHle3("sceKernelVolatileMemUnlock", 0u, 0u, 0u) == 0);
+        TEST_ASSERT(CallHle3("sceKernelVolatileMemUnlock", 0u, 0u, 0u) != 0);
+        TEST_ASSERT(CallHle3("sceKernelVolatileMemTryLock", 0u, vm_ptr_addr, vm_size_addr) == 0);
+        TEST_ASSERT(CallHle3("sceKernelVolatileMemUnlock", 0u, 0u, 0u) == 0);
+    }
+
     kernel::Register(kernel::KernelConfig{}); // closes any remaining files cleanly
     std::filesystem::remove_all(tmp_root, ec);
 

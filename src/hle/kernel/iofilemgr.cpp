@@ -1,5 +1,6 @@
 #include "kernel_internal.h"
 #include "repsp/hle/kernel_errors.h"
+#include "repsp/platform/guarded_run.h"
 #include "repsp/recomp/recomp_helpers.h"
 #include "repsp/runtime/guest_memory.h"
 #include "repsp/runtime/log.h"
@@ -677,6 +678,86 @@ void HleIoGetstat()
     recomp::Return(0);
 }
 
+// PSPSDK pspiofilemgr.h / Memory Stick devctl 0x02425818 (free space query).
+// indata points to a 32-bit guest pointer which in turn points to a 20-byte struct:
+//   u32 max_clusters, u32 free_clusters, u32 max_sectors, u32 sector_size, u32 sector_count.
+constexpr uint32_t kIoDevctlMsFreeSpace = 0x02425818u;
+constexpr uint32_t kMsDevctlSectorSize = 512u;
+constexpr uint32_t kMsDevctlSectorCount = 64u; // 32 KiB cluster
+constexpr uint32_t kMsDevctlMaxReportedFreeClusters = 32768u; // 1 GiB clamp so signed 32-bit byte product never overflows
+
+void HleIoDevctl()
+{
+    const uint32_t dev_addr = recomp::Arg<uint32_t>(0);
+    const uint32_t cmd = recomp::Arg<uint32_t>(1);
+    const uint32_t indata_addr = recomp::Arg<uint32_t>(2);
+    const int32_t inlen = recomp::Arg<int32_t>(3);
+    (void)recomp::Arg<uint32_t>(4);
+    (void)recomp::Arg<int32_t>(5);
+
+    const std::string dev = ReadGuestCString(dev_addr);
+    if (cmd != kIoDevctlMsFreeSpace)
+    {
+        char stop_buf[160] = {};
+        std::snprintf(stop_buf, sizeof(stop_buf),
+                      "Unimplemented sceIoDevctl(dev=\"%s\", cmd=0x%08X)", dev.c_str(), cmd);
+        platform::RaiseStop(stop_buf);
+    }
+
+    auto& mem = runtime::GetGuestMemory();
+    if (indata_addr == 0 || inlen < 4 || !mem.IsValidAddress(indata_addr, 4u))
+    {
+        recomp::Return(kSceKernelErrorErrnoEinval);
+        return;
+    }
+
+    std::filesystem::path ms_root;
+    const auto st = runtime::GetVfs().Resolve("ms0:/", false, &ms_root, nullptr);
+    if (st != runtime::VfsResolveStatus::kOk)
+    {
+        recomp::Return(kSceKernelErrorErrnoEnodev);
+        return;
+    }
+
+    const uint32_t out_struct_addr = mem.ReadU32(indata_addr);
+    if (out_struct_addr == 0 || !mem.IsValidAddress(out_struct_addr, 20u))
+    {
+        recomp::Return(kSceKernelErrorIllegalAddr);
+        return;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(ms_root, ec);
+    const auto space = std::filesystem::space(ms_root, ec);
+    if (ec)
+    {
+        recomp::Return(kSceKernelErrorErrnoEnodev);
+        return;
+    }
+
+    const uint64_t cluster_bytes = static_cast<uint64_t>(kMsDevctlSectorSize) * kMsDevctlSectorCount;
+    const uint64_t raw_free_clusters = space.available / cluster_bytes;
+    const uint32_t free_clusters = static_cast<uint32_t>(
+        std::min<uint64_t>(raw_free_clusters, kMsDevctlMaxReportedFreeClusters));
+    const uint64_t raw_max_clusters = space.capacity / cluster_bytes;
+    const uint32_t max_clusters = static_cast<uint32_t>(
+        std::max<uint64_t>(free_clusters, std::min<uint64_t>(raw_max_clusters, 65535u)));
+
+    mem.WriteU32(out_struct_addr + 0x00u, max_clusters);
+    mem.WriteU32(out_struct_addr + 0x04u, free_clusters);
+    mem.WriteU32(out_struct_addr + 0x08u, free_clusters);
+    mem.WriteU32(out_struct_addr + 0x0Cu, kMsDevctlSectorSize);
+    mem.WriteU32(out_struct_addr + 0x10u, kMsDevctlSectorCount);
+
+    if (runtime::GetNidRegistry().IsTraceEnabled())
+    {
+        runtime::Log(runtime::LogLevel::kInfo,
+                     "[IO] devctl(\"%s\", 0x%08X) -> free_clusters=%u max_clusters=%u",
+                     dev.c_str(), cmd, free_clusters, max_clusters);
+    }
+    recomp::Return(0);
+}
+
 } // namespace
 
 void ResetIoFiles()
@@ -727,6 +808,7 @@ void RegisterIoFileMgr()
     reg.RegisterByName("IoFileMgrForUser", "sceIoWaitAsyncCB", HleIoWaitAsyncCB);
     reg.RegisterByName("IoFileMgrForUser", "sceIoPollAsync", HleIoPollAsync);
     reg.RegisterByName("IoFileMgrForUser", "sceIoGetstat", HleIoGetstat);
+    reg.RegisterByName("IoFileMgrForUser", "sceIoDevctl", HleIoDevctl);
 }
 
 } // namespace repsp::hle::kernel::detail

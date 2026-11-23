@@ -25,6 +25,7 @@ void ResetIoFiles();
 void ResetThreadManSync();
 void ResetModules();
 void ResetUmd();
+void ResetPowerSuspend();
 bool IsUmdDiscPresent();
 uint64_t GetUmdGeneration();
 std::vector<OpenFileInfo> SnapshotIoFiles();
