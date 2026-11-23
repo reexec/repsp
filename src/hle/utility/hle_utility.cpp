@@ -58,6 +58,12 @@ constexpr uint32_t kSavedataModeListSave = 5u;
 constexpr uint32_t kSavedataModeListDelete = 6u;
 constexpr uint32_t kSavedataModeAllDelete = 7u;
 constexpr uint32_t kSavedataModeSizes = 8u;
+constexpr uint32_t kSavedataModeFiles = 12u;
+constexpr uint32_t kSavedataModeMakedataSecure = 13u;
+constexpr uint32_t kSavedataModeReaddataSecure = 15u;
+constexpr uint32_t kSavedataModeWritedataSecure = 17u;
+constexpr uint32_t kSavedataModeEraseSecure = 19u;
+constexpr uint32_t kSavedataModeGetSize = 22u;
 
 constexpr uint32_t kSfoMagic = 0x46535000u;
 constexpr uint32_t kSfoVersion = 0x00000101u;
@@ -94,6 +100,8 @@ constexpr uint32_t kSaveOffSnd0 = 0x5B4u;
 constexpr uint32_t kSaveOffMsFree = 0x5D0u;
 constexpr uint32_t kSaveOffMsData = 0x5D4u;
 constexpr uint32_t kSaveOffUtilityData = 0x5D8u;
+constexpr uint32_t kSaveOffFileList = 0x5F8u; // PspUtilitySavedataFileListInfo*
+constexpr uint32_t kSaveOffSizeInfo = 0x5FCu; // PspUtilitySavedataSizeInfo*
 
 // Offsets inside pspUtilityMsgDialogParams (580-byte layout)
 constexpr uint32_t kMsgOffUnknownResult = 0x30u;
@@ -697,9 +705,55 @@ const char* SavedataModeName(uint32_t mode)
         return "ALLDELETE";
     case kSavedataModeSizes:
         return "SIZES";
+    case kSavedataModeFiles:
+        return "FILES";
+    case kSavedataModeMakedataSecure:
+        return "MAKEDATASECURE";
+    case kSavedataModeReaddataSecure:
+        return "READDATASECURE";
+    case kSavedataModeWritedataSecure:
+        return "WRITEDATASECURE";
+    case kSavedataModeEraseSecure:
+        return "ERASESECURE";
+    case kSavedataModeGetSize:
+        return "GETSIZE";
     default:
         return "UNKNOWN";
     }
+}
+
+bool IsSupportedSavedataMode(uint32_t mode)
+{
+    return mode <= kSavedataModeSizes ||
+           mode == kSavedataModeFiles ||
+           mode == kSavedataModeMakedataSecure ||
+           mode == kSavedataModeReaddataSecure ||
+           mode == kSavedataModeWritedataSecure ||
+           mode == kSavedataModeEraseSecure ||
+           mode == kSavedataModeGetSize;
+}
+
+bool IsSystemSavedataFileName(const std::string& name)
+{
+    std::string upper = name;
+    for (char& ch : upper)
+    {
+        ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    }
+    return upper == "PARAM.SFO" || upper == "ICON0.PNG" || upper == "ICON1.PMF" ||
+           upper == "PIC1.PNG" || upper == "SND0.AT3";
+}
+
+void WriteU64(uint32_t addr, uint64_t val)
+{
+    std::memcpy(runtime::GetGuestMemory().Translate(addr), &val, sizeof(val));
+}
+
+uint64_t ReadU64(uint32_t addr)
+{
+    uint64_t val = 0;
+    std::memcpy(&val, runtime::GetGuestMemory().Translate(addr), sizeof(val));
+    return val;
 }
 
 bool ExecuteSavedataInit(uint32_t param_addr, int32_t& hle_ret_out, char (&stop_buf)[160])
@@ -730,7 +784,7 @@ bool ExecuteSavedataInit(uint32_t param_addr, int32_t& hle_ret_out, char (&stop_
     }
 
     const uint32_t mode = ReadU32(param_addr + kSaveOffMode);
-    if (mode > kSavedataModeSizes)
+    if (!IsSupportedSavedataMode(mode))
     {
         std::snprintf(stop_buf, sizeof(stop_buf),
                       "Unimplemented sceUtilitySavedata mode %u", mode);
@@ -741,11 +795,15 @@ bool ExecuteSavedataInit(uint32_t param_addr, int32_t& hle_ret_out, char (&stop_
     const std::string file_name = ReadFixedString(param_addr + kSaveOffFileName, 13u);
     const std::string save_name = ResolveTargetSaveName(param_addr, mode, save_root, game_name);
 
+    const bool allow_empty_file = (mode == kSavedataModeSizes ||
+                                   mode == kSavedataModeListDelete ||
+                                   mode == kSavedataModeAllDelete ||
+                                   mode == kSavedataModeFiles ||
+                                   mode == kSavedataModeGetSize);
+
     if (!IsSafeNameComponent(game_name, false) ||
         !IsSafeNameComponent(save_name, true) ||
-        !IsSafeNameComponent(file_name, mode == kSavedataModeSizes ||
-                                            mode == kSavedataModeListDelete ||
-                                            mode == kSavedataModeAllDelete))
+        !IsSafeNameComponent(file_name, allow_empty_file))
     {
         WriteI32(param_addr + kCommonOffResult,
                  (mode == kSavedataModeAutosave || mode == kSavedataModeSave || mode == kSavedataModeListSave)
@@ -946,6 +1004,260 @@ bool ExecuteSavedataInit(uint32_t param_addr, int32_t& hle_ret_out, char (&stop_
     {
         const uint32_t data_size = ReadU32(param_addr + kSaveOffDataSize);
         PopulateSavedataSizeStructs(param_addr, param_size, game_name, save_name, slot_dir, data_size);
+        result_code = kSceKernelErrorOk;
+    }
+    else if (mode == kSavedataModeFiles)
+    {
+        // PSPSDK PspUtilitySavedataFileListInfo (36 bytes at param+0x5F8):
+        //   +0x00 maxSecure, +0x04 maxNormal, +0x08 maxSystem,
+        //   +0x0C numSecure, +0x10 numNormal, +0x14 numSystem,
+        //   +0x18 secureEntries*, +0x1C normalEntries*, +0x20 systemEntries*
+        // Each PspUtilitySavedataFileListEntry is 80 bytes:
+        //   +0x00 mode, +0x04 unk1, +0x08 u64 size, +0x10..+0x3F times, +0x40 char name[16].
+        const uint32_t file_list_addr = (param_size >= kSaveOffFileList + 4u)
+                                            ? ReadU32(param_addr + kSaveOffFileList)
+                                            : 0u;
+        if (file_list_addr == 0 || !IsValidRange(file_list_addr, 36u))
+        {
+            result_code = kSceUtilitySavedataErrorRwParam;
+        }
+        else
+        {
+            const uint32_t max_secure = ReadU32(file_list_addr + 0x00u);
+            const uint32_t max_system = ReadU32(file_list_addr + 0x08u);
+            const uint32_t secure_entries_addr = ReadU32(file_list_addr + 0x18u);
+            const uint32_t system_entries_addr = ReadU32(file_list_addr + 0x20u);
+
+            WriteU32(file_list_addr + 0x0Cu, 0u);
+            WriteU32(file_list_addr + 0x10u, 0u);
+            WriteU32(file_list_addr + 0x14u, 0u);
+
+            std::error_code ec;
+            if (!std::filesystem::exists(slot_dir, ec) || !std::filesystem::is_directory(slot_dir, ec))
+            {
+                result_code = kSceUtilitySavedataErrorRwNoData;
+            }
+            else
+            {
+                uint32_t num_secure = 0u;
+                uint32_t num_system = 0u;
+                for (const auto& entry : std::filesystem::directory_iterator(slot_dir, ec))
+                {
+                    if (!entry.is_regular_file(ec))
+                    {
+                        continue;
+                    }
+                    const std::string fname = entry.path().filename().string();
+                    const uint64_t fsize = entry.file_size(ec);
+                    if (IsSystemSavedataFileName(fname))
+                    {
+                        if (num_system < max_system && system_entries_addr != 0 &&
+                            IsValidRange(system_entries_addr + num_system * 80u, 80u))
+                        {
+                            const uint32_t ea = system_entries_addr + num_system * 80u;
+                            std::memset(runtime::GetGuestMemory().Translate(ea), 0, 80u);
+                            WriteU32(ea + 0x00u, 0x21FFu);
+                            WriteU32(ea + 0x04u, 0x20u);
+                            WriteU64(ea + 0x08u, fsize);
+                            WriteFixedString(ea + 0x40u, 16u, fname);
+                        }
+                        ++num_system;
+                    }
+                    else
+                    {
+                        // Secure files are stored as plain files without encryption.
+                        if (num_secure < max_secure && secure_entries_addr != 0 &&
+                            IsValidRange(secure_entries_addr + num_secure * 80u, 80u))
+                        {
+                            const uint32_t ea = secure_entries_addr + num_secure * 80u;
+                            std::memset(runtime::GetGuestMemory().Translate(ea), 0, 80u);
+                            WriteU32(ea + 0x00u, 0x21FFu);
+                            WriteU32(ea + 0x04u, 0x20u);
+                            WriteU64(ea + 0x08u, fsize);
+                            WriteFixedString(ea + 0x40u, 16u, fname);
+                        }
+                        ++num_secure;
+                    }
+                }
+                WriteU32(file_list_addr + 0x0Cu, std::min(num_secure, max_secure));
+                WriteU32(file_list_addr + 0x10u, 0u);
+                WriteU32(file_list_addr + 0x14u, std::min(num_system, max_system));
+                result_code = kSceKernelErrorOk;
+            }
+        }
+        PopulateSavedataSizeStructs(param_addr, param_size, game_name, save_name, slot_dir, 0u);
+    }
+    else if (mode == kSavedataModeMakedataSecure || mode == kSavedataModeWritedataSecure)
+    {
+        const uint32_t data_buf_addr = ReadU32(param_addr + kSaveOffDataBuf);
+        const uint32_t data_buf_size = ReadU32(param_addr + kSaveOffDataBufSize);
+        const uint32_t data_size = ReadU32(param_addr + kSaveOffDataSize);
+
+        if (file_name.empty() || data_buf_addr == 0 || data_size == 0 ||
+            (data_buf_size > 0 && data_size > data_buf_size) ||
+            !IsValidRange(data_buf_addr, data_size))
+        {
+            result_code = kSceUtilitySavedataErrorRwParam;
+        }
+        else
+        {
+            const uint8_t* src_ptr = runtime::GetGuestMemory().Translate(data_buf_addr);
+            if (!AtomicWriteBinaryFile(data_file_path, src_ptr, data_size))
+            {
+                result_code = kSceUtilitySavedataErrorRwAccessError;
+            }
+            else
+            {
+                bytes_written = data_size;
+                std::error_code ec;
+                const bool need_sfo = (mode == kSavedataModeMakedataSecure) ||
+                                      !std::filesystem::exists(sfo_path, ec);
+                if (need_sfo)
+                {
+                    const std::string title = ReadFixedString(param_addr + kSaveOffSfoTitle, 128u);
+                    const std::string savedata_title =
+                        ReadFixedString(param_addr + kSaveOffSfoSavedataTitle, 128u);
+                    const std::string detail = ReadFixedString(param_addr + kSaveOffSfoDetail, 1024u);
+                    const uint8_t parental = ReadU8(param_addr + kSaveOffSfoParentalLevel);
+
+                    std::vector<uint8_t> sfo_bytes;
+                    BuildParamSfo(dir_name, file_name, title, savedata_title, detail, parental, sfo_bytes);
+                    if (!AtomicWriteBinaryFile(sfo_path, sfo_bytes.data(), sfo_bytes.size()))
+                    {
+                        result_code = kSceUtilitySavedataErrorRwAccessError;
+                    }
+                }
+                if (result_code == kSceKernelErrorOk && mode == kSavedataModeMakedataSecure)
+                {
+                    if (!WriteAuxiliaryFileIfPresent(param_addr + kSaveOffIcon0, slot_dir / "ICON0.PNG") ||
+                        !WriteAuxiliaryFileIfPresent(param_addr + kSaveOffIcon1, slot_dir / "ICON1.PMF") ||
+                        !WriteAuxiliaryFileIfPresent(param_addr + kSaveOffPic1, slot_dir / "PIC1.PNG") ||
+                        !WriteAuxiliaryFileIfPresent(param_addr + kSaveOffSnd0, slot_dir / "SND0.AT3"))
+                    {
+                        result_code = kSceUtilitySavedataErrorRwAccessError;
+                    }
+                }
+            }
+        }
+        PopulateSavedataSizeStructs(param_addr, param_size, game_name, save_name, slot_dir, data_size);
+    }
+    else if (mode == kSavedataModeReaddataSecure)
+    {
+        std::error_code ec;
+        if (!std::filesystem::exists(slot_dir, ec) || !std::filesystem::is_directory(slot_dir, ec))
+        {
+            result_code = kSceUtilitySavedataErrorRwNoData;
+        }
+        else if (file_name.empty() || !std::filesystem::exists(data_file_path, ec) ||
+                 !std::filesystem::is_regular_file(data_file_path, ec))
+        {
+            result_code = kSceUtilitySavedataErrorRwNoFile;
+        }
+        else
+        {
+            std::vector<uint8_t> data;
+            if (!ReadBinaryFile(data_file_path, data))
+            {
+                result_code = kSceUtilitySavedataErrorRwAccessError;
+            }
+            else
+            {
+                const uint32_t data_buf_addr = ReadU32(param_addr + kSaveOffDataBuf);
+                const uint32_t data_buf_size = ReadU32(param_addr + kSaveOffDataBufSize);
+                if (data_buf_addr == 0 || data.size() > data_buf_size ||
+                    (data.size() > 0 && !IsValidRange(data_buf_addr, static_cast<uint32_t>(data.size()))))
+                {
+                    result_code = kSceUtilitySavedataErrorRwParam;
+                }
+                else
+                {
+                    if (!data.empty())
+                    {
+                        std::memcpy(runtime::GetGuestMemory().Translate(data_buf_addr),
+                                    data.data(), data.size());
+                    }
+                    WriteU32(param_addr + kSaveOffDataSize, static_cast<uint32_t>(data.size()));
+                    bytes_read = data.size();
+                    result_code = kSceKernelErrorOk;
+                }
+            }
+        }
+        PopulateSavedataSizeStructs(param_addr, param_size, game_name, save_name, slot_dir, bytes_read);
+    }
+    else if (mode == kSavedataModeEraseSecure)
+    {
+        std::error_code ec;
+        if (!std::filesystem::exists(slot_dir, ec) || !std::filesystem::is_directory(slot_dir, ec))
+        {
+            result_code = kSceUtilitySavedataErrorRwNoData;
+        }
+        else if (file_name.empty() || !std::filesystem::exists(data_file_path, ec))
+        {
+            result_code = kSceUtilitySavedataErrorRwNoFile;
+        }
+        else
+        {
+            std::filesystem::remove(data_file_path, ec);
+            result_code = ec ? kSceUtilitySavedataErrorRwAccessError : kSceKernelErrorOk;
+        }
+        PopulateSavedataSizeStructs(param_addr, param_size, game_name, save_name, slot_dir, 0u);
+    }
+    else if (mode == kSavedataModeGetSize)
+    {
+        // PSPSDK PspUtilitySavedataSizeInfo (60 bytes at param+0x5FC):
+        //   +0x00 numSecureEntries, +0x04 numNormalEntries,
+        //   +0x08 secureEntries* (24B each: u64 size, char name[16]), +0x0C normalEntries*,
+        //   +0x10 sectorSize, +0x14 freeSectors, +0x18 freeKB, +0x1C freeString[8],
+        //   +0x24 neededKB, +0x28 neededString[8], +0x30 overwriteKB, +0x34 overwriteString[8].
+        const uint32_t size_info_addr = (param_size >= kSaveOffSizeInfo + 4u)
+                                            ? ReadU32(param_addr + kSaveOffSizeInfo)
+                                            : 0u;
+        uint64_t total_needed_bytes = 0u;
+        if (size_info_addr != 0 && IsValidRange(size_info_addr, 60u))
+        {
+            const uint32_t num_secure = ReadU32(size_info_addr + 0x00u);
+            const uint32_t num_normal = ReadU32(size_info_addr + 0x04u);
+            const uint32_t secure_ptr = ReadU32(size_info_addr + 0x08u);
+            const uint32_t normal_ptr = ReadU32(size_info_addr + 0x0Cu);
+
+            auto sum_entries = [&](uint32_t count, uint32_t base_ptr) -> uint64_t {
+                uint64_t sum = 0u;
+                if (base_ptr == 0)
+                {
+                    return 0u;
+                }
+                const uint32_t capped = std::min(count, 128u);
+                for (uint32_t i = 0; i < capped; ++i)
+                {
+                    const uint32_t ea = base_ptr + i * 24u;
+                    if (!IsValidRange(ea, 24u))
+                    {
+                        break;
+                    }
+                    const uint64_t sz = ReadU64(ea + 0x00u);
+                    // Round up to cluster size.
+                    sum += ((sz + kMsClusterSizeBytes - 1u) / kMsClusterSizeBytes) * kMsClusterSizeBytes;
+                }
+                return sum;
+            };
+
+            total_needed_bytes = sum_entries(num_secure, secure_ptr) + sum_entries(num_normal, normal_ptr);
+            const uint32_t needed_kb = static_cast<uint32_t>((total_needed_bytes + 1023u) / 1024u);
+            const uint32_t free_kb = static_cast<uint32_t>(kMsReportedFreeClusters) * (kMsClusterSizeBytes / 1024u);
+
+            char needed_str[8] = {};
+            std::snprintf(needed_str, sizeof(needed_str), "%u KB", needed_kb);
+
+            WriteU32(size_info_addr + 0x10u, kMsClusterSizeBytes);
+            WriteU32(size_info_addr + 0x14u, static_cast<uint32_t>(kMsReportedFreeClusters));
+            WriteU32(size_info_addr + 0x18u, free_kb);
+            WriteFixedString(size_info_addr + 0x1Cu, 8u, "1024 MB");
+            WriteU32(size_info_addr + 0x24u, needed_kb);
+            WriteFixedString(size_info_addr + 0x28u, 8u, needed_str);
+            WriteU32(size_info_addr + 0x30u, needed_kb);
+            WriteFixedString(size_info_addr + 0x34u, 8u, needed_str);
+        }
+        PopulateSavedataSizeStructs(param_addr, param_size, game_name, save_name, slot_dir, total_needed_bytes);
         result_code = kSceKernelErrorOk;
     }
 

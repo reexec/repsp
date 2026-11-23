@@ -508,6 +508,118 @@ int main()
     TEST_ASSERT(CallNid(0x2A2B3DE0u /* sceUtilityLoadModule */, 0x300u) == 0);
     TEST_ASSERT(CallNid(0xE49BFE92u /* sceUtilityUnloadModule */, 0x300u) == 0);
 
+    // 9. Extended savedata modes: 12 (FILES), 13 (MAKEDATASECURE), 15 (READDATASECURE),
+    //    17 (WRITEDATASECURE), 19 (ERASESECURE), 22 (GETSIZE).
+    {
+        constexpr uint32_t kExtParamSize = 1536u;
+        constexpr uint32_t kExtParamAddr = 0x08930000u;
+        constexpr uint32_t kExtBufAddr = 0x08932000u;
+        constexpr uint32_t kFileListAddr = 0x08934000u;
+        constexpr uint32_t kFileEntriesAddr = 0x08934100u;
+        constexpr uint32_t kSizeInfoAddr = 0x08936000u;
+        constexpr uint32_t kSizeEntriesAddr = 0x08936100u;
+
+        auto run_ext_mode = [&](uint32_t mode) -> int32_t {
+            mem.WriteU32(kExtParamAddr + 0x30u, mode);
+            TEST_ASSERT(CallNid(kNidSavedataInitStart, kExtParamAddr) == 0);
+            TEST_ASSERT(CallNid(kNidSavedataGetStatus) == 1);
+            TEST_ASSERT(CallNid(kNidSavedataGetStatus) == 2);
+            TEST_ASSERT(CallNid(kNidSavedataUpdate, 1) == 0);
+            TEST_ASSERT(CallNid(kNidSavedataGetStatus) == 3);
+            TEST_ASSERT(CallNid(kNidSavedataShutdownStart) == 0);
+            TEST_ASSERT(CallNid(kNidSavedataGetStatus) == 4);
+            TEST_ASSERT(CallNid(kNidSavedataGetStatus) == 0);
+            return static_cast<int32_t>(mem.ReadU32(kExtParamAddr + 0x1Cu));
+        };
+
+        // 9a. FILES on non-existent slot returns RW_NO_DATA.
+        WriteZeroedParam(kExtParamAddr, kExtParamSize);
+        WriteGuestCString(kExtParamAddr + 0x3Cu, "ULKS99999", 13u);
+        WriteGuestCString(kExtParamAddr + 0x4Cu, "EXT0", 20u);
+        std::memset(mem.Translate(kFileListAddr), 0, 36u);
+        mem.WriteU32(kFileListAddr + 0x00u, 8u);
+        mem.WriteU32(kFileListAddr + 0x18u, kFileEntriesAddr);
+        mem.WriteU32(kExtParamAddr + 0x5F8u, kFileListAddr);
+        TEST_ASSERT(run_ext_mode(12u) == repsp::hle::kSceUtilitySavedataErrorRwNoData);
+        TEST_ASSERT(mem.ReadU32(kFileListAddr + 0x0Cu) == 0u);
+
+        // 9b. MAKEDATASECURE writes file.
+        const char kPayload1[] = "EXT_PAYLOAD_ONE";
+        WriteZeroedParam(kExtParamAddr, kExtParamSize);
+        WriteGuestCString(kExtParamAddr + 0x3Cu, "ULKS99999", 13u);
+        WriteGuestCString(kExtParamAddr + 0x4Cu, "EXT0", 20u);
+        WriteGuestCString(kExtParamAddr + 0x64u, "LINK.BIN", 13u);
+        mem.WriteBlock(kExtBufAddr, kPayload1, sizeof(kPayload1));
+        mem.WriteU32(kExtParamAddr + 0x74u, kExtBufAddr);
+        mem.WriteU32(kExtParamAddr + 0x78u, 256u);
+        mem.WriteU32(kExtParamAddr + 0x7Cu, static_cast<uint32_t>(sizeof(kPayload1)));
+        TEST_ASSERT(run_ext_mode(13u) == 0);
+
+        // 9c. FILES now lists LINK.BIN as a secure entry.
+        WriteZeroedParam(kExtParamAddr, kExtParamSize);
+        WriteGuestCString(kExtParamAddr + 0x3Cu, "ULKS99999", 13u);
+        WriteGuestCString(kExtParamAddr + 0x4Cu, "EXT0", 20u);
+        std::memset(mem.Translate(kFileListAddr), 0, 36u);
+        mem.WriteU32(kFileListAddr + 0x00u, 8u);
+        mem.WriteU32(kFileListAddr + 0x18u, kFileEntriesAddr);
+        mem.WriteU32(kExtParamAddr + 0x5F8u, kFileListAddr);
+        TEST_ASSERT(run_ext_mode(12u) == 0);
+        TEST_ASSERT(mem.ReadU32(kFileListAddr + 0x0Cu) == 1u);
+        TEST_ASSERT(ReadGuestCString(kFileEntriesAddr + 0x40u, 16u) == "LINK.BIN");
+
+        // 9d. GETSIZE populates sectorSize and neededKB.
+        WriteZeroedParam(kExtParamAddr, kExtParamSize);
+        WriteGuestCString(kExtParamAddr + 0x3Cu, "ULKS99999", 13u);
+        WriteGuestCString(kExtParamAddr + 0x4Cu, "EXT0", 20u);
+        std::memset(mem.Translate(kSizeInfoAddr), 0, 60u);
+        std::memset(mem.Translate(kSizeEntriesAddr), 0, 24u);
+        mem.WriteU64(kSizeEntriesAddr + 0x00u, 65536u);
+        WriteGuestCString(kSizeEntriesAddr + 0x08u, "LINK.BIN", 16u);
+        mem.WriteU32(kSizeInfoAddr + 0x00u, 1u);
+        mem.WriteU32(kSizeInfoAddr + 0x08u, kSizeEntriesAddr);
+        mem.WriteU32(kExtParamAddr + 0x5FCu, kSizeInfoAddr);
+        TEST_ASSERT(run_ext_mode(22u) == 0);
+        TEST_ASSERT(mem.ReadU32(kSizeInfoAddr + 0x10u) == 32768u);
+        TEST_ASSERT(mem.ReadU32(kSizeInfoAddr + 0x24u) == 64u);
+
+        // 9e. READDATASECURE reads back payload1.
+        WriteZeroedParam(kExtParamAddr, kExtParamSize);
+        WriteGuestCString(kExtParamAddr + 0x3Cu, "ULKS99999", 13u);
+        WriteGuestCString(kExtParamAddr + 0x4Cu, "EXT0", 20u);
+        WriteGuestCString(kExtParamAddr + 0x64u, "LINK.BIN", 13u);
+        std::memset(mem.Translate(kExtBufAddr), 0, 256u);
+        mem.WriteU32(kExtParamAddr + 0x74u, kExtBufAddr);
+        mem.WriteU32(kExtParamAddr + 0x78u, 256u);
+        TEST_ASSERT(run_ext_mode(15u) == 0);
+        TEST_ASSERT(mem.ReadU32(kExtParamAddr + 0x7Cu) == static_cast<uint32_t>(sizeof(kPayload1)));
+        TEST_ASSERT(std::memcmp(mem.Translate(kExtBufAddr), kPayload1, sizeof(kPayload1)) == 0);
+
+        // 9f. WRITEDATASECURE overwrites payload2, then READDATASECURE verifies.
+        const char kPayload2[] = "UPDATED_TWO";
+        WriteZeroedParam(kExtParamAddr, kExtParamSize);
+        WriteGuestCString(kExtParamAddr + 0x3Cu, "ULKS99999", 13u);
+        WriteGuestCString(kExtParamAddr + 0x4Cu, "EXT0", 20u);
+        WriteGuestCString(kExtParamAddr + 0x64u, "LINK.BIN", 13u);
+        mem.WriteBlock(kExtBufAddr, kPayload2, sizeof(kPayload2));
+        mem.WriteU32(kExtParamAddr + 0x74u, kExtBufAddr);
+        mem.WriteU32(kExtParamAddr + 0x78u, 256u);
+        mem.WriteU32(kExtParamAddr + 0x7Cu, static_cast<uint32_t>(sizeof(kPayload2)));
+        TEST_ASSERT(run_ext_mode(17u) == 0);
+
+        std::memset(mem.Translate(kExtBufAddr), 0, 256u);
+        TEST_ASSERT(run_ext_mode(15u) == 0);
+        TEST_ASSERT(mem.ReadU32(kExtParamAddr + 0x7Cu) == static_cast<uint32_t>(sizeof(kPayload2)));
+        TEST_ASSERT(std::memcmp(mem.Translate(kExtBufAddr), kPayload2, sizeof(kPayload2)) == 0);
+
+        // 9g. ERASESECURE removes file, subsequent READDATASECURE returns RW_NO_FILE.
+        WriteZeroedParam(kExtParamAddr, kExtParamSize);
+        WriteGuestCString(kExtParamAddr + 0x3Cu, "ULKS99999", 13u);
+        WriteGuestCString(kExtParamAddr + 0x4Cu, "EXT0", 20u);
+        WriteGuestCString(kExtParamAddr + 0x64u, "LINK.BIN", 13u);
+        TEST_ASSERT(run_ext_mode(19u) == 0);
+        TEST_ASSERT(run_ext_mode(15u) == repsp::hle::kSceUtilitySavedataErrorRwNoFile);
+    }
+
     repsp::hle::utility::Shutdown();
     mem.Shutdown();
 

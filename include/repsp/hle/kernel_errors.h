@@ -50,6 +50,7 @@ constexpr int32_t kSceKernelErrorAsyncBusy = static_cast<int32_t>(0x80020329u); 
 constexpr int32_t kSceKernelErrorErrnoEnoent = static_cast<int32_t>(0x80010002u);      // SCE_ERROR_ERRNO_ENOENT
 constexpr int32_t kSceKernelErrorErrnoEacces = static_cast<int32_t>(0x8001000Du);      // SCE_ERROR_ERRNO_EACCES
 constexpr int32_t kSceKernelErrorErrnoEexist = static_cast<int32_t>(0x80010011u);      // SCE_ERROR_ERRNO_EEXIST
+constexpr int32_t kSceKernelErrorErrnoEnodev = static_cast<int32_t>(0x80010013u);      // SCE_ERROR_ERRNO_ENODEV
 constexpr int32_t kSceKernelErrorErrnoEinval = static_cast<int32_t>(0x80010016u);      // SCE_ERROR_ERRNO_EINVAL
 
 // Common / Ctrl / Dmac errors (uOFW include/common/errors.h)
@@ -124,12 +125,19 @@ constexpr int32_t kSceUtilitySavedataErrorLoadDataBroken = static_cast<int32_t>(
 constexpr int32_t kSceUtilitySavedataErrorLoadNoData = static_cast<int32_t>(0x80110307u);  // SCE_UTILITY_SAVEDATA_ERROR_LOAD_NO_DATA
 constexpr int32_t kSceUtilitySavedataErrorLoadParam = static_cast<int32_t>(0x80110308u);   // SCE_UTILITY_SAVEDATA_ERROR_LOAD_PARAM
 constexpr int32_t kSceUtilitySavedataErrorLoadNoFile = static_cast<int32_t>(0x80110309u);  // SCE_UTILITY_SAVEDATA_ERROR_LOAD_NO_FILE
+constexpr int32_t kSceUtilitySavedataErrorRwAccessError = static_cast<int32_t>(0x80110323u); // SCE_UTILITY_SAVEDATA_ERROR_RW_ACCESS_ERROR
+constexpr int32_t kSceUtilitySavedataErrorRwNoData = static_cast<int32_t>(0x80110327u);    // SCE_UTILITY_SAVEDATA_ERROR_RW_NO_DATA
+constexpr int32_t kSceUtilitySavedataErrorRwParam = static_cast<int32_t>(0x80110328u);     // SCE_UTILITY_SAVEDATA_ERROR_RW_BAD_PARAMS
+constexpr int32_t kSceUtilitySavedataErrorRwNoFile = static_cast<int32_t>(0x80110329u);    // SCE_UTILITY_SAVEDATA_ERROR_RW_FILE_NOT_FOUND
 constexpr int32_t kSceUtilitySavedataErrorDeleteNoData = static_cast<int32_t>(0x80110347u);// SCE_UTILITY_SAVEDATA_ERROR_DELETE_NO_DATA
 constexpr int32_t kSceUtilitySavedataErrorSaveNoMs = static_cast<int32_t>(0x80110381u);    // SCE_UTILITY_SAVEDATA_ERROR_SAVE_NO_MS
 constexpr int32_t kSceUtilitySavedataErrorSaveNoSpace = static_cast<int32_t>(0x80110383u); // SCE_UTILITY_SAVEDATA_ERROR_SAVE_NO_SPACE
 constexpr int32_t kSceUtilitySavedataErrorSaveAccessError = static_cast<int32_t>(0x80110385u); // SCE_UTILITY_SAVEDATA_ERROR_SAVE_ACCESS_ERROR
 constexpr int32_t kSceUtilitySavedataErrorSaveParam = static_cast<int32_t>(0x80110388u);   // SCE_UTILITY_SAVEDATA_ERROR_SAVE_PARAM
 constexpr int32_t kSceUtilitySavedataErrorSizesNoData = static_cast<int32_t>(0x801103C7u); // SCE_UTILITY_SAVEDATA_ERROR_SIZES_NO_DATA
+
+// scePower / sceSuspendForUser errors (uOFW include/common/errors.h)
+constexpr int32_t kScePowerErrorTakenSlot = static_cast<int32_t>(0x802B0200u);             // SCE_POWER_ERROR_TAKEN_SLOT
 
 } // namespace repsp::hle
 
