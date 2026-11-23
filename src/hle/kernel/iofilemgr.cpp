@@ -42,10 +42,37 @@ struct IoFileEntry
     std::string guest_path;
     uint32_t flags = 0;
     uint64_t offset = 0;
+    bool is_umd_device = false;
+    uint64_t umd_generation = 0;
     bool has_async_op = false;
     bool closing_async = false;
     int64_t async_result = 0;
 };
+
+bool IsUmdGuestPath(const std::string& path)
+{
+    auto starts_with_ci = [&path](const char* prefix) {
+        size_t i = 0;
+        for (; prefix[i] != '\0'; ++i)
+        {
+            if (i >= path.size())
+            {
+                return false;
+            }
+            char c = path[i];
+            if (c >= 'A' && c <= 'Z')
+            {
+                c = static_cast<char>(c - 'A' + 'a');
+            }
+            if (c != prefix[i])
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    return starts_with_ci("disc0:") || starts_with_ci("umd0:");
+}
 
 std::mutex& IoMutex()
 {
@@ -171,6 +198,10 @@ int32_t DoOpen(const std::string& path, uint32_t flags, std::shared_ptr<IoFileEn
     auto st = runtime::GetVfs().Resolve(path, for_write, &host_path, &normalized);
     if (st != runtime::VfsResolveStatus::kOk)
     {
+        if (st == runtime::VfsResolveStatus::kNoSuchDevice && IsUmdGuestPath(path) && !IsUmdDiscPresent())
+        {
+            return kSceKernelErrorErrnoEnodev;
+        }
         return MapVfsError(st);
     }
 
@@ -186,6 +217,8 @@ int32_t DoOpen(const std::string& path, uint32_t flags, std::shared_ptr<IoFileEn
     entry->guest_path = normalized;
     entry->flags = flags;
     entry->offset = 0;
+    entry->is_umd_device = IsUmdGuestPath(normalized);
+    entry->umd_generation = entry->is_umd_device ? GetUmdGeneration() : 0;
 
     std::lock_guard<std::mutex> lock(IoMutex());
     while (NextFd() < 3 || IoFiles().find(NextFd()) != IoFiles().end())
@@ -208,6 +241,10 @@ int32_t DoOpen(const std::string& path, uint32_t flags, std::shared_ptr<IoFileEn
 
 int32_t DoRead(const std::shared_ptr<IoFileEntry>& entry, uint32_t data_addr, uint32_t size)
 {
+    if (entry->is_umd_device && (!IsUmdDiscPresent() || entry->umd_generation != GetUmdGeneration()))
+    {
+        return kSceKernelErrorErrnoEnodev;
+    }
     if (size == 0)
     {
         return 0;
@@ -272,6 +309,10 @@ int32_t DoWrite(int32_t fd, uint32_t data_addr, uint32_t size)
 
 int64_t DoSeek(const std::shared_ptr<IoFileEntry>& entry, int64_t offset, int32_t whence)
 {
+    if (entry->is_umd_device && (!IsUmdDiscPresent() || entry->umd_generation != GetUmdGeneration()))
+    {
+        return kSceKernelErrorErrnoEnodev;
+    }
     int origin = SEEK_SET;
     if (whence == kPspSeekSet) origin = SEEK_SET;
     else if (whence == kPspSeekCur) origin = SEEK_CUR;

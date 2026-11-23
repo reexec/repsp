@@ -24,6 +24,9 @@ void RegisterRtc();
 void ResetIoFiles();
 void ResetThreadManSync();
 void ResetModules();
+void ResetUmd();
+bool IsUmdDiscPresent();
+uint64_t GetUmdGeneration();
 std::vector<OpenFileInfo> SnapshotIoFiles();
 
 } // namespace repsp::hle::kernel::detail

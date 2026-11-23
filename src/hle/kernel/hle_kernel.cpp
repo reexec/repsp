@@ -35,6 +35,7 @@ void Register(const KernelConfig& config)
     detail::ResetIoFiles();
     detail::ResetThreadManSync();
     detail::ResetModules();
+    detail::ResetUmd();
     runtime::GetScheduler().Reset();
     runtime::GetUserPartition().Reset();
     runtime::GetKernelObjects().Reset();

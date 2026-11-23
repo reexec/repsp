@@ -50,6 +50,7 @@ constexpr int32_t kSceKernelErrorAsyncBusy = static_cast<int32_t>(0x80020329u); 
 constexpr int32_t kSceKernelErrorErrnoEnoent = static_cast<int32_t>(0x80010002u);      // SCE_ERROR_ERRNO_ENOENT
 constexpr int32_t kSceKernelErrorErrnoEacces = static_cast<int32_t>(0x8001000Du);      // SCE_ERROR_ERRNO_EACCES
 constexpr int32_t kSceKernelErrorErrnoEexist = static_cast<int32_t>(0x80010011u);      // SCE_ERROR_ERRNO_EEXIST
+constexpr int32_t kSceKernelErrorErrnoEnodev = static_cast<int32_t>(0x80010013u);      // SCE_ERROR_ERRNO_ENODEV
 constexpr int32_t kSceKernelErrorErrnoEinval = static_cast<int32_t>(0x80010016u);      // SCE_ERROR_ERRNO_EINVAL
 
 // Common / Ctrl / Dmac errors (uOFW include/common/errors.h)
